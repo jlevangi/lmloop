@@ -67,6 +67,60 @@ def cmd_run(args: argparse.Namespace) -> int:
     return run.start()
 
 
+def _discover_runs(repo: Path, config: dict) -> list[tuple[str, Path]]:
+    """Every run directory under this repo's configured worktree root."""
+    # Substituting a placeholder rather than "" -- an empty run_id leaves a
+    # trailing slash, which Path normalises away, so .parent would climb one
+    # level too far and glob the whole repo.
+    template = config["worktree"]["root"]
+    root = Path(template.format(repo=str(repo), run_id="__run__")).parent
+    runs = []
+    for run_dir in sorted(root.glob("*/.lmloop/runs/*")):
+        if run_dir.is_dir():
+            runs.append((run_dir.name, run_dir))
+    return runs
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    repo = gitops.repo_root(Path.cwd())
+    runs = _discover_runs(repo, config_module.load(repo))
+    if not runs:
+        print("no runs for this repo")
+        return 0
+    for run_id, run_dir in runs:
+        worktree = run_dir.parents[2]
+        base = (run_dir / "base-commit").read_text().strip()
+        commits = gitops.commit_count(worktree, base) if worktree.is_dir() else 0
+        done = len(list(run_dir.glob("iteration-*-prompt.md")))
+        stopped = "STOP" if (run_dir / "STOP").exists() else ""
+        print(f"{run_id}  {done} iterations, {commits} commits  {stopped}")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    repo = gitops.repo_root(Path.cwd())
+    config = config_module.load(repo)
+    if args.model:
+        config["agent"]["model"] = args.model
+
+    runs = _discover_runs(repo, config)
+    if not runs:
+        raise SystemExit("lmloop: no runs to resume for this repo")
+    run_id = args.run_id or runs[-1][0]
+    if run_id not in {name for name, _ in runs}:
+        raise SystemExit(f"lmloop: no run {run_id} under this repo")
+
+    run = Run(repo, config, objective="", max_iterations=None, run_id=run_id)
+    # A leftover STOP would stop the resumed run before its first iteration.
+    run.rundir.stop_path.unlink(missing_ok=True)
+    done = run.attach(args.iterations)
+    print(f"lmloop {run_id} (resuming after {done} iterations)")
+    print(f"  model:    {run.model}")
+    print(f"  worktree: {run.worktree}")
+    print()
+    return run.start(from_iteration=done)
+
+
 def cmd_models(args: argparse.Namespace) -> int:
     url = config_module.DEFAULTS["models"]["llama_swap_url"]
     try:
@@ -135,6 +189,15 @@ def main() -> int:
     run.add_argument("--max-iterations", type=int, help="override the iteration cap")
     run.add_argument("--dry-run", action="store_true", help="print the plan, create nothing")
     run.set_defaults(func=cmd_run)
+
+    resume = sub.add_parser("resume", help="continue a run that stopped, in its existing worktree")
+    resume.add_argument("run_id", nargs="?", help="which run; defaults to the most recent")
+    resume.add_argument("--iterations", type=int, default=3, help="how many more iterations to run")
+    resume.add_argument("--model", help="override the configured model")
+    resume.set_defaults(func=cmd_resume)
+
+    runs = sub.add_parser("list", help="runs for this repo, with iteration and commit counts")
+    runs.set_defaults(func=cmd_list)
 
     listing = sub.add_parser("models", help="what is loaded, measured, and selectable")
     listing.add_argument("--detect", action="store_true", help="measure the loaded model's real context")

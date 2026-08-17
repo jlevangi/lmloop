@@ -20,7 +20,12 @@ DEFAULTS: dict = {
         # Every extension in ~/.pi/agent/settings.json adds tool definitions,
         # and those escape whatever budget a harness compacts to.  On a 57344
         # declared window this allowlist is the cheapest lever that works.
-        "tools": "read,write,edit,bash,grep,find,ls",
+        #
+        # `replace` is pi-hashline-edit-pro's editor.  It is listed because
+        # leaving it out does not save an agent from editing -- it just pushes
+        # it into `bash` heredocs, which is worse in every way: no diff, no
+        # partial-failure reporting, and nothing the event stream can count.
+        "tools": "read,write,edit,replace,bash,grep,find,ls",
     },
     "models": {
         # llama-swap directly, not through a router.  A router reports model

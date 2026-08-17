@@ -30,11 +30,18 @@ from rundir import RunDir, make_run_id
 
 
 class Run:
-    def __init__(self, repo: Path, config: dict, objective: str, max_iterations: int | None = None):
+    def __init__(
+        self,
+        repo: Path,
+        config: dict,
+        objective: str,
+        max_iterations: int | None = None,
+        run_id: str | None = None,
+    ):
         self.repo = repo
         self.config = config
         self.objective = objective
-        self.run_id = make_run_id(objective)
+        self.run_id = run_id or make_run_id(objective)
         self.max_iterations = max_iterations or config["stop"]["max_iterations"]
         self.model = config["agent"]["model"]
         self.interrupted = False
@@ -72,6 +79,37 @@ class Run:
             maxIterations=self.max_iterations,
             promptLength=len(self.objective),
         )
+
+    def attach(self, extra_iterations: int) -> int:
+        """Re-enter an existing run instead of starting a new one.
+
+        A run that dies -- a reboot, a closed ssh session, an OOM -- leaves its
+        commits behind, but starting fresh would build a second worktree and
+        abandon the handoff chain that makes the next iteration cheap.  This
+        picks the run back up where it stopped: same worktree, same branch, same
+        run directory, same handoff.
+        """
+        if not self.rundir.path.is_dir():
+            raise SystemExit(f"lmloop: no run directory at {self.rundir.path}")
+        done = max(
+            (int(path.stem.split("-")[1]) for path in self.rundir.path.glob("iteration-*-prompt.md")),
+            default=0,
+        )
+        self.objective = (self.rundir.path / "prompt.md").read_text().strip()
+        self.max_iterations = done + extra_iterations
+        self.rundir.event(
+            "run:start",
+            runId=self.run_id,
+            runDir=str(self.rundir.path),
+            agent="pi",
+            model=self.model,
+            resumed=True,
+            completedIterations=done,
+            worktreePath=str(self.worktree),
+            branch=self.branch,
+            maxIterations=self.max_iterations,
+        )
+        return done
 
     # -- stop conditions --------------------------------------------------
 
@@ -300,12 +338,12 @@ class Run:
 
     # -- driver -----------------------------------------------------------
 
-    def start(self) -> int:
+    def start(self, from_iteration: int = 0) -> int:
         started = time.monotonic()
         signal.signal(signal.SIGINT, self._on_interrupt)
         signal.signal(signal.SIGTERM, self._on_interrupt)
 
-        iteration = 0
+        iteration = from_iteration
         reason = None
         while True:
             iteration += 1

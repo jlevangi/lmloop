@@ -39,6 +39,14 @@ WRITE_TOOLS = {"write", "edit", "replace", "multiedit", "apply_patch"}
 # and skipped -- see the volume note above.
 _INTERESTING = ('"tool_execution_start"', '"message_end"', '"agent_end"')
 
+# What counts as the model actually doing something, for the stall clock.
+# pi writes a session header to stdout the instant it starts, before it has
+# contacted a model at all -- so "we have seen output" is not the same as "the
+# model is alive", and treating them as the same would start the stall timer
+# while llama-swap is still loading weights.  That load legitimately takes
+# minutes and emits nothing.
+_ACTIVITY = (b'"message_', b'"tool_execution')
+
 TERM_GRACE_SECONDS = 30
 POLL_SECONDS = 5
 
@@ -73,7 +81,12 @@ class _Stream:
         self.output_tokens = 0
         self.stderr = ""
 
-    def note_event(self) -> None:
+    def note_output(self) -> None:
+        """Any byte from pi. Keeps the stall clock fresh once it is running."""
+        self.last_event_at = time.monotonic()
+
+    def note_activity(self) -> None:
+        """The model is demonstrably alive; the stall clock may now start."""
         now = time.monotonic()
         if not self.first_event_at:
             self.first_event_at = now
@@ -112,10 +125,13 @@ def _read_stdout(pipe, raw_path: Path, state: _Stream) -> None:
             sink.write(chunk)
             sink.flush()
             with state.lock:
-                state.note_event()
+                state.note_output()
             buffer += chunk
             *lines, buffer = buffer.split(b"\n")
             for line in lines:
+                if any(marker in line for marker in _ACTIVITY):
+                    with state.lock:
+                        state.note_activity()
                 if not any(marker.encode() in line for marker in _INTERESTING):
                     continue
                 try:

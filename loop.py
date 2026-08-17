@@ -22,6 +22,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import display
 import gitops
 import models
 import prompts
@@ -55,6 +56,7 @@ class Run:
         self.gate_result = ""
         self.gate_output = ""
         self.no_diff_streak = 0
+        self.screen = display.Screen()
 
     # -- setup ------------------------------------------------------------
 
@@ -202,7 +204,7 @@ class Run:
             preflight=detail,
             git={"head": gitops.head_commit(self.worktree), "commitCount": gitops.commit_count(self.worktree, base)},
         )
-        print(f"  iteration {number}: {detail}", flush=True)
+        self.screen.log(f"  iteration {number}: {detail}")
 
         handoff_before = self.rundir.handoff_mtime()
         result = pi_runner.run(
@@ -217,6 +219,7 @@ class Run:
             stall_seconds=self.config["iteration"]["stall_seconds"],
             env=self.env(),
             should_stop=lambda: self.interrupted or self.rundir.stop_requested(),
+            on_progress=lambda snap: self._show(number, snap),
         )
 
         self.run_gate(number)
@@ -229,6 +232,24 @@ class Run:
 
         commit = self.commit(number, summary, result, handoff_written, base)
         self.record(number, summary, result, handoff_written, commit, base)
+
+    def _show(self, number: int, snap: dict) -> None:
+        """One line that keeps moving, so an attached terminal never looks dead."""
+        if snap["loading"]:
+            detail = "waiting on the model to load"
+        elif snap["quiet"] > 60:
+            detail = f"quiet {display.elapsed(snap['quiet'])}"
+        else:
+            detail = f"{snap['last_tool'] or 'thinking'}"
+        flag = " [PAUSE queued]" if self.rundir.paused() else ""
+        flag += " [STOP queued]" if self.rundir.stop_requested() else ""
+        self.screen.status(
+            f"  iter {number}/{self.max_iterations}"
+            f"  {display.elapsed(snap['elapsed'])}"
+            f"  {snap['tool_calls']} tools"
+            f"  {snap['output_tokens']} out"
+            f"  {detail}{flag}"
+        )
 
     # -- commit -----------------------------------------------------------
 
@@ -257,7 +278,7 @@ class Run:
         blocked = self.config["gate"]["blocks_commit"] and self.gate_result.startswith("fail")
         if blocked:
             self.rundir.event("git:commit:blocked", iteration=number, gate=self.gate_result)
-            print(f"    gate failed and blocks_commit is set; leaving {number} uncommitted", flush=True)
+            self.screen.log(f"    gate failed and blocks_commit is set; leaving {number} uncommitted")
             return None
 
         sha = gitops.commit_all(self.worktree, "\n".join(lines) + "\n")
@@ -330,10 +351,9 @@ class Run:
             verdict = f"committed {commit[:8]}: {changed}"
         else:
             verdict = "nothing to commit"
-        print(
-            f"    {result.outcome} in {result.elapsed_seconds / 60:.0f}m"
-            f" | {result.tool_calls} tool calls | {verdict}",
-            flush=True,
+        self.screen.log(
+            f"    {result.outcome} in {display.elapsed(result.elapsed_seconds)}"
+            f" | {result.tool_calls} tool calls | {verdict}"
         )
 
     # -- driver -----------------------------------------------------------
@@ -343,10 +363,16 @@ class Run:
         signal.signal(signal.SIGINT, self._on_interrupt)
         signal.signal(signal.SIGTERM, self._on_interrupt)
 
+        keys = display.Keys(self.rundir, self.screen)
+        keys.start()
+        if self.screen.tty:
+            self.screen.log(f"  {display.Keys.HELP}")
+
         iteration = from_iteration
         reason = None
         while True:
             iteration += 1
+            display.wait_while_paused(self.rundir, self.screen, lambda: self.interrupted)
             reason = self._abort_reason(iteration, started)
             if reason:
                 break
@@ -365,6 +391,7 @@ class Run:
             commitCount=gitops.commit_count(self.worktree, self.rundir.base_commit),
             worktreePath=str(self.worktree),
         )
+        self.screen.close()
         self._summarise(reason, started)
         return 0
 
@@ -372,7 +399,7 @@ class Run:
         if self.interrupted:
             raise KeyboardInterrupt
         self.interrupted = True
-        print("\n  stop requested; finishing the current iteration", flush=True)
+        self.screen.log("  stop requested; finishing the current iteration")
 
     def _backoff(self, iteration: int, detail: str) -> bool:
         """1m, 2m, 4m, then give up.  Only for a llama-swap that is not there."""
@@ -383,7 +410,7 @@ class Run:
             return False
         delay = 60 * 2 ** (self._errors - 1)
         self.rundir.event("backoff:start", iteration=iteration, seconds=delay, detail=detail)
-        print(f"    {detail}; retrying in {delay // 60}m", flush=True)
+        self.screen.log(f"    {detail}; retrying in {delay // 60}m")
         for _ in range(delay):
             if self.interrupted:
                 return False
@@ -392,15 +419,15 @@ class Run:
 
     def _summarise(self, reason: str | None, started: float) -> None:
         base = self.rundir.base_commit
-        print()
-        print(f"  run {self.run_id} stopped: {reason or 'complete'}")
-        print(f"  {gitops.commit_count(self.worktree, base)} commits on {self.branch}"
+        self.screen.log()
+        self.screen.log(f"  run {self.run_id} stopped: {reason or 'complete'}")
+        self.screen.log(f"  {gitops.commit_count(self.worktree, base)} commits on {self.branch}"
               f" in {(time.monotonic() - started) / 3600:.1f}h")
-        print(f"  worktree: {self.worktree}")
-        print(f"  notes:    {self.rundir.notes_path}")
-        print()
-        print(f"  review:   git -C {self.repo} log --oneline {base[:8]}..{self.branch}")
-        print(f"  merge:    git -C {self.repo} merge {self.branch}")
+        self.screen.log(f"  worktree: {self.worktree}")
+        self.screen.log(f"  notes:    {self.rundir.notes_path}")
+        self.screen.log()
+        self.screen.log(f"  review:   git -C {self.repo} log --oneline {base[:8]}..{self.branch}")
+        self.screen.log(f"  merge:    git -C {self.repo} merge {self.branch}")
 
 
 class PreflightError(RuntimeError):

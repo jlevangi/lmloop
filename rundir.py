@@ -36,6 +36,7 @@ class RunDir:
         self.notes_path = self.path / "notes.md"
         self.handoff_path = self.path / "handoff.md"
         self.stop_path = self.path / "STOP"
+        self.pause_path = self.path / "PAUSE"
 
     # -- creation ---------------------------------------------------------
 
@@ -130,6 +131,9 @@ class RunDir:
 
     def stop_requested(self) -> bool:
         return self.stop_path.exists()
+
+    def paused(self) -> bool:
+        return self.pause_path.exists()
 
 
 def make_run_id(prompt: str) -> str:

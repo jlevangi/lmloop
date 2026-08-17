@@ -80,6 +80,7 @@ class _Stream:
         self.input_tokens = 0
         self.output_tokens = 0
         self.stderr = ""
+        self.last_tool = ""
 
     def note_output(self) -> None:
         """Any byte from pi. Keeps the stall clock fresh once it is running."""
@@ -98,6 +99,7 @@ def _handle(event: dict, state: _Stream) -> None:
     if kind == "tool_execution_start":
         state.tool_calls += 1
         name = event.get("toolName", "")
+        state.last_tool = name
         if name in WRITE_TOOLS:
             state.writes += 1
             path = (event.get("args") or {}).get("path")
@@ -183,6 +185,7 @@ def run(
     stall_seconds: int,
     env: dict | None = None,
     should_stop=lambda: False,
+    on_progress=None,
 ) -> IterationResult:
     argv = [
         "pi",
@@ -230,6 +233,19 @@ def run(
         with state.lock:
             first_event = state.first_event_at
             last_event = state.last_event_at
+            snapshot = {
+                "elapsed": now - started,
+                "tool_calls": state.tool_calls,
+                "writes": state.writes,
+                "last_tool": state.last_tool,
+                "output_tokens": state.output_tokens,
+                # Before the first event this is time spent waiting on
+                # llama-swap to load, not the agent going quiet.
+                "quiet": (now - last_event) if first_event else 0.0,
+                "loading": not first_event,
+            }
+        if on_progress:
+            on_progress(snapshot)
 
         if now - started > timeout_seconds:
             killed = "timeout"

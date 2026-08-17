@@ -126,3 +126,51 @@ git merge lmloop/<run-id>
   a trivial prompt with only `read` enabled still costs ~7.5K input tokens of
   system prompt and extension overhead, which is 13% of a 57K declared window
   before any work happens.
+
+## Running it as an attachable screen
+
+A run is a foreground process with a live status line, not a background job:
+
+```
+  iteration 2: local-fast already loaded
+  iter 2/3  41m18s  17 tools  12043 out  read
+```
+
+The bottom line keeps moving so an attached terminal never looks dead. It shows
+the model loading, the tool in flight, or how long the agent has been quiet.
+
+Controls are files first, keystrokes second — a file works from ssh, a phone, or
+another script, and survives the terminal going away:
+
+| key | file | effect |
+|---|---|---|
+| `p` | `touch <run-dir>/PAUSE` | hold after the current iteration |
+| `r` | `rm <run-dir>/PAUSE` | carry on |
+| `q` | `touch <run-dir>/STOP` | finish the current iteration, commit, exit |
+
+Pausing mid-iteration is deliberately not offered: the model is mid-generation
+and there is nothing honest to freeze. The pause lands at the iteration
+boundary, where the tree is committed and the handoff is written.
+
+### From Paseo
+
+Paseo workspace terminals host this directly, with no workspace registration:
+
+```bash
+paseo terminal create --cwd ~/git/one-project --name lmloop --json
+paseo terminal send-keys <id> "lmloop run 'the objective' --max-iterations 3" Enter
+paseo terminal capture   <id> --json      # what it is doing now
+paseo terminal send-keys <id> p           # pause
+paseo terminal send-keys <id> r           # resume
+paseo terminal send-keys <id> q           # halt after this iteration
+```
+
+`capture` without `--json` renders only the visible region, which for a mostly
+idle screen looks blank; `--json` returns the lines.
+
+### From pi
+
+`~/.pi/agent/prompts/lmloop.md` gives pi a `/lmloop <objective>` slash command.
+It sharpens the objective and starts the run with `--detach`, returning the run
+id immediately rather than blocking the session for hours. Use this to kick a
+run off from a pi session; use a terminal when you want the screen.

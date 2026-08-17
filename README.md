@@ -137,7 +137,32 @@ A run is a foreground process with a live status line, not a background job:
 ```
 
 The bottom line keeps moving so an attached terminal never looks dead. It shows
-the model loading, the tool in flight, or how long the agent has been quiet.
+the tool in flight, or how long the agent has been quiet. A model load is
+reported once when it finishes (`model ready in 3m55s`) rather than repeated.
+
+**The status line is always trimmed to one terminal line, and that is a
+correctness requirement rather than tidiness.** A line wider than the terminal
+wraps; `\r` then returns only to the start of the last visual line, so the clear
+leaves the remnant behind and every refresh scrolls a new line. An overlong
+status line does not look slightly wrong -- it turns the display into a spam
+log. Segments are dropped by priority as the terminal narrows, so a phone
+terminal degrades to what matters:
+
+```
+ 60 |  2/3  41m18s  read  17 tools  12043 out|
+ 44 |  2/3  41m18s  read  17 tools  [STOP]|
+ 32 |  2/3  41m18s  read  [STOP]|
+ 24 |  2/3  read  [STOP]|
+```
+
+`<run-dir>/status.json` carries the same state as a small, atomically-replaced
+document, so a phone script, a status bar, or a web wrapper can read what a run
+is doing without parsing a megabyte event log:
+
+```bash
+lmloop status            # the most recent run
+lmloop status --json     # the raw document
+```
 
 Controls are files first, keystrokes second — a file works from ssh, a phone, or
 another script, and survives the terminal going away:

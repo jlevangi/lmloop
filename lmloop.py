@@ -142,6 +142,49 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    """What a run is doing right now, from its status.json.
+
+    Deliberately reads the one small file rather than the event log: this has to
+    stay cheap enough to poll from a phone over ssh, and useful to anything that
+    speaks JSON but not lmloop.
+    """
+    import json
+
+    repo = gitops.repo_root(Path.cwd())
+    runs = _discover_runs(repo, config_module.load(repo))
+    if not runs:
+        print("no runs for this repo")
+        return 1
+    run_id = args.run_id or runs[-1][0]
+    match = [path for name, path in runs if name == run_id]
+    if not match:
+        raise SystemExit(f"lmloop: no run {run_id} under this repo")
+    run_dir = match[0]
+
+    try:
+        state = json.loads((run_dir / "status.json").read_text())
+    except (OSError, ValueError):
+        print(f"{run_id}: no live status (run has not started, or predates status.json)")
+        return 1
+
+    if args.json:
+        print(json.dumps(state, indent=2))
+        return 0
+
+    stale = ""
+    worktree = run_dir.parents[2]
+    commits = gitops.commit_count(worktree, (run_dir / "base-commit").read_text().strip())
+    flags = " ".join(f for f, on in (("PAUSED", state.get("paused")), ("STOPPING", state.get("stopping"))) if on)
+    print(f"{run_id}")
+    print(f"  iteration {state.get('iteration')}/{state.get('max_iterations')}  {state.get('phase')}{stale}")
+    print(f"  {state.get('last_tool') or 'thinking'} — {state.get('elapsed_seconds', 0) // 60}m into this iteration")
+    print(f"  {state.get('tool_calls')} tools, {state.get('writes')} writes, {state.get('output_tokens')} output tokens")
+    print(f"  {commits} commits so far  {flags}".rstrip())
+    print(f"  updated {state.get('updated_at')}")
+    return 0
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     repo = gitops.repo_root(Path.cwd())
     config = config_module.load(repo)
@@ -244,6 +287,11 @@ def main() -> int:
 
     runs = sub.add_parser("list", help="runs for this repo, with iteration and commit counts")
     runs.set_defaults(func=cmd_list)
+
+    status = sub.add_parser("status", help="what a run is doing right now")
+    status.add_argument("run_id", nargs="?", help="which run; defaults to the most recent")
+    status.add_argument("--json", action="store_true", help="emit the raw status document")
+    status.set_defaults(func=cmd_status)
 
     listing = sub.add_parser("models", help="what is loaded, measured, and selectable")
     listing.add_argument("--detect", action="store_true", help="measure the loaded model's real context")

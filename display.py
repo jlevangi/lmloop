@@ -21,11 +21,47 @@ boundary, where the tree is committed and the handoff is written.
 
 from __future__ import annotations
 
+import shutil
 import sys
 import threading
 import time
 
 CLEAR_LINE = "\r\033[2K"
+
+
+def width() -> int:
+    """Terminal width, re-read every time because terminals get resized.
+
+    Falls back to 80 when there is no terminal, which is the case that never
+    reaches the status line anyway.
+    """
+    try:
+        return shutil.get_terminal_size().columns
+    except OSError:
+        return 80
+
+
+def compose(segments: list[tuple[int, str]], columns: int) -> str:
+    """Join what fits, dropping the least important segments first.
+
+    This is load-bearing, not decoration. A status line wider than the terminal
+    wraps, and once it wraps `\\r` only returns to the start of the last visual
+    line -- so the clear leaves the wrapped remnant behind and every refresh
+    scrolls a new line. An overlong line does not look slightly wrong, it turns
+    the whole display into a spam log. Phone terminals hit this at every width.
+    """
+    segments = [(priority, text) for priority, text in segments if text]
+    if not segments:
+        return ""
+    keep = [True] * len(segments)
+    while True:
+        text = "  ".join(text for (_, text), alive in zip(segments, keep) if alive)
+        if len(text) <= columns:
+            return text
+        alive = [i for i, on in enumerate(keep) if on]
+        if len(alive) <= 1:
+            return text[:columns]
+        keep[min(alive, key=lambda i: segments[i][0])] = False
 
 
 class Screen:
@@ -49,12 +85,18 @@ class Screen:
             self.stream.write(text + "\n")
         self.stream.flush()
 
-    def status(self, text: str) -> None:
-        """The line that keeps moving. Overwritten, never scrolled."""
+    def status(self, segments: list[tuple[int, str]] | str) -> None:
+        """The line that keeps moving. Overwritten, never scrolled.
+
+        Always trimmed to one terminal line: see `compose` for why that is a
+        correctness requirement rather than tidiness.
+        """
         if not self.tty:
             return
-        self._status = text
-        self.stream.write(CLEAR_LINE + text)
+        columns = max(width() - 1, 20)
+        text = segments if isinstance(segments, str) else compose(segments, columns)
+        self._status = text[:columns]
+        self.stream.write(CLEAR_LINE + self._status)
         self.stream.flush()
 
     def close(self) -> None:
@@ -133,6 +175,9 @@ def wait_while_paused(rundir, screen: Screen, interrupted) -> None:
     since = time.monotonic()
     screen.log("  paused")
     while rundir.paused() and not interrupted():
-        screen.status(f"  paused {elapsed(time.monotonic() - since)} — [r] or rm PAUSE to resume")
+        screen.status([
+            (3, f"  paused {elapsed(time.monotonic() - since)}"),
+            (1, "[r] or rm PAUSE to resume"),
+        ])
         time.sleep(2)
     screen.log(f"  resumed after {elapsed(time.monotonic() - since)}")

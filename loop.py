@@ -64,7 +64,10 @@ class Run:
         if self.worktree.exists():
             raise SystemExit(f"lmloop: {self.worktree} already exists")
 
-        gitops.exclude(self.repo, [".worktrees/", ".lmloop/"])
+        # `.lmloop.toml` is excluded too: it is the operator's config, it lives
+        # at the repo root, and `git add -A` inside a worktree would otherwise
+        # sweep it into the run's first commit.
+        gitops.exclude(self.repo, [".worktrees/", ".lmloop/", ".lmloop.toml"])
         gitops.add_worktree(self.repo, self.worktree, self.branch)
         base = gitops.head_commit(self.worktree)
         self.rundir.create(self.objective, base)
@@ -206,6 +209,7 @@ class Run:
         )
         self.screen.log(f"  iteration {number}: {detail}")
 
+        self._loading = True
         handoff_before = self.rundir.handoff_mtime()
         result = pi_runner.run(
             model=self.model,
@@ -235,21 +239,50 @@ class Run:
 
     def _show(self, number: int, snap: dict) -> None:
         """One line that keeps moving, so an attached terminal never looks dead."""
+        # A model load is a one-off event with a duration, not a state worth
+        # repeating every five seconds.  Report it once, when it ends.
+        if not snap["loading"] and self._loading:
+            self._loading = False
+            self.screen.log(f"    model ready in {display.elapsed(snap['elapsed'])}")
+
         if snap["loading"]:
-            detail = "waiting on the model to load"
+            detail = "loading model"
         elif snap["quiet"] > 60:
             detail = f"quiet {display.elapsed(snap['quiet'])}"
         else:
-            detail = f"{snap['last_tool'] or 'thinking'}"
-        flag = " [PAUSE queued]" if self.rundir.paused() else ""
-        flag += " [STOP queued]" if self.rundir.stop_requested() else ""
-        self.screen.status(
-            f"  iter {number}/{self.max_iterations}"
-            f"  {display.elapsed(snap['elapsed'])}"
-            f"  {snap['tool_calls']} tools"
-            f"  {snap['output_tokens']} out"
-            f"  {detail}{flag}"
+            detail = snap["last_tool"] or "thinking"
+
+        flags = "".join(
+            flag
+            for flag, on in (("PAUSE", self.rundir.paused()), ("STOP", self.rundir.stop_requested()))
+            if on
         )
+        # List order is layout; the number is what survives a narrow terminal.
+        # On a phone the useful answer is "which iteration, doing what, and is it
+        # stopping" -- counters and even elapsed time go before those do.
+        self.screen.status([
+            (6, f"  {number}/{self.max_iterations}"),
+            (4, display.elapsed(snap["elapsed"])),
+            (5, detail),
+            (2, f"{snap['tool_calls']} tools"),
+            (1, f"{snap['output_tokens']} out"),
+            (7, f"[{flags}]" if flags else ""),
+        ])
+        self.rundir.write_status({
+            "run_id": self.run_id,
+            "iteration": number,
+            "max_iterations": self.max_iterations,
+            "model": self.model,
+            "phase": "loading" if snap["loading"] else "working",
+            "elapsed_seconds": round(snap["elapsed"]),
+            "last_tool": snap["last_tool"],
+            "tool_calls": snap["tool_calls"],
+            "writes": snap["writes"],
+            "output_tokens": snap["output_tokens"],
+            "quiet_seconds": round(snap["quiet"]),
+            "paused": self.rundir.paused(),
+            "stopping": self.rundir.stop_requested(),
+        })
 
     # -- commit -----------------------------------------------------------
 
@@ -419,15 +452,26 @@ class Run:
 
     def _summarise(self, reason: str | None, started: float) -> None:
         base = self.rundir.base_commit
+        # Paths are shown relative to the repo, and the commands assume you are
+        # standing in it.  Absolute paths here ran to 217 characters, which wraps
+        # into noise on a phone -- and the worktree is inside the repo anyway.
+        def relative(path: Path) -> str:
+            try:
+                return str(path.relative_to(self.repo))
+            except ValueError:
+                return str(path)
+
         self.screen.log()
-        self.screen.log(f"  run {self.run_id} stopped: {reason or 'complete'}")
+        self.screen.log(f"  run stopped: {reason or 'complete'}")
         self.screen.log(f"  {gitops.commit_count(self.worktree, base)} commits on {self.branch}"
-              f" in {(time.monotonic() - started) / 3600:.1f}h")
-        self.screen.log(f"  worktree: {self.worktree}")
-        self.screen.log(f"  notes:    {self.rundir.notes_path}")
+                        f" in {(time.monotonic() - started) / 3600:.1f}h")
         self.screen.log()
-        self.screen.log(f"  review:   git -C {self.repo} log --oneline {base[:8]}..{self.branch}")
-        self.screen.log(f"  merge:    git -C {self.repo} merge {self.branch}")
+        self.screen.log(f"  worktree  {relative(self.worktree)}")
+        self.screen.log(f"  notes     {relative(self.rundir.notes_path)}")
+        self.screen.log()
+        self.screen.log(f"  from {self.repo}:")
+        self.screen.log(f"    git log --oneline {base[:8]}..{self.branch}")
+        self.screen.log(f"    git merge {self.branch}")
 
 
 class PreflightError(RuntimeError):

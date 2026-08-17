@@ -127,6 +127,25 @@ class RunDir:
     def gate_log(self, number: int) -> Path:
         return self.path / f"gate-{number}.log"
 
+    # -- live status ------------------------------------------------------
+
+    def write_status(self, state: dict) -> None:
+        """Overwrite `status.json` with what the run is doing right now.
+
+        The event log is an append-only history and answering "what is happening
+        now" from it means parsing to the end of a file that reaches megabytes.
+        This is one small file holding only the present, so a phone script, a
+        status bar, or a web wrapper can read it without understanding lmloop.
+        Written atomically because something is always reading it.
+        """
+        state = dict(state, updated_at=datetime.now(timezone.utc).isoformat())
+        temporary = self.path / "status.json.tmp"
+        try:
+            temporary.write_text(json.dumps(state, indent=2) + "\n")
+            temporary.replace(self.path / "status.json")
+        except OSError:
+            pass  # a status file is never worth failing a run over
+
     # -- control ----------------------------------------------------------
 
     def stop_requested(self) -> bool:

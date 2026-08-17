@@ -25,6 +25,48 @@ import config as config_module
 import gitops
 import models as models_module
 from loop import Run
+from rundir import make_run_id
+
+
+STATE_DIR = Path.home() / ".local" / "state" / "lmloop"
+
+
+def _detach(objective: str, args: argparse.Namespace) -> int:
+    """Start the run in its own session and return immediately.
+
+    This exists so something else can kick off a run and get its identity back
+    at once -- a pi slash command, a Paseo script, an ssh one-liner from a
+    phone.  The run id is a pure function of the objective and the date, so the
+    parent can print it before the child has created anything.
+
+    The log lands outside the worktree on purpose: it has to survive whatever
+    happens to the run, including the run never getting far enough to make a
+    run directory.
+    """
+    run_id = make_run_id(objective)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = STATE_DIR / f"{run_id}.log"
+
+    argv = [sys.executable, str(Path(__file__).resolve()), "run", objective]
+    for flag, value in (("--model", args.model), ("--tools", args.tools), ("--gate", args.gate)):
+        if value is not None:
+            argv += [flag, value]
+    if args.max_iterations:
+        argv += ["--max-iterations", str(args.max_iterations)]
+
+    with log_path.open("wb") as log:
+        subprocess.Popen(
+            argv,
+            cwd=str(Path.cwd()),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    print(f"started {run_id}")
+    print(f"  log:      tail -f {log_path}")
+    print(f"  progress: lmloop list")
+    return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -44,6 +86,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     objective = objective.strip()
     if not objective:
         raise SystemExit("lmloop: empty objective")
+
+    if args.detach:
+        return _detach(objective, args)
 
     run = Run(repo, config, objective, max_iterations=args.max_iterations)
     print(f"lmloop {run.run_id}")
@@ -187,6 +232,7 @@ def main() -> int:
     run.add_argument("--tools", help="override the pi tool allowlist")
     run.add_argument("--gate", help="override the commit gate command")
     run.add_argument("--max-iterations", type=int, help="override the iteration cap")
+    run.add_argument("--detach", action="store_true", help="start in the background and print the run id")
     run.add_argument("--dry-run", action="store_true", help="print the plan, create nothing")
     run.set_defaults(func=cmd_run)
 

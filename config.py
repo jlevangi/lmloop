@@ -26,6 +26,17 @@ DEFAULTS: dict = {
         # it into `bash` heredocs, which is worse in every way: no diff, no
         # partial-failure reporting, and nothing the event stream can count.
         "tools": "read,write,edit,replace,bash,grep,find,ls",
+        # Passed to `pi --thinking` when set; empty means pi's default.
+        #
+        # A reasoning model can deliberate its entire output budget away
+        # before it emits a single tool call.  local-fast produced 45k
+        # characters weighing up test cases -- "Actually, let me
+        # reconsider", twice -- hit the 8192-token cap mid-sentence, and
+        # ended the message with the write it was building never sent.
+        # local-wide did the same thing at the same cap.  On a local
+        # model the deliberation is not free thinking, it is the budget
+        # the work needed.
+        "thinking": "",
     },
     "models": {
         # llama-swap directly, not through a router.  A router reports model
@@ -40,19 +51,61 @@ DEFAULTS: dict = {
         # of any run that produced no commits, taking the only record of why it
         # produced none with it.
         "keep": "always",
+        # Untracked paths to link from the repo into the worktree.
+        #
+        # `git worktree add` materialises tracked files and nothing else, so a
+        # fresh worktree has the source but not the environment that runs it.
+        # Watched live on one-project: the agent spent an hour and 24 tool calls
+        # hunting for a python3 that could import Flask, because flask lives in
+        # `~/git/one-project/.venv`, `.venv` is untracked, and the worktree
+        # therefore had no virtualenv at all.  It never wrote a line -- it was
+        # stuck trying to verify work it could not run.  The same iteration's
+        # gate had already failed `rc=127` for the same reason.
+        #
+        # Symlinked rather than copied: a virtualenv bakes absolute paths into
+        # its shebangs and pyvenv.cfg, so a copy either points back at the
+        # original anyway or breaks, and node_modules is too big to duplicate
+        # per run.  The trade is that a run shares one environment with the repo
+        # and with other runs -- an agent that installs a package changes it for
+        # everyone.  That is the right default for a loop whose whole job is to
+        # run the project's own code, but it is why this is a list you can empty.
+        #
+        # Paths that do not exist are skipped, and every name here is added to
+        # the git exclude list so `git add -A` cannot sweep the link into a
+        # commit.
+        "link": [".venv", "venv", "node_modules"],
     },
     "iteration": {
         # local-fast's best measured iteration was 87 minutes; local-wide did
         # not finish one in 100.  Any timeout here is a backstop, not a budget.
+        #
+        # Treat that local-wide figure as unproven rather than settled.  It rests on
+        # "9-10K output tokens, did not finish", and one-project has since shown
+        # local-fast producing 10184 output tokens in 69 minutes while thrashing on
+        # context overflow -- the same signature.  Nobody was counting
+        # compactions when local-wide was measured, so a slow model and a model out of
+        # room look identical in that number.  ``max_compactions`` below is what
+        # tells them apart.
         "timeout_seconds": 14400,
         "stall_seconds": 1200,
+        # Give up on an iteration that has overflowed its context this many times
+        # without writing anything.  Observed on one-project: six overflows in 69
+        # minutes, 81 tool calls, all reads.  Each overflow discards everything
+        # the agent had read, so the third one is not a slow start, it is a loop.
+        # 0 disables the check.
+        "max_compactions": 3,
     },
     "gate": {
         "command": "",
         "blocks_commit": False,
     },
     "stop": {
-        "max_iterations": 3,
+        # The point of the project is a big objective worked down over many
+        # short iterations, so the iteration cap is not the safety rail -- it
+        # was 3, which cannot decompose anything.  `no_diff_iterations` and
+        # `max_wall_hours` are the guards that actually stop a run going
+        # nowhere, and both watch evidence rather than counting.
+        "max_iterations": 20,
         "max_wall_hours": 10,
         "no_diff_iterations": 3,
     },
@@ -95,6 +148,10 @@ def sample() -> str:
 [agent]
 model = "llama-swap/local-fast"
 tools = "read,write,edit,bash,grep,find,ls"
+# off | minimal | low | medium | high | xhigh | max.  Empty uses pi's
+# default.  Lower it when a model deliberates its whole output budget away
+# before calling a tool -- both local models here have done exactly that.
+thinking = ""
 
 [models]
 llama_swap_url = "http://127.0.0.1:8080"
@@ -103,17 +160,23 @@ llama_swap_url = "http://127.0.0.1:8080"
 root   = "{repo}/.worktrees/{run_id}"
 branch = "lmloop/{run_id}"
 keep   = "always"
+# Untracked paths symlinked from the repo into the worktree, so the agent has
+# the environment and not just the source.  Missing ones are skipped.  Add
+# ".env" here if the project needs it to run -- it is not a default, because it
+# would hand the model your secrets without you having asked.
+link   = [".venv", "venv", "node_modules"]
 
 [iteration]
 timeout_seconds = 14400   # 4h backstop
 stall_seconds   = 1200    # 20m of silence from the agent
+max_compactions = 3       # give up after N context overflows with no writes
 
 [gate]
 command       = ""        # e.g. "python -m compileall -q backend"
 blocks_commit = false     # record the result; commit either way
 
 [stop]
-max_iterations     = 3
+max_iterations     = 20      # the cap, not the plan; git is what stops a bad run
 max_wall_hours     = 10
 no_diff_iterations = 3
 """

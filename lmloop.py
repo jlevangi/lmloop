@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config as config_module
+import display
 import gitops
 import models as models_module
 from loop import Run
@@ -29,6 +30,36 @@ from rundir import make_run_id
 
 
 STATE_DIR = Path.home() / ".local" / "state" / "lmloop"
+
+# status.json is rewritten every pi_runner.POLL_SECONDS (2s) for as long as an
+# iteration is running.  Two minutes of silence is far outside that and well
+# inside the gap between iterations, where the loop is committing rather than
+# polling.
+STALE_AFTER_SECONDS = 120
+
+
+def _status_age(state: dict) -> float | None:
+    """Seconds since the run last wrote its status, or None if unreadable."""
+    from datetime import datetime, timezone
+
+    stamp = state.get("updated_at")
+    if not isinstance(stamp, str):
+        return None
+    try:
+        written = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if written.tzinfo is None:
+        written = written.replace(tzinfo=timezone.utc)
+    return max((datetime.now(timezone.utc) - written).total_seconds(), 0.0)
+
+
+def _relative(path: Path, root: Path) -> str:
+    """A path as short as it can be without becoming ambiguous."""
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
 
 
 def _detach(objective: str, args: argparse.Namespace) -> int:
@@ -48,7 +79,8 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
     log_path = STATE_DIR / f"{run_id}.log"
 
     argv = [sys.executable, str(Path(__file__).resolve()), "run", objective]
-    for flag, value in (("--model", args.model), ("--tools", args.tools), ("--gate", args.gate)):
+    for flag, value in (("--model", args.model), ("--tools", args.tools),
+                        ("--gate", args.gate), ("--thinking", args.thinking)):
         if value is not None:
             argv += [flag, value]
     if args.max_iterations:
@@ -77,6 +109,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         config["agent"]["model"] = args.model
     if args.tools:
         config["agent"]["tools"] = args.tools
+    if args.thinking:
+        config["agent"]["thinking"] = args.thinking
     if args.gate is not None:
         config["gate"]["command"] = args.gate
 
@@ -91,24 +125,33 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _detach(objective, args)
 
     run = Run(repo, config, objective, max_iterations=args.max_iterations)
-    print(f"lmloop {run.run_id}")
-    print(f"  repo:     {repo}")
-    print(f"  model:    {run.model}")
-    print(f"  worktree: {run.worktree}")
-    print(f"  branch:   {run.branch}")
-    print(f"  stop:     {run.max_iterations} iterations,"
-          f" {config['stop']['max_wall_hours']}h wall clock,"
-          f" {config['stop']['no_diff_iterations']} no-diff iterations")
+    # Labels are short and paths are repo-relative because this header is read on
+    # a phone as often as on a desktop, and the worktree path alone ran to 96
+    # characters -- three wrapped lines before the run has even started.
+    display.out(f"lmloop {run.run_id}")
+    display.out(f"  model   {run.model}")
+    # The repo's basename, not its path: this is the longest and least useful
+    # item on a phone, and the absolute path is already in the run:start event
+    # and in the summary printed when the run ends.
+    display.out(f"  repo    {repo.name}")
+    display.out(f"  tree    {_relative(run.worktree, repo)}")
+    display.out(f"  branch  {run.branch}")
+    display.out(f"  stop    {run.max_iterations} iterations,"
+                f" {config['stop']['max_wall_hours']}h,"
+                f" {config['stop']['no_diff_iterations']} no-diff")
     if config["gate"]["command"]:
-        blocking = "blocks commits" if config["gate"]["blocks_commit"] else "recorded only"
-        print(f"  gate:     {config['gate']['command']} ({blocking})")
-    print()
+        blocking = "blocks commits" if config["gate"]["blocks_commit"] else "recorded"
+        display.out(f"  gate    {config['gate']['command']} ({blocking})")
+    display.out()
 
     if args.dry_run:
-        print("  --dry-run: nothing created")
+        display.out("  --dry-run: nothing created")
         return 0
 
     run.prepare()
+    if run.linked:
+        display.out(f"  linked  {', '.join(run.linked)}")
+        display.out()
     return run.start()
 
 
@@ -172,17 +215,40 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(json.dumps(state, indent=2))
         return 0
 
-    stale = ""
     worktree = run_dir.parents[2]
     commits = gitops.commit_count(worktree, (run_dir / "base-commit").read_text().strip())
     flags = " ".join(f for f, on in (("PAUSED", state.get("paused")), ("STOPPING", state.get("stopping"))) if on)
-    print(f"{run_id}")
-    print(f"  iteration {state.get('iteration')}/{state.get('max_iterations')}  {state.get('phase')}{stale}")
-    print(f"  {state.get('last_tool') or 'thinking'} — {state.get('elapsed_seconds', 0) // 60}m into this iteration")
-    print(f"  {state.get('tool_calls')} tools, {state.get('writes')} writes, {state.get('output_tokens')} output tokens")
-    print(f"  {commits} commits so far  {flags}".rstrip())
-    print(f"  updated {state.get('updated_at')}")
-    return 0
+
+    # Every line below fits 32 columns unwrapped except the run id, which is one
+    # unbreakable token.  This is the view someone polls from a phone, and it is
+    # worth more terse than pretty: ASCII only, no em dashes to gamble on the
+    # terminal's font, and the alarm on a line of its own so wrapping can never
+    # bury it.
+    age = _status_age(state)
+    stale = age is not None and age > STALE_AFTER_SECONDS
+
+    display.out(f"{run_id}")
+    display.out(f"  iter {state.get('iteration')}/{state.get('max_iterations')}  {state.get('phase')}")
+    if stale:
+        # A dead run and a working run are identical in this file otherwise:
+        # status.json is the last thing a crashed run wrote, and it says
+        # "working".  Nobody checking from a phone can fall back to `ps`.
+        display.out(f"  STALE: no update for {display.elapsed(age)}")
+    elif age is None:
+        display.out("  STALE?: cannot read the update time")
+    display.out(f"  {state.get('last_tool') or 'thinking'}, {state.get('elapsed_seconds', 0) // 60}m in")
+
+    if state.get("plan_total"):
+        display.out(f"  plan {state['plan_done']}/{state['plan_total']} steps done")
+    counts = f"  {state.get('tool_calls')} tools, {state.get('writes')} writes"
+    if state.get("compactions"):
+        counts += f", {state['compactions']} overflows"
+    display.out(counts)
+    display.out(f"  {state.get('output_tokens')} out, {commits} commits  {flags}".rstrip())
+    if not stale:
+        display.out(f"  updated {display.elapsed(age)} ago" if age is not None
+                    else f"  updated {state.get('updated_at')}")
+    return 1 if stale else 0
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -190,6 +256,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
     config = config_module.load(repo)
     if args.model:
         config["agent"]["model"] = args.model
+    if args.thinking:
+        config["agent"]["thinking"] = args.thinking
 
     runs = _discover_runs(repo, config)
     if not runs:
@@ -202,10 +270,13 @@ def cmd_resume(args: argparse.Namespace) -> int:
     # A leftover STOP would stop the resumed run before its first iteration.
     run.rundir.stop_path.unlink(missing_ok=True)
     done = run.attach(args.iterations)
-    print(f"lmloop {run_id} (resuming after {done} iterations)")
-    print(f"  model:    {run.model}")
-    print(f"  worktree: {run.worktree}")
-    print()
+    display.out(f"lmloop {run_id}")
+    display.out(f"  resuming after {done} iterations")
+    display.out(f"  model   {run.model}")
+    display.out(f"  tree    {_relative(run.worktree, repo)}")
+    if run.linked:
+        display.out(f"  linked  {', '.join(run.linked)}")
+    display.out()
     return run.start(from_iteration=done)
 
 
@@ -273,6 +344,7 @@ def main() -> int:
     run.add_argument("objective", help="what to work on; '-' reads stdin")
     run.add_argument("--model", help="override the configured model")
     run.add_argument("--tools", help="override the pi tool allowlist")
+    run.add_argument("--thinking", help="pi thinking level: off, minimal, low, medium, high, xhigh, max")
     run.add_argument("--gate", help="override the commit gate command")
     run.add_argument("--max-iterations", type=int, help="override the iteration cap")
     run.add_argument("--detach", action="store_true", help="start in the background and print the run id")
@@ -283,6 +355,7 @@ def main() -> int:
     resume.add_argument("run_id", nargs="?", help="which run; defaults to the most recent")
     resume.add_argument("--iterations", type=int, default=3, help="how many more iterations to run")
     resume.add_argument("--model", help="override the configured model")
+    resume.add_argument("--thinking", help="pi thinking level: off, minimal, low, medium, high, xhigh, max")
     resume.set_defaults(func=cmd_resume)
 
     runs = sub.add_parser("list", help="runs for this repo, with iteration and commit counts")

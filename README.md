@@ -23,14 +23,18 @@ So `lmloop` makes three commitments:
 
 **Nothing is ever discarded.** There is no `git reset --hard` in this codebase.
 Every iteration that leaves a diff produces a commit, labelled with what
-happened — `ok`, `timeout`, `stalled`, `interrupted`, `agent-error`. Failed work
+happened — `ok`, `timeout`, `stalled`, `thrashing`, `no-action`, `interrupted`,
+`agent-error`. Failed work
 becomes a labelled commit you can revert on your own schedule, not a hole in the
 history.
 
 **The handoff is a file, not a parsed message.** The agent writes `handoff.md`
 with its own write tool. There is no envelope to fail to parse. If it never
 writes one, the loop synthesises one from `git diff` and marks the iteration
-degraded — never discarded.
+degraded — never discarded. If the iteration overflowed its context, the loop
+harvests the summary the agent wrote for itself on the way out and carries that
+forward instead: an agent that ran out of room did write a handoff, just into
+pi's event stream rather than to disk.
 
 **Git is the only witness.** Not iteration counts, not the agent's summary, not
 tool-call counts. An agent once reported twelve successful iterations across 479
@@ -105,6 +109,23 @@ git merge lmloop/<run-id>
   protection is `stall_seconds`, which fires when the agent stops emitting
   anything. The stall clock does not start until the first event arrives,
   because llama-swap may legitimately spend minutes swapping models first.
+- `[iteration] max_compactions` — give up on an iteration that has overflowed
+  its context this many times without writing anything. An agent whose window is
+  smaller than the codebase can spend the whole iteration reading a dozen files,
+  overflowing, and reading them again: observed on one-project at six overflows
+  in 69 minutes across 81 tool calls, none of them a write. Cutting it off is
+  free, because whatever the iteration left behind is committed either way.
+- `[worktree] link` — untracked paths symlinked from the repo into each new
+  worktree, so the agent gets the environment and not just the source.
+  `git worktree add` materialises tracked files only, which leaves a Python
+  project without its virtualenv and a Node project without `node_modules`.
+  Watched live: an agent spent an hour and 24 tool calls enumerating every
+  `python3` on the box looking for one that could import Flask, while the
+  project's own `.venv` sat unreachable in the repo above it. The linked names
+  are added to the git exclude list, and the prompt names the interpreter — an
+  agent that does not know the environment is there goes looking for it.
+  `.env` is deliberately not a default: add it per project if the code needs
+  it, rather than having the loop hand a model your secrets uninvited.
 - `[gate] command` — run after every iteration. `blocks_commit = false` records
   the result in the commit message and the next iteration's prompt but commits
   regardless, which is usually what you want.

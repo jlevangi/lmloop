@@ -98,6 +98,39 @@ def diff_stat(cwd: Path, base: str) -> str:
     return git(["diff", "--stat", base], cwd, check=False)
 
 
+def tracked_files(cwd: Path, limit: int = 160) -> str:
+    """An inventory of the repo, for an agent that has never seen it.
+
+    This is the cheapest orientation there is and the one the prompt was missing.
+    `git log` and `git diff` are both empty on the first iteration of a fresh
+    run, so the agent arrives knowing the objective and nothing about the shape
+    of the code, and buys the shape with tool calls: 18 `ls`/`read` pairs on
+    one-project before its context overflowed the first time.  one-project has
+    109 tracked files.  The whole answer fits in the prompt.
+
+    Beyond `limit` paths the listing collapses to directories with counts.  A
+    partial listing would be worse than a summary -- it reads as complete, and an
+    agent that trusts it looks for a file that was simply cut off.
+    """
+    paths = [line for line in git(["ls-files"], cwd, check=False).splitlines() if line]
+    if not paths:
+        return ""
+    if len(paths) <= limit:
+        return "\n".join(paths)
+
+    counts: dict[str, int] = {}
+    for path in paths:
+        parent = str(Path(path).parent)
+        counts[parent] = counts.get(parent, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    lines = [f"{len(paths)} tracked files, too many to list.  Directories, by size:"]
+    lines += [
+        f"{'(repo root)' if parent == '.' else parent + '/'}  {count} files"
+        for parent, count in sorted(ranked, key=lambda item: item[0])
+    ]
+    return "\n".join(lines)
+
+
 def commit_shortstat(cwd: Path, sha: str) -> str:
     return git(["show", "--shortstat", "--format=", sha], cwd, check=False).strip()
 

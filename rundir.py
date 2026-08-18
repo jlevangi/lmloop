@@ -5,6 +5,7 @@ Layout, at ``<worktree>/.lmloop/runs/<run-id>/``::
     prompt.md                the objective, verbatim
     base-commit              the sha progress is measured against
     notes.md                 per-iteration log
+    plan.md                  the objective decomposed; the agent maintains it
     handoff.md               rewritten each iteration by the agent
     lmloop.log               JSONL event stream
     iteration-<n>.jsonl      raw pi event stream
@@ -26,6 +27,23 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# A carried context summary buys its place in the next prompt by replacing file
+# reads, so it can afford to be long -- but not unbounded.  12000 characters is
+# roughly 3k tokens, 5% of a 57344-token window, against the ~40 reads that
+# produced it.
+_SUMMARY_LIMIT = 12000
+
+
+def _cap(text: str, limit: int = _SUMMARY_LIMIT) -> str:
+    """Bound anything carried into the next prompt.
+
+    Preserving a handoff across a barren iteration re-adds a short preamble each
+    time, so without a cap a run of empty iterations would grow the prompt
+    without ever adding information to it.
+    """
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit].rstrip() + "\n\n[truncated]"
+
 
 class RunDir:
     def __init__(self, worktree: Path, run_id: str):
@@ -35,6 +53,7 @@ class RunDir:
         self.log_path = self.path / "lmloop.log"
         self.notes_path = self.path / "notes.md"
         self.handoff_path = self.path / "handoff.md"
+        self.plan_path = self.path / "plan.md"
         self.stop_path = self.path / "STOP"
         self.pause_path = self.path / "PAUSE"
 
@@ -84,6 +103,37 @@ class RunDir:
         with self.notes_path.open("a") as handle:
             handle.write("".join(parts))
 
+    # -- plan -------------------------------------------------------------
+
+    def read_plan(self) -> str:
+        try:
+            return self.plan_path.read_text().strip()
+        except OSError:
+            return ""
+
+    def plan_mtime(self) -> float:
+        try:
+            return self.plan_path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def plan_progress(self) -> tuple[int, int]:
+        """(done, total) checkbox items in the plan.
+
+        Counted rather than trusted from prose: the agent reports progress in
+        its handoff, and a self-report is not evidence.  This is only for the
+        log and the status line -- git remains what decides whether the run is
+        getting anywhere.
+        """
+        done = total = 0
+        for line in self.read_plan().splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("- [", "* [")):
+                total += 1
+                if stripped[3:4].lower() == "x":
+                    done += 1
+        return done, total
+
     # -- handoff ----------------------------------------------------------
 
     def read_handoff(self) -> str:
@@ -98,23 +148,106 @@ class RunDir:
         except OSError:
             return 0.0
 
-    def write_synthetic_handoff(self, number: int, diff_stat: str) -> None:
+    def last_compaction_summary(self, number: int) -> str:
+        """The summary the agent wrote for itself the last time pi compacted.
+
+        An iteration that overflows its context has already written a handoff --
+        it just wrote it to pi's event stream instead of to disk.  pi compacts by
+        asking the model to summarise its own state, and that summary is exactly
+        what the next iteration needs: goal, constraints, what it read, what it
+        decided, what to do next.  One harvested from one-project ran to 15 KB
+        and included a self-correction about whether ``create_app()`` calls
+        ``db.create_all()`` -- a fact that cost the agent forty file reads.
+
+        Synthesising from ``git diff`` instead throws all of that away, and for a
+        zero-diff iteration it says "(no changes)", which is nothing at all.
+
+        The ``<read-files>`` trailer pi appends is dropped: in a fresh session it
+        is a list of paths with no contents, and its only effect on the next
+        iteration would be to invite the re-reading that caused the overflow.
+        """
+        path = self.iteration_jsonl(number)
+        line = ""
+        try:
+            with path.open("rb") as handle:
+                for raw in handle:
+                    if b'"compaction_end"' in raw:
+                        line = raw.decode(errors="replace")
+        except OSError:
+            return ""
+        try:
+            summary = ((json.loads(line).get("result") or {}).get("summary") or "").strip()
+        except ValueError:
+            return ""
+
+        summary = summary.split("<read-files>")[0].strip()
+        if len(summary) > _SUMMARY_LIMIT:
+            summary = summary[:_SUMMARY_LIMIT].rstrip() + "\n\n[summary truncated]"
+        return summary
+
+    def write_synthetic_handoff(self, number: int, diff_stat: str, carried: str = "") -> None:
         """Stand in for a handoff the agent never wrote.
 
         A missing handoff is a degraded iteration, never a discarded one: the
         work is already committed by the time this runs, and the next iteration
         still needs somewhere to start from.
+
+        The one thing this must never do is *subtract*.  An iteration that
+        achieves nothing -- no diff, no handoff, not even a context summary --
+        used to overwrite the previous handoff with "(no changes)", which is how
+        a 10 KB carried summary became nine lines of boilerplate and the next
+        iteration went back to reading files from scratch.  Observed live on
+        one-project between iterations 2 and 4.  When there is nothing new to
+        say, the previous handoff is still the truth and is kept.
         """
-        self.handoff_path.write_text(
-            f"iteration {number} ended without writing a handoff\n"
-            "\n"
-            "The harness synthesised this from git.  What changed:\n"
-            "\n"
-            f"{diff_stat or '(no changes)'}\n"
-            "\n"
-            "Next iteration: re-read the objective, check the diff above against it,\n"
-            "and continue.  Write this file before you finish.\n"
-        )
+        previous = self.read_handoff() if not carried else ""
+
+        subject = f"iteration {number} ended without writing a handoff"
+        if carried:
+            subject += "; carrying its own context summary forward"
+        elif previous and not diff_stat.strip():
+            subject += "; the previous handoff still stands"
+        lines = [
+            subject,
+            "",
+            "The harness synthesised this from git.  What changed:",
+            "",
+            diff_stat or "(no changes)",
+            "",
+        ]
+        if carried:
+            lines += [
+                "The agent wrote no handoff, but it overflowed its context at least",
+                "once, and the summary it wrote for itself on the way out survives in",
+                "the event stream.  It is reproduced verbatim below: this is what the",
+                "last iteration had worked out before it ran out of room.",
+                "",
+                "Trust it.  Do NOT re-read the codebase to re-derive it -- that is what",
+                "consumed the whole of the last iteration.  Start from its next steps",
+                "and make one of your first tool calls a write.",
+                "",
+                "---",
+                "",
+                carried,
+            ]
+        elif previous and not diff_stat.strip():
+            lines += [
+                "It changed no files and left no context summary, so it has nothing to",
+                "add.  The handoff below is the one that was already here, kept",
+                "verbatim: it remains the most recent real account of where the work",
+                "stands, and replacing it with this iteration's silence would cost the",
+                "next iteration the orientation this one failed to earn.",
+                "",
+                "---",
+                "",
+                _cap(previous),
+            ]
+        else:
+            lines += [
+                "Next iteration: re-read the objective, check the diff above against it,",
+                "and continue.  Write this file before you finish.",
+            ]
+        self.handoff_path.write_text("\n".join(lines) + "\n")
 
     # -- per-iteration paths ----------------------------------------------
 

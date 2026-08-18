@@ -16,6 +16,7 @@ a time of the operator's choosing rather than the loop's.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -56,9 +57,21 @@ class Run:
         self.gate_result = ""
         self.gate_output = ""
         self.no_diff_streak = 0
+        self.linked: list[str] = []
         self.screen = display.Screen()
 
     # -- setup ------------------------------------------------------------
+
+    def _exclusions(self) -> list[str]:
+        """What git must never see, whichever worktree it is standing in.
+
+        `.lmloop.toml` is the operator's config at the repo root; the rest are
+        run artifacts and the linked environment.  A symlinked `.venv` is still
+        a file as far as `git add -A` is concerned, and committing it would put
+        an absolute path to somebody's home directory in the history.
+        """
+        linkable = list(self.config["worktree"].get("link") or [])
+        return [".worktrees/", ".lmloop/", ".lmloop.toml", ".pi/"] + linkable
 
     def prepare(self) -> None:
         if self.worktree.exists():
@@ -67,10 +80,12 @@ class Run:
         # `.lmloop.toml` is excluded too: it is the operator's config, it lives
         # at the repo root, and `git add -A` inside a worktree would otherwise
         # sweep it into the run's first commit.
-        gitops.exclude(self.repo, [".worktrees/", ".lmloop/", ".lmloop.toml"])
+        gitops.exclude(self.repo, self._exclusions())
         gitops.add_worktree(self.repo, self.worktree, self.branch)
         base = gitops.head_commit(self.worktree)
         self.rundir.create(self.objective, base)
+        self.publish_sessions()
+        self.linked = self.link_environment()
         self.rundir.event(
             "run:start",
             runId=self.run_id,
@@ -102,6 +117,10 @@ class Run:
         )
         self.objective = (self.rundir.path / "prompt.md").read_text().strip()
         self.max_iterations = done + extra_iterations
+        # Runs that predate this, and runs resumed after the exclude list grew.
+        gitops.exclude(self.repo, self._exclusions())
+        self.publish_sessions()
+        self.linked = self.link_environment()
         self.rundir.event(
             "run:start",
             runId=self.run_id,
@@ -135,6 +154,76 @@ class Run:
             # that cannot be talked out of stopping.
             return f"no git-visible change in {limit} consecutive iterations"
         return None
+
+    # -- the environment the worktree does not inherit ---------------------
+
+    def link_environment(self) -> list[str]:
+        """Symlink the repo's untracked environment into the worktree.
+
+        See `config.DEFAULTS["worktree"]["link"]` for why this exists and why it
+        links rather than copies.  Returns the names actually linked, which the
+        prompt then names for the agent -- knowing the interpreter is there is
+        worth as much as the interpreter being there, since an agent that cannot
+        find one goes looking instead of working.
+        """
+        linked: list[str] = []
+        for name in self.config["worktree"].get("link") or []:
+            source = self.repo / name
+            target = self.worktree / name
+            if not source.exists():
+                continue
+            if target.is_symlink() or target.exists():
+                # Already there, usually from an earlier iteration of this run.
+                # Still report it: what the prompt and the header describe is
+                # what the worktree HAS, not what this call happened to create.
+                linked.append(name)
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(source, target_is_directory=source.is_dir())
+            except OSError as error:
+                # Never fail a run over this: the agent may not need it, and a
+                # missing link is visible in the log either way.
+                self.rundir.event("worktree:link:failed", name=name, detail=str(error))
+                continue
+            linked.append(name)
+        if linked:
+            self.rundir.event("worktree:link", names=linked)
+        return linked
+
+    def interpreter(self) -> str:
+        """The project's own Python, if one was linked in.  Repo-relative."""
+        for name in self.config["worktree"].get("link") or []:
+            candidate = self.worktree / name / "bin" / "python"
+            if candidate.exists():
+                return f"{name}/bin/python"
+        return ""
+
+    # -- discoverability --------------------------------------------------
+
+    def publish_sessions(self) -> None:
+        """Point pi-aware tools at this run's transcripts.
+
+        lmloop keeps pi's session files inside the run directory so a run is one
+        self-contained artifact.  The cost is that anything looking for pi
+        sessions in the usual place finds nothing, and an lmloop run was
+        therefore invisible in paseo's import picker -- not because of how the
+        run was launched, but because paseo resolves one session directory per
+        cwd and walks only that.  Symlinking into the default location does not
+        help: its walker tests `isFile()`, which a symlink fails.
+
+        `<cwd>/.pi/settings.json` is the hook that ecosystem already reads for
+        exactly this.  One small file, transcripts stay where they are.
+
+        The matching is on the *worktree* path, since that is the cwd pi records
+        -- so the worktree is what has to be registered as a paseo workspace,
+        not the repo above it.
+        """
+        settings = self.worktree / ".pi" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            json.dumps({"sessionDir": str(self.rundir.sessions)}, indent=2) + "\n"
+        )
 
     # -- environment ------------------------------------------------------
 
@@ -195,6 +284,12 @@ class Run:
             diff=gitops.diff_stat(self.worktree, base),
             handoff=self.rundir.read_handoff(),
             handoff_path=str(self.rundir.handoff_path),
+            tree=gitops.tracked_files(self.worktree),
+            plan=self.rundir.read_plan(),
+            plan_path=str(self.rundir.plan_path),
+            plan_progress=self.rundir.plan_progress(),
+            linked=getattr(self, "linked", []),
+            interpreter=self.interpreter(),
             gate_command=self.config["gate"]["command"],
             gate_result=self.gate_result,
             gate_output=self.gate_output,
@@ -211,9 +306,12 @@ class Run:
 
         self._loading = True
         handoff_before = self.rundir.handoff_mtime()
+        self._plan_before = self.rundir.plan_progress()
+        self._plan_steps_before = self._plan_steps()
         result = pi_runner.run(
             model=self.model,
             tools=self.config["agent"]["tools"],
+            thinking=self.config["agent"].get("thinking", ""),
             prompt=prompt,
             cwd=self.worktree,
             session_dir=self.rundir.sessions,
@@ -221,6 +319,7 @@ class Run:
             raw_path=self.rundir.iteration_jsonl(number),
             timeout_seconds=self.config["iteration"]["timeout_seconds"],
             stall_seconds=self.config["iteration"]["stall_seconds"],
+            max_compactions=self.config["iteration"]["max_compactions"],
             env=self.env(),
             should_stop=lambda: self.interrupted or self.rundir.stop_requested(),
             on_progress=lambda snap: self._show(number, snap),
@@ -230,12 +329,72 @@ class Run:
 
         handoff_written = self.rundir.handoff_mtime() > handoff_before
         if not handoff_written:
-            self.rundir.write_synthetic_handoff(number, gitops.diff_shortstat(self.worktree, base))
-        summary = self.rundir.read_handoff().splitlines()[0].strip() if self.rundir.read_handoff() else ""
-        summary = summary or f"iteration {number} ({result.outcome})"
+            # An iteration that overflowed its context did write a handoff -- into
+            # pi's event stream rather than to disk.  Prefer it over a git diff
+            # that, for the iterations this happens to, is empty.
+            self.rundir.write_synthetic_handoff(
+                number,
+                gitops.diff_shortstat(self.worktree, base),
+                carried=self.rundir.last_compaction_summary(number),
+            )
+        summary = self._subject(number, result, handoff_written)
 
         commit = self.commit(number, summary, result, handoff_written, base)
         self.record(number, summary, result, handoff_written, commit, base)
+
+    def _subject(self, number: int, result, handoff_written: bool) -> str:
+        """One line describing what this iteration did, for the commit subject.
+
+        Line 1 of the handoff is the right answer when the agent wrote one.  It
+        is the wrong answer when it did not: the loop then synthesises a handoff
+        whose first line says "iteration N ended without writing a handoff", and
+        that became the subject of four of nine commits on one-project --
+        iterations that wrote real, working test files and described none of it
+        in `git log`.  Overflowing the context is exactly when the agent fails to
+        write a handoff, so the commits most in need of a subject were the ones
+        guaranteed not to get one.
+
+        So a synthesised handoff is not trusted for the subject.  Fall back, in
+        order, to the plan step that got checked off this iteration, then to the
+        files that changed, then to the outcome.  All three are observations, not
+        self-reports.
+        """
+        if handoff_written:
+            first = self.rundir.read_handoff().splitlines()
+            if first and first[0].strip():
+                return first[0].strip()
+
+        step = self._completed_step()
+        if step:
+            return step
+
+        changed = self._relative_files(result.files_touched)
+        if changed:
+            listed = ", ".join(changed[:3])
+            more = f" (+{len(changed) - 3} more)" if len(changed) > 3 else ""
+            return f"{listed}{more}"
+
+        return f"iteration {number} ({result.outcome})"
+
+    def _completed_step(self) -> str:
+        """The plan step checked off during this iteration, if exactly one was.
+
+        Ambiguity is not worth guessing at: if the agent checked off two steps,
+        neither is "the" subject, and the file list describes the commit better.
+        """
+        before = getattr(self, "_plan_steps_before", set())
+        after = self._plan_steps()
+        gained = [text for text in after - before]
+        return gained[0][:68] if len(gained) == 1 else ""
+
+    def _plan_steps(self) -> set[str]:
+        """The text of every checked-off plan step, right now."""
+        done = set()
+        for line in self.rundir.read_plan().splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("- [", "* [")) and stripped[3:4].lower() == "x":
+                done.add(stripped[5:].strip().strip("`"))
+        return done
 
     def _show(self, number: int, snap: dict) -> None:
         """One line that keeps moving, so an attached terminal never looks dead."""
@@ -245,13 +404,23 @@ class Run:
             self._loading = False
             self.screen.log(f"    model ready in {display.elapsed(snap['elapsed'])}")
 
-        if snap["loading"]:
-            detail = "loading model"
-        elif snap["quiet"] > 60:
-            detail = f"quiet {display.elapsed(snap['quiet'])}"
-        else:
-            detail = snap["last_tool"] or "thinking"
+        paint = self.screen.paint
+        # The spinner advances only while pi is emitting.  A model that has gone
+        # quiet freezes it, so "moving" means the agent is alive rather than
+        # merely that the loop redrew.
+        alive = snap["loading"] or snap["quiet"] <= 30
+        spinner = self.screen.spin(advance=alive)
 
+        if snap["loading"]:
+            detail = paint.yellow("loading model")
+        elif snap["quiet"] > 60:
+            detail = paint.yellow(f"quiet {display.elapsed(snap['quiet'])}")
+        elif snap["last_tool"]:
+            detail = paint.cyan(snap["last_tool"])
+        else:
+            detail = paint.dim("thinking")
+
+        plan_done, plan_total = self.rundir.plan_progress()
         flags = "".join(
             flag
             for flag, on in (("PAUSE", self.rundir.paused()), ("STOP", self.rundir.stop_requested()))
@@ -261,12 +430,23 @@ class Run:
         # On a phone the useful answer is "which iteration, doing what, and is it
         # stopping" -- counters and even elapsed time go before those do.
         self.screen.status([
-            (6, f"  {number}/{self.max_iterations}"),
+            # The spinner rides with the iteration counter rather than as its own
+            # segment: it must never be the thing `compose` drops, because on the
+            # narrowest terminal it is the only proof the run is alive.
+            (6, f"{paint.cyan(spinner)} {paint.bold(f'{number}/{self.max_iterations}')}"),
             (4, display.elapsed(snap["elapsed"])),
             (5, detail),
-            (2, f"{snap['tool_calls']} tools"),
-            (1, f"{snap['output_tokens']} out"),
-            (7, f"[{flags}]" if flags else ""),
+            # Only shown once it has happened, and then it outranks the counters:
+            # a climbing overflow count against zero writes is the difference
+            # between an iteration that is working and one that is going in
+            # circles, and it is not visible anywhere else while the run is live.
+            (3, paint.red(f"{snap['compactions']} overflow") if snap["compactions"] else ""),
+            # What a long run actually looks like from outside: not tool calls,
+            # but how much of the plan is behind it.
+            (4, paint.green(f"{plan_done}/{plan_total} steps") if plan_total else ""),
+            (2, paint.dim(f"{snap['tool_calls']} tools")),
+            (1, paint.dim(f"{snap['output_tokens']} out")),
+            (7, paint.red(f"[{flags}]") if flags else ""),
         ])
         self.rundir.write_status({
             "run_id": self.run_id,
@@ -278,6 +458,9 @@ class Run:
             "last_tool": snap["last_tool"],
             "tool_calls": snap["tool_calls"],
             "writes": snap["writes"],
+            "compactions": snap["compactions"],
+            "plan_done": plan_done,
+            "plan_total": plan_total,
             "output_tokens": snap["output_tokens"],
             "quiet_seconds": round(snap["quiet"]),
             "paused": self.rundir.paused(),
@@ -348,7 +531,25 @@ class Run:
         learnings = []
         if self.gate_result:
             learnings.append(f"gate `{self.config['gate']['command']}` -> {self.gate_result}")
-        if not handoff_written:
+        done, total = self.rundir.plan_progress()
+        if total:
+            gained = done - getattr(self, '_plan_before', (0, 0))[0]
+            learnings.append(
+                f"plan: {done}/{total} steps done"
+                + (f" (+{gained} this iteration)" if gained > 0 else " (no step completed)")
+            )
+        elif self.rundir.read_plan():
+            learnings.append("plan exists but has no checkboxes")
+        else:
+            learnings.append("no plan written; the objective was never broken down")
+        if result.compactions:
+            learnings.append(
+                f"context overflowed {result.compactions}x; every overflow costs the"
+                " agent everything it had read"
+            )
+        if not handoff_written and result.compactions:
+            learnings.append("agent wrote no handoff; the loop carried its last context summary forward")
+        elif not handoff_written:
             learnings.append("agent wrote no handoff; the loop synthesised one from git")
         if result.detail and result.outcome != "ok":
             learnings.append(result.detail)
@@ -368,7 +569,10 @@ class Run:
             summary=summary,
             toolCalls=result.tool_calls,
             writes=result.writes,
+            compactions=result.compactions,
             handoffWritten=handoff_written,
+            planDone=done,
+            planTotal=total,
             commit=commit,
             gate=self.gate_result,
             totalInputTokens=result.input_tokens,
@@ -384,9 +588,15 @@ class Run:
             verdict = f"committed {commit[:8]}: {changed}"
         else:
             verdict = "nothing to commit"
+        # The overflow count earns its place on this line whenever it is not
+        # zero: it is the difference between an iteration that ran out of time
+        # and one that ran out of room, and those want opposite responses.
+        paint = self.screen.paint
+        overflows = paint.red(f" | {result.compactions} overflows") if result.compactions else ""
+        outcome = (paint.green if result.outcome == "ok" else paint.yellow)(result.outcome)
         self.screen.log(
-            f"    {result.outcome} in {display.elapsed(result.elapsed_seconds)}"
-            f" | {result.tool_calls} tool calls | {verdict}"
+            f"    {outcome} in {display.elapsed(result.elapsed_seconds)}"
+            f" | {result.tool_calls} tool calls{overflows} | {verdict}"
         )
 
     # -- driver -----------------------------------------------------------
@@ -466,8 +676,16 @@ class Run:
         self.screen.log(f"  {gitops.commit_count(self.worktree, base)} commits on {self.branch}"
                         f" in {(time.monotonic() - started) / 3600:.1f}h")
         self.screen.log()
+        # The notes path relative to the *worktree*, not the repo: relative to the
+        # repo it repeats the run id twice and reaches 130 characters, which is
+        # four wrapped lines on a phone for one file name.  The worktree it hangs
+        # off is printed directly above it.
+        try:
+            notes = self.rundir.notes_path.relative_to(self.worktree)
+        except ValueError:
+            notes = self.rundir.notes_path
         self.screen.log(f"  worktree  {relative(self.worktree)}")
-        self.screen.log(f"  notes     {relative(self.rundir.notes_path)}")
+        self.screen.log(f"  notes     {notes}  (inside it)")
         self.screen.log()
         self.screen.log(f"  from {self.repo}:")
         self.screen.log(f"    git log --oneline {base[:8]}..{self.branch}")

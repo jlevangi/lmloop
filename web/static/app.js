@@ -1,13 +1,28 @@
 /* lmloop dashboard.
  *
- * Polls rather than streams. A run emits an event every few seconds at most and
- * lives for hours, so a websocket would buy nothing and cost a reconnect story;
- * polling also degrades correctly when the phone sleeps, which is most of the
- * time a run is being watched. The interval drops when the tab is hidden.
+ * Three decisions worth stating.
+ *
+ * **Views, not dialogs.** A run detail is a page of content, and a modal is the
+ * wrong container for one: it fights the scroll, it has no back button, and it
+ * reads as provisional. Routing on the hash gives real navigation, working
+ * browser back, and links you can send yourself.
+ *
+ * **Rows are patched, never rebuilt.** The poll used to replace every node each
+ * cycle, which restarted animations and made the page flinch every few seconds.
+ * Each row is created once, keyed by run id, and updated in place; only the
+ * fields that changed are touched.
+ *
+ * **Polling, not streaming.** A run emits an event every few seconds at most and
+ * lives for hours, so a socket would buy nothing and cost a reconnect story.
+ * Polling also degrades correctly when a phone sleeps, which is most of the time
+ * a run is being watched.
  */
 
 const $ = (id) => document.getElementById(id);
-const state = { config: null, runs: [], project: null, timer: null, openRun: null, detailSignature: null };
+const state = {
+  config: null, runs: [], project: null, timer: null,
+  route: { name: "list" }, rows: new Map(), detailKey: null,
+};
 
 /* ── Fetch ─────────────────────────────────────────────────────────────── */
 
@@ -33,91 +48,141 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 function duration(seconds) {
   if (seconds == null) return "";
   const m = Math.floor(seconds / 60);
-  if (m < 60) return `${m}m`;
-  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
 }
 
-function ago(seconds) {
-  if (seconds == null) return "never";
-  if (seconds < 60) return "just now";
-  return `${duration(seconds)} ago`;
-}
+const ago = (s) => (s == null ? "never" : s < 60 ? "just now" : `${duration(s)} ago`);
 
-function text(tag, className, content) {
+function el(tag, className, content) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (content != null) node.textContent = content;
   return node;
 }
 
-/* ── Run card ──────────────────────────────────────────────────────────── */
-
-function card(run) {
-  const node = text("button", "card");
-  node.type = "button";
-
-  const top = text("div", "card-top");
-  top.append(text("span", "project", run.project), text("span", `state ${run.state}`, run.state));
-  node.append(top, text("h3", "title", run.title));
-
-  if (run.plan_total) {
-    const wrap = text("div", "progress");
-    const bar = text("div", "bar");
-    const fill = text("span");
-    fill.style.width = `${Math.round((run.plan_done / run.plan_total) * 100)}%`;
-    bar.append(fill);
-    wrap.append(bar, text("small", null, `${run.plan_done} of ${run.plan_total} steps`));
-    node.append(wrap);
-  }
-
-  if (run.outcomes?.length) {
-    const pips = text("div", "outcomes");
-    for (const outcome of run.outcomes) pips.append(text("span", `pip ${outcome}`));
-    pips.title = run.outcomes.join(", ");
-    node.append(pips);
-  }
-
+function metaBits(run) {
   const bits = [];
-  if (run.iteration) bits.push(`iteration ${run.iteration}/${run.max_iterations ?? "?"}`);
+  if (run.iteration) bits.push(`iter ${run.iteration}/${run.max_iterations ?? "?"}`);
   if (run.commits) bits.push(plural(run.commits, "commit"));
   if (run.state === "running" && run.last_tool) bits.push(run.last_tool);
-  if (run.state === "running" && run.elapsed_seconds) bits.push(duration(run.elapsed_seconds) + " in");
-  if (run.compactions) bits.push(`${run.compactions} overflow`);
+  if (run.state === "running" && run.elapsed_seconds) bits.push(duration(run.elapsed_seconds));
+  if (run.compactions) bits.push(`${run.compactions} ovf`);
   if (run.model) bits.push(run.model.split("/").pop());
   bits.push(ago(run.age_seconds));
+  return bits;
+}
 
-  const meta = text("div", "meta");
-  for (const bit of bits) meta.append(text("span", null, bit));
-  node.append(meta);
+/* ── Row (created once, patched thereafter) ────────────────────────────── */
 
-  node.addEventListener("click", () => openDetail(run));
-  return node;
+function makeRow(run) {
+  const node = el("button", "row");
+  node.type = "button";
+
+  const head = el("div", "row-head");
+  const where = el("span", "where");
+  const stateLabel = el("span", "state");
+  head.append(where, stateLabel);
+
+  const title = el("h3", "title");
+  const progress = el("div", "progress");
+  const track = el("div", "track");
+  const fill = el("span");
+  const steps = el("small");
+  track.append(fill);
+  progress.append(track, steps);
+
+  const pips = el("div", "pips");
+  const meta = el("div", "meta");
+
+  node.append(head, title, progress, pips, meta);
+  node.addEventListener("click", () => go(`#${run.project}/${run.run_id}`));
+
+  const parts = { node, where, stateLabel, title, progress, fill, steps, pips, meta, last: null };
+  patchRow(parts, run);
+  return parts;
+}
+
+function patchRow(parts, run) {
+  // Cheap guard: nothing below runs unless something the row shows has moved.
+  const key = JSON.stringify([
+    run.state, run.title, run.plan_done, run.plan_total, run.outcomes,
+    run.iteration, run.commits, run.last_tool, run.elapsed_seconds,
+    run.compactions, run.model, run.age_seconds,
+  ]);
+  if (key === parts.last) return;
+  parts.last = key;
+
+  parts.where.textContent = run.project;
+  parts.stateLabel.textContent = run.state;
+  parts.stateLabel.className = `state ${run.state}`;
+  parts.title.textContent = run.title;
+
+  if (run.plan_total) {
+    parts.progress.hidden = false;
+    parts.fill.style.width = `${Math.round((run.plan_done / run.plan_total) * 100)}%`;
+    parts.steps.textContent = `${run.plan_done}/${run.plan_total}`;
+  } else {
+    parts.progress.hidden = true;
+  }
+
+  const outcomes = run.outcomes || [];
+  parts.pips.hidden = outcomes.length === 0;
+  while (parts.pips.children.length > outcomes.length) parts.pips.lastChild.remove();
+  outcomes.forEach((outcome, index) => {
+    const pip = parts.pips.children[index] || parts.pips.appendChild(el("span"));
+    pip.className = `pip ${outcome}`;
+  });
+  parts.pips.title = outcomes.join(", ");
+
+  const bits = metaBits(run);
+  while (parts.meta.children.length > bits.length) parts.meta.lastChild.remove();
+  bits.forEach((bit, index) => {
+    const span = parts.meta.children[index] || parts.meta.appendChild(el("span"));
+    span.textContent = bit;
+  });
+}
+
+function syncGroup(container, runs) {
+  runs.forEach((run, index) => {
+    let parts = state.rows.get(run.run_id);
+    if (!parts) {
+      parts = makeRow(run);
+      state.rows.set(run.run_id, parts);
+    } else {
+      patchRow(parts, run);
+    }
+    const atIndex = container.children[index];
+    if (atIndex !== parts.node) container.insertBefore(parts.node, atIndex || null);
+  });
+  while (container.children.length > runs.length) container.lastChild.remove();
 }
 
 /* ── List ──────────────────────────────────────────────────────────────── */
 
 const ACTIVE = new Set(["running", "paused", "stopping"]);
 
-function render() {
+function renderList() {
   const runs = state.project ? state.runs.filter((r) => r.project === state.project) : state.runs;
   const active = runs.filter((r) => ACTIVE.has(r.state));
   const rest = runs.filter((r) => !ACTIVE.has(r.state));
 
-  for (const [key, list] of [["active", active], ["finished", rest]]) {
-    const holder = $(key);
-    holder.replaceChildren(...list.map(card));
-    $(`${key}-count`).textContent = list.length;
-    $(`${key}-section`).hidden = list.length === 0;
-  }
+  syncGroup($("active"), active);
+  syncGroup($("finished"), rest);
+  $("active-count").textContent = active.length;
+  $("finished-count").textContent = rest.length;
+  $("active-group").hidden = active.length === 0;
+  $("finished-group").hidden = rest.length === 0;
   $("empty").hidden = runs.length > 0;
 
   const live = active.some((r) => r.state === "running");
   const stale = runs.some((r) => r.state === "stale");
-  $("pulse").className = `pulse ${live ? "live" : stale ? "stale" : ""}`;
-  $("connection").textContent = live
-    ? `${plural(active.length, "run")} active`
-    : `${plural(runs.length, "run")}, none active`;
-  $("connection").classList.toggle("warn", stale);
+  $("moon").className = `moon ${live ? "live" : stale ? "stale" : ""}`;
+  if (state.route.name === "list") {
+    $("bar-sub").textContent = live
+      ? `${plural(active.length, "run")} working`
+      : `${plural(runs.length, "run")}, idle`;
+    $("bar-sub").classList.toggle("warn", stale);
+  }
 }
 
 function renderFilters() {
@@ -125,221 +190,211 @@ function renderFilters() {
   const holder = $("filters");
   holder.replaceChildren();
   if (projects.length < 2) return;
-  const make = (label, value) => {
-    const chip = text("button", "chip", label);
-    chip.type = "button";
-    chip.setAttribute("aria-pressed", String(state.project === value));
-    chip.addEventListener("click", () => { state.project = value; renderFilters(); render(); });
-    return chip;
+  const tab = (label, value) => {
+    const node = el("button", "tab", label);
+    node.type = "button";
+    node.setAttribute("aria-pressed", String(state.project === value));
+    node.addEventListener("click", () => { state.project = value; renderFilters(); renderList(); });
+    return node;
   };
-  holder.append(make("All", null), ...projects.map((p) => make(p, p)));
+  holder.append(tab("all", null), ...projects.map((p) => tab(p, p)));
 }
 
-/* ── Detail ────────────────────────────────────────────────────────────── */
+/* ── Run view ──────────────────────────────────────────────────────────── */
+
+function fact(label, value, hot = false) {
+  const box = el("div", "fact");
+  const dd = el("dd", hot ? "hot" : null, value);
+  box.append(el("dt", null, label), dd);
+  return box;
+}
+
+/* Plan steps are markdown the agent wrote for itself, so they arrive with
+ * `**emphasis**` and `backticks` in them. Rendering those two is the difference
+ * between a plan and a dump of a file; anything more would be a markdown
+ * parser, which this is deliberately not. */
+function inlineMarkdown(text) {
+  const holder = document.createDocumentFragment();
+  const pattern = /\*\*(.+?)\*\*|`([^`]+)`/g;
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > last) holder.append(text.slice(last, match.index));
+    if (match[1]) {
+      const strong = el("strong");
+      strong.append(inlineMarkdown(match[1]));  // `code` nests inside **bold**
+      holder.append(strong);
+    } else {
+      holder.append(el("code", null, match[2]));
+    }
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) holder.append(text.slice(last));
+  return holder;
+}
 
 function planNodes(plan) {
-  const holder = text("div", "plan");
+  const holder = el("div", "plan");
+  let seenNext = false;
   for (const line of plan.split("\n")) {
-    const stripped = line.trim();
-    const match = /^[-*]\s\[( |x|X)\]\s*(.*)$/.exec(stripped);
-    if (match) {
-      const done = match[1].toLowerCase() === "x";
-      const step = text("div", `step${done ? " done" : ""}`);
-      step.append(text("span", "box", done ? "✓" : "○"), text("span", null, match[2]));
-      holder.append(step);
-    } else if (stripped && !stripped.startsWith("#")) {
-      holder.append(text("div", "hint", stripped));
-    }
+    const match = /^[-*]\s\[( |x|X)\]\s*(.*)$/.exec(line.trim());
+    if (!match) continue;
+    const done = match[1].toLowerCase() === "x";
+    const isNext = !done && !seenNext;
+    if (isNext) seenNext = true;
+    const step = el("div", `step${done ? " done" : isNext ? " next" : ""}`);
+    const label = el("span");
+    label.append(inlineMarkdown(match[2]));
+    step.append(el("span", "box", done ? "✓" : isNext ? "▸" : "·"), label);
+    holder.append(step);
   }
   return holder;
 }
 
+const OUTCOME_CLASS = {
+  ok: "ok", thrashing: "warn", truncated: "warn", "no-action": "warn",
+  stalled: "bad", timeout: "bad", "agent-error": "bad", interrupted: "",
+};
+
 function iterationTable(rows) {
-  const wrap = text("div", "scroll-x");
+  const wrap = el("div", "scroll-x");
   const table = document.createElement("table");
   const head = document.createElement("tr");
-  for (const label of ["#", "outcome", "time", "writes", "ovf", "plan", "commit"]) {
-    head.append(text("th", null, label));
+  for (const label of ["#", "outcome", "time", "wr", "ovf", "plan", "commit"]) {
+    head.append(el("th", null, label));
   }
   table.append(head);
   for (const row of rows) {
     const tr = document.createElement("tr");
-    const cells = [
-      row.iteration,
-      row.outcome ?? "…",
-      row.seconds ? duration(row.seconds) : "",
-      row.writes ?? "",
-      row.compactions || "",
-      row.plan_total ? `${row.plan_done}/${row.plan_total}` : "",
-      row.commit ? row.commit.slice(0, 8) : "",
-    ];
-    for (const value of cells) tr.append(text("td", null, value));
+    tr.append(el("td", null, row.iteration));
+    tr.append(el("td", OUTCOME_CLASS[row.outcome] ?? "", row.outcome ?? "…"));
+    tr.append(el("td", null, row.seconds ? duration(row.seconds) : ""));
+    tr.append(el("td", null, row.writes ?? ""));
+    tr.append(el("td", null, row.compactions || ""));
+    tr.append(el("td", null, row.plan_total ? `${row.plan_done}/${row.plan_total}` : ""));
+    tr.append(el("td", null, row.commit ? row.commit.slice(0, 8) : ""));
     table.append(tr);
   }
   wrap.append(table);
   return wrap;
 }
 
-function controlButton(label, action, run, { danger = false, body = {} } = {}) {
-  const button = text("button", danger ? "danger" : "secondary", label);
+function control(label, action, run, { risk = false, body = {} } = {}) {
+  const button = el("button", risk ? "risk" : "quiet", label);
   button.type = "button";
   button.addEventListener("click", async () => {
     button.disabled = true;
     try {
       await api(`/api/runs/${run.project}/${run.run_id}/${action}`, { body });
-      await refresh();
-      state.detailSignature = null;
-      openDetail(state.runs.find((r) => r.run_id === run.run_id) || run);
+      state.detailKey = null;
+      await poll();
     } catch (error) {
-      alert(error.message);
       button.disabled = false;
+      alert(error.message);
     }
   });
   return button;
 }
 
-/* Re-rendering the sheet under someone's thumb is the difference between a
- * dashboard and a jack-in-the-box: the poll used to rebuild it every few
- * seconds, which threw away the scroll position and slammed every <details>
- * shut mid-read. So a refresh only redraws when the run actually changed, and
- * carries the reader's place across when it does. */
-function captureView() {
-  const body = $("detail-body");
-  return {
-    scroll: body.scrollTop,
-    open: [...body.querySelectorAll("details")].map((node) => node.open),
-  };
-}
+async function renderRun(project, runId, { quiet = false } = {}) {
+  const view = $("view-run");
+  const summary = state.runs.find((r) => r.run_id === runId);
+  const key = `${runId}:${summary?.updated_at || ""}:${summary?.state || ""}`;
+  if (quiet && key === state.detailKey) return;
 
-function restoreView(view) {
-  if (!view) return;
-  const body = $("detail-body");
-  body.querySelectorAll("details").forEach((node, index) => {
-    if (view.open[index]) node.open = true;
-  });
-  body.scrollTop = view.scroll;
-}
+  $("bar-title").textContent = project;
+  $("bar-sub").textContent = runId;
 
-async function openDetail(summary, { refresh = false } = {}) {
-  const signature = `${summary.run_id}:${summary.updated_at || ""}:${summary.state || ""}`;
-  if (refresh && signature === state.detailSignature) return;
-
-  state.openRun = summary.run_id;
-  const hash = `#${summary.project}/${summary.run_id}`;
-  if (location.hash !== hash) history.replaceState(null, "", hash);
-  $("detail-title").textContent = summary.project;
-  const body = $("detail-body");
-  const view = refresh ? captureView() : null;
-  if (!refresh) body.replaceChildren(text("p", "hint", "Loading…"));
-  present($("detail"));
+  if (!quiet) view.replaceChildren(el("p", "empty", "Loading…"));
 
   let run;
   try {
-    run = await api(`/api/runs/${summary.project}/${summary.run_id}`);
+    run = await api(`/api/runs/${project}/${runId}`);
   } catch (error) {
-    body.replaceChildren(text("p", "error", error.message));
+    view.replaceChildren(el("p", "alert", error.message));
     return;
   }
 
+  // Preserve what the reader was doing across a background refresh.
+  const scroll = window.scrollY;
+  const open = [...view.querySelectorAll("details")].map((node) => node.open);
+
   const parts = [];
 
-  const meta = text("div", "detail-meta");
-  for (const bit of [
-    run.state,
-    run.model,
-    `iteration ${run.iteration ?? "?"}/${run.max_iterations ?? "?"}`,
-    plural(run.commits, "commit"),
-    `updated ${ago(run.age_seconds)}`,
-  ]) meta.append(text("span", null, bit));
-  parts.push(meta);
+  const facts = el("div", "facts");
+  facts.append(
+    fact("state", run.state, ACTIVE.has(run.state)),
+    fact("plan", run.plan_total ? `${run.plan_done}/${run.plan_total}` : "—"),
+    fact("commits", String(run.commits)),
+    fact("iter", `${run.iteration ?? "?"}/${run.max_iterations ?? "?"}`),
+    fact("updated", ago(run.age_seconds)),
+  );
+  parts.push(facts);
 
   if (!state.config?.read_only) {
-    const controls = text("div", "controls");
+    const controls = el("div", "controls");
     if (ACTIVE.has(run.state)) {
-      controls.append(
-        run.paused
-          ? controlButton("Resume", "resume", run)
-          : controlButton("Pause", "pause", run),
-      );
-      if (!run.stopping) controls.append(controlButton("Stop after this iteration", "stop", run, { danger: true }));
+      controls.append(run.paused ? control("Resume", "resume", run) : control("Pause", "pause", run));
+      if (!run.stopping) controls.append(control("Stop after this iteration", "stop", run, { risk: true }));
     } else {
-      controls.append(controlButton("Continue 3 more iterations", "continue", run, { body: { iterations: 3 } }));
+      controls.append(control("Continue 3 iterations", "continue", run, { body: { iterations: 3 } }));
     }
     parts.push(controls);
   }
 
-  parts.push(text("h2", null, "Objective"), text("div", "objective", run.objective));
+  parts.push(el("h2", null, "Objective"));
+  const objective = el("div", "panel");
+  objective.append(el("div", "objective", run.objective));
+  parts.push(objective);
 
   if (run.plan) {
-    parts.push(text("h2", null, `Plan — ${run.plan_done} of ${run.plan_total} done`));
-    parts.push(planNodes(run.plan));
+    parts.push(el("h2", null, `Plan — ${run.plan_done} of ${run.plan_total}`));
+    const panel = el("div", "panel");
+    panel.append(planNodes(run.plan));
+    parts.push(panel);
   }
 
   if (run.iterations?.length) {
-    parts.push(text("h2", null, "Iterations"), iterationTable(run.iterations));
+    parts.push(el("h2", null, "Iterations"));
+    const panel = el("div", "panel");
+    panel.append(iterationTable(run.iterations));
+    parts.push(panel);
   }
 
   for (const [label, content] of [["Handoff", run.handoff], ["Notes", run.notes]]) {
     if (!content) continue;
     const box = document.createElement("details");
-    box.append(text("summary", null, label), text("pre", null, content));
+    box.append(el("summary", null, label), el("pre", null, content));
     parts.push(box);
   }
 
-  body.replaceChildren(...parts);
-  state.detailSignature = signature;
-  restoreView(view);
+  view.replaceChildren(...parts);
+  view.querySelectorAll("details").forEach((node, index) => { if (open[index]) node.open = true; });
+  if (quiet) window.scrollTo(0, scroll);
+  state.detailKey = key;
 }
 
-$("detail").addEventListener("close", () => {
-  state.openRun = null;
-  state.detailSignature = null;
-  if (location.hash) history.replaceState(null, "", location.pathname);
-});
+/* ── New run ───────────────────────────────────────────────────────────── */
 
-/* A run is a thing you send someone, or open on your phone from a message to
- * yourself. The hash is project/run-id, which is exactly what the API path is. */
-function hashTarget() {
-  const [project, runId] = decodeURIComponent(location.hash.slice(1)).split("/");
-  return project && runId ? { project, run_id: runId } : null;
-}
-
-async function openFromHash() {
-  // `#new` is worth a link of its own: it makes "start a run" a home-screen
-  // shortcut rather than a page you have to land on and then tap.
-  if (location.hash === "#new") return openLaunch();
-  const target = hashTarget();
-  if (target && target.run_id !== state.openRun) await openDetail(target);
-}
-
-window.addEventListener("hashchange", openFromHash);
-
-/* ── Launch ────────────────────────────────────────────────────────────── */
-
-async function openLaunch() {
-  /* Open first, populate second. Fetching before showModal() meant a tap on
-   * "New run" did nothing at all until the round-trip finished, which reads as
-   * a dropped tap and gets tapped again. */
+async function renderNew() {
+  $("bar-title").textContent = "New run";
+  $("bar-sub").textContent = "one objective, many iterations";
   $("launch-error").hidden = true;
-  present($("launch"));
 
   const { projects } = await api("/api/projects");
-  const select = $("project");
-  select.replaceChildren(...projects.map((p) => {
+  $("project").replaceChildren(...projects.map((p) => {
     const option = document.createElement("option");
     option.value = p.id;
-    option.textContent = p.runs ? `${p.name} (${plural(p.runs, "run")})` : p.name;
+    option.textContent = p.runs ? `${p.name} · ${plural(p.runs, "run")}` : p.name;
     return option;
   }));
-  if (state.project) select.value = state.project;
+  if (state.project) $("project").value = state.project;
 
-  const models = $("model");
-  models.replaceChildren(...(state.config.models || []).map((id) => {
+  $("model").replaceChildren(...(state.config.models || []).map((id) => {
     const option = document.createElement("option");
     option.value = option.textContent = id;
     return option;
   }));
-  models.value = state.config.default_model;
+  $("model").value = state.config.default_model;
   $("thinking").value = state.config.default_thinking || "";
   $("iterations").value = state.config.default_max_iterations;
 }
@@ -358,9 +413,9 @@ $("launch-form").addEventListener("submit", async (event) => {
         max_iterations: Number($("iterations").value),
       },
     });
-    $("launch").close();
     $("objective").value = "";
-    await refresh();
+    await poll();
+    go("#");
   } catch (error) {
     $("launch-error").textContent = error.message;
     $("launch-error").hidden = false;
@@ -369,61 +424,66 @@ $("launch-form").addEventListener("submit", async (event) => {
   }
 });
 
-$("new-run").addEventListener("click", () => {
-  openLaunch().catch((error) => {
-    $("launch-error").textContent = error.message;
-    $("launch-error").hidden = false;
-  });
-});
+/* ── Routing ───────────────────────────────────────────────────────────── */
 
-/* A modal autofocuses its first focusable child, which here is the close
- * button -- so every sheet opened with a ring around its dismiss control. Focus
- * the sheet itself instead: still keyboard-reachable, no misleading target. */
-for (const id of ["detail", "launch"]) {
-  // A click landing on the dialog element itself is a click on the backdrop:
-  // everything inside is a child. Tapping away to dismiss is what a bottom
-  // sheet is expected to do on a phone.
-  $(id).addEventListener("click", (event) => {
-    if (event.target === $(id)) $(id).close();
-  });
+function go(hash) {
+  if (location.hash === hash) route();
+  else location.hash = hash;
 }
 
-/* showModal() focuses the first focusable descendant, which in both sheets is
- * the close button -- so every sheet opened with a ring drawn around the one
- * control that throws the sheet away. Move focus to the sheet itself. */
-function present(dialog) {
-  if (!dialog.open) dialog.showModal();
-  dialog.focus();
+function parseHash() {
+  const raw = decodeURIComponent(location.hash.slice(1));
+  if (raw === "new") return { name: "new" };
+  const [project, runId] = raw.split("/");
+  if (project && runId) return { name: "run", project, run_id: runId };
+  return { name: "list" };
 }
+
+async function route({ quiet = false } = {}) {
+  const next = parseHash();
+  const changed = JSON.stringify(next) !== JSON.stringify(state.route);
+  state.route = next;
+  if (changed) state.detailKey = null;
+
+  $("view-list").hidden = next.name !== "list";
+  $("view-run").hidden = next.name !== "run";
+  $("view-new").hidden = next.name !== "new";
+  $("back").hidden = next.name === "list";
+  $("new-run").hidden = next.name !== "list" || Boolean(state.config?.read_only);
+
+  if (next.name === "list") {
+    $("bar-title").textContent = "lmloop";
+    renderList();
+  } else if (next.name === "run") {
+    await renderRun(next.project, next.run_id, { quiet: quiet && !changed });
+  } else if (changed) {
+    await renderNew();
+  }
+}
+
+window.addEventListener("hashchange", () => route());
+$("back").addEventListener("click", () => (history.length > 1 ? history.back() : go("#")));
+$("new-run").addEventListener("click", () => go("#new"));
 
 /* ── Poll ──────────────────────────────────────────────────────────────── */
 
-async function refresh() {
+async function poll() {
   try {
     const { runs } = await api("/api/runs");
     state.runs = runs;
     renderFilters();
-    render();
+    await route({ quiet: true });
   } catch (error) {
-    $("connection").textContent = error.message;
-    $("connection").classList.add("warn");
-    $("pulse").className = "pulse stale";
+    $("bar-sub").textContent = error.message;
+    $("bar-sub").classList.add("warn");
+    $("moon").className = "moon stale";
   }
 }
 
 function schedule() {
   clearTimeout(state.timer);
-  const seconds = document.hidden
-    ? state.config.hidden_poll_seconds
-    : state.config.poll_seconds;
-  state.timer = setTimeout(async () => {
-    await refresh();
-    if (state.openRun) {
-      const run = state.runs.find((r) => r.run_id === state.openRun);
-      if (run && $("detail").open) openDetail(run, { refresh: true });
-    }
-    schedule();
-  }, seconds * 1000);
+  const seconds = document.hidden ? state.config.hidden_poll_seconds : state.config.poll_seconds;
+  state.timer = setTimeout(async () => { await poll(); schedule(); }, seconds * 1000);
 }
 
 document.addEventListener("visibilitychange", schedule);
@@ -434,8 +494,6 @@ document.addEventListener("visibilitychange", schedule);
   } catch {
     return;
   }
-  if (state.config.read_only) $("new-run").hidden = true;
-  await refresh();
-  await openFromHash();
+  await poll();
   schedule();
 })();

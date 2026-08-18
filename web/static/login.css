@@ -1,0 +1,89 @@
+/* The sign-in screen. Deliberately the prettiest thing here: it is the only
+   page seen cold, and it sets the expectation for everything behind it. */
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: #090b18;
+  color: #f3f0ff;
+}
+* { box-sizing: border-box; }
+
+body {
+  margin: 0; min-height: 100dvh;
+  display: flex; align-items: center; justify-content: center;
+  background:
+    radial-gradient(circle at 50% -10%, #29305b 0, transparent 38%),
+    linear-gradient(#090b18, #111126);
+}
+
+.card {
+  text-align: center; width: min(380px, 90vw);
+  padding: 40px 32px calc(40px + env(safe-area-inset-bottom, 0px));
+  animation: rise .6s cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+
+/* The crescent is one warm circle with a background-coloured circle slid over
+   it -- no image, no font, and it scales with nothing but numbers. */
+.sky { height: 126px; position: relative; margin-bottom: 26px; }
+.moon {
+  position: absolute; left: 50%; top: 12px; width: 92px; height: 92px;
+  transform: translateX(-50%); border-radius: 50%; overflow: hidden;
+  background: #fff3be;
+  box-shadow: 0 0 25px #ffe99688, 0 0 70px #8e9cff55;
+  animation: glow 6s ease-in-out infinite;
+}
+.moon span {
+  position: absolute; width: 92px; height: 92px; left: 25px; top: -9px;
+  border-radius: 50%; background: #151832;
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 25px #ffe99688, 0 0 70px #8e9cff55; }
+  50%      { box-shadow: 0 0 32px #ffe996aa, 0 0 90px #8e9cff77; }
+}
+
+.star {
+  position: absolute; width: 3px; height: 3px; border-radius: 50%;
+  background: #fff; animation: twinkle 2s infinite;
+}
+.s1 { left: 26%; top: 28px; }
+.s2 { right: 22%; top: 62px; animation-delay: .7s; }
+.s3 { left: 18%; top: 88px; animation-delay: 1.1s; }
+.s4 { right: 30%; top: 14px; animation-delay: 1.6s; }
+@keyframes twinkle { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+
+.eyebrow {
+  font-size: .7rem; letter-spacing: .18em; color: #ada6d9;
+  font-weight: 800; margin: 0 0 6px;
+}
+h1 { font-size: 2rem; margin: 0 0 10px; letter-spacing: -.01em; }
+.sub { color: #aaa5c2; font-size: .9rem; margin: 0 0 32px; line-height: 1.5; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  min-height: 50px; padding: 0 30px; border: 0; border-radius: 14px;
+  background: linear-gradient(135deg, #8d7cff, #6451d7);
+  color: #fff; font-weight: 800; font-size: 1rem;
+  cursor: pointer; text-decoration: none;
+  box-shadow: 0 10px 30px #6451d744;
+  transition: opacity .15s, transform .15s;
+}
+.btn:hover { opacity: .9; }
+.btn:active { transform: scale(.97); }
+.btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.btn svg { width: 20px; height: 20px; fill: currentColor; }
+
+.error {
+  margin-top: 22px; padding: 12px; border-radius: 10px;
+  background: #3a1c1c; color: #ff9a9a; font-size: .85rem;
+}
+
+@media (max-height: 700px) {
+  .card { padding: 24px 28px; }
+  .sky { height: 104px; margin-bottom: 16px; }
+  .sub { margin-bottom: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

@@ -7,7 +7,7 @@
  */
 
 const $ = (id) => document.getElementById(id);
-const state = { config: null, runs: [], project: null, timer: null, openRun: null };
+const state = { config: null, runs: [], project: null, timer: null, openRun: null, detailSignature: null };
 
 /* ── Fetch ─────────────────────────────────────────────────────────────── */
 
@@ -188,6 +188,7 @@ function controlButton(label, action, run, { danger = false, body = {} } = {}) {
     try {
       await api(`/api/runs/${run.project}/${run.run_id}/${action}`, { body });
       await refresh();
+      state.detailSignature = null;
       openDetail(state.runs.find((r) => r.run_id === run.run_id) || run);
     } catch (error) {
       alert(error.message);
@@ -197,14 +198,40 @@ function controlButton(label, action, run, { danger = false, body = {} } = {}) {
   return button;
 }
 
-async function openDetail(summary) {
+/* Re-rendering the sheet under someone's thumb is the difference between a
+ * dashboard and a jack-in-the-box: the poll used to rebuild it every few
+ * seconds, which threw away the scroll position and slammed every <details>
+ * shut mid-read. So a refresh only redraws when the run actually changed, and
+ * carries the reader's place across when it does. */
+function captureView() {
+  const body = $("detail-body");
+  return {
+    scroll: body.scrollTop,
+    open: [...body.querySelectorAll("details")].map((node) => node.open),
+  };
+}
+
+function restoreView(view) {
+  if (!view) return;
+  const body = $("detail-body");
+  body.querySelectorAll("details").forEach((node, index) => {
+    if (view.open[index]) node.open = true;
+  });
+  body.scrollTop = view.scroll;
+}
+
+async function openDetail(summary, { refresh = false } = {}) {
+  const signature = `${summary.run_id}:${summary.updated_at || ""}:${summary.state || ""}`;
+  if (refresh && signature === state.detailSignature) return;
+
   state.openRun = summary.run_id;
   const hash = `#${summary.project}/${summary.run_id}`;
   if (location.hash !== hash) history.replaceState(null, "", hash);
   $("detail-title").textContent = summary.project;
   const body = $("detail-body");
-  body.replaceChildren(text("p", "hint", "Loading…"));
-  if (!$("detail").open) $("detail").showModal();
+  const view = refresh ? captureView() : null;
+  if (!refresh) body.replaceChildren(text("p", "hint", "Loading…"));
+  present($("detail"));
 
   let run;
   try {
@@ -260,10 +287,13 @@ async function openDetail(summary) {
   }
 
   body.replaceChildren(...parts);
+  state.detailSignature = signature;
+  restoreView(view);
 }
 
 $("detail").addEventListener("close", () => {
   state.openRun = null;
+  state.detailSignature = null;
   if (location.hash) history.replaceState(null, "", location.pathname);
 });
 
@@ -275,6 +305,9 @@ function hashTarget() {
 }
 
 async function openFromHash() {
+  // `#new` is worth a link of its own: it makes "start a run" a home-screen
+  // shortcut rather than a page you have to land on and then tap.
+  if (location.hash === "#new") return openLaunch();
   const target = hashTarget();
   if (target && target.run_id !== state.openRun) await openDetail(target);
 }
@@ -284,6 +317,12 @@ window.addEventListener("hashchange", openFromHash);
 /* ── Launch ────────────────────────────────────────────────────────────── */
 
 async function openLaunch() {
+  /* Open first, populate second. Fetching before showModal() meant a tap on
+   * "New run" did nothing at all until the round-trip finished, which reads as
+   * a dropped tap and gets tapped again. */
+  $("launch-error").hidden = true;
+  present($("launch"));
+
   const { projects } = await api("/api/projects");
   const select = $("project");
   select.replaceChildren(...projects.map((p) => {
@@ -303,8 +342,6 @@ async function openLaunch() {
   models.value = state.config.default_model;
   $("thinking").value = state.config.default_thinking || "";
   $("iterations").value = state.config.default_max_iterations;
-  $("launch-error").hidden = true;
-  $("launch").showModal();
 }
 
 $("launch-form").addEventListener("submit", async (event) => {
@@ -332,7 +369,32 @@ $("launch-form").addEventListener("submit", async (event) => {
   }
 });
 
-$("new-run").addEventListener("click", () => openLaunch().catch((e) => alert(e.message)));
+$("new-run").addEventListener("click", () => {
+  openLaunch().catch((error) => {
+    $("launch-error").textContent = error.message;
+    $("launch-error").hidden = false;
+  });
+});
+
+/* A modal autofocuses its first focusable child, which here is the close
+ * button -- so every sheet opened with a ring around its dismiss control. Focus
+ * the sheet itself instead: still keyboard-reachable, no misleading target. */
+for (const id of ["detail", "launch"]) {
+  // A click landing on the dialog element itself is a click on the backdrop:
+  // everything inside is a child. Tapping away to dismiss is what a bottom
+  // sheet is expected to do on a phone.
+  $(id).addEventListener("click", (event) => {
+    if (event.target === $(id)) $(id).close();
+  });
+}
+
+/* showModal() focuses the first focusable descendant, which in both sheets is
+ * the close button -- so every sheet opened with a ring drawn around the one
+ * control that throws the sheet away. Move focus to the sheet itself. */
+function present(dialog) {
+  if (!dialog.open) dialog.showModal();
+  dialog.focus();
+}
 
 /* ── Poll ──────────────────────────────────────────────────────────────── */
 
@@ -358,7 +420,7 @@ function schedule() {
     await refresh();
     if (state.openRun) {
       const run = state.runs.find((r) => r.run_id === state.openRun);
-      if (run && $("detail").open) openDetail(run);
+      if (run && $("detail").open) openDetail(run, { refresh: true });
     }
     schedule();
   }, seconds * 1000);

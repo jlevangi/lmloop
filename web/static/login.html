@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>lmloop — sign in</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main style="display:grid;place-items:center;min-height:80vh;text-align:center;gap:1rem">
+  <div>
+    <h1>lmloop</h1>
+    <p class="hint">This dashboard can start and stop agents, so it needs a sign-in.</p>
+    <p><a class="primary" href="/login/start" style="display:inline-block;text-decoration:none">Sign in</a></p>
+    <p class="error" id="error" hidden></p>
+  </div>
+</main>
+<script>
+  const error = new URLSearchParams(location.search).get("error");
+  if (error) { const el = document.getElementById("error"); el.textContent = error; el.hidden = false; }
+</script>
+</body>
+</html>

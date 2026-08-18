@@ -98,6 +98,29 @@ def diff_stat(cwd: Path, base: str) -> str:
     return git(["diff", "--stat", base], cwd, check=False)
 
 
+def _with_sizes(cwd: Path, paths: list[str]) -> list[str]:
+    """Annotate each path with its line count.
+
+    An agent budgeted to three files before its first write still has to choose
+    which three, and nothing in a bare list says that `chart-styles.css` is 585
+    lines while `button-styles.css` is 85.  Watched live on a CSS consolidation:
+    five stylesheets read in one pass, context overflowed, nothing written.  The
+    count is what turns "read the smallest file that answers this" into a choice
+    the agent can actually make, and it costs one stat and one read per file at
+    plan time instead of a whole window at work time.
+    """
+    annotated = []
+    for path in paths:
+        try:
+            with (cwd / path).open("rb") as handle:
+                lines = sum(1 for _ in handle)
+            annotated.append(f"{path} ({lines})")
+        except OSError:
+            # Unreadable or binary-ish; the path alone is still worth listing.
+            annotated.append(path)
+    return annotated
+
+
 def tracked_files(cwd: Path, limit: int = 160) -> str:
     """An inventory of the repo, for an agent that has never seen it.
 
@@ -116,7 +139,7 @@ def tracked_files(cwd: Path, limit: int = 160) -> str:
     if not paths:
         return ""
     if len(paths) <= limit:
-        return "\n".join(paths)
+        return "\n".join(_with_sizes(cwd, paths))
 
     counts: dict[str, int] = {}
     for path in paths:

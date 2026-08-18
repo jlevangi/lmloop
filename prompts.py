@@ -154,7 +154,9 @@ are present even though git does not track them.
 TREE_TEMPLATE = """\
 # The repository
 
-Every file tracked by git, so you do not have to go looking:
+Every file tracked by git, with its line count in parentheses, so you do not
+have to go looking -- and can tell a 600-line file from a 60-line one before
+you spend your context on it:
 
 ```
 {tree}

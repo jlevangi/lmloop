@@ -1,0 +1,25 @@
+[Unit]
+Description=lmloop dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/git/lmloop
+# /usr/bin/python3 rather than whatever is first on PATH: PyJWT and requests are
+# installed for it, and without them OIDC is unavailable and the server refuses
+# to bind anything but loopback.
+ExecStart=/usr/bin/python3 %h/git/lmloop/lmloop.py web
+Environment=PYTHONUNBUFFERED=1
+# lmloop shells out to `pi` and to git; pin the path so a manager-environment
+# change cannot break run launching in a way that only surfaces hours later.
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

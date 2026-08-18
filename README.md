@@ -100,6 +100,43 @@ git log --oneline <base>..lmloop/<run-id>
 git merge lmloop/<run-id>
 ```
 
+## The dashboard
+
+```bash
+lmloop web            # http://127.0.0.1:8082
+```
+
+Start a run, watch it, pause it, stop it, and continue a finished one, across
+every project under `LMLOOP_WEB_ROOTS` — without an ssh session or a tmux
+attach. It is phone-first, installable to a home screen, and shows plan progress
+rather than iteration counts, because "4 of 10 steps" is the honest measure of a
+long run and "iteration 7 of 20" is not.
+
+Two properties make it small. **Runs are controlled by files**, so pausing is
+`touch PAUSE` and the dashboard never owns a run's lifecycle: it can crash, be
+restarted, or be replaced mid-run and every control still works. And **the
+present is a file too** — `status.json` — so it reads state instead of replaying
+an append-only log to its end.
+
+A run that dies is reported as `stale`, never as running. A crashed loop leaves
+a `status.json` that still says `working`, so liveness comes from the age of that
+file and from whether the log records a completion.
+
+Without OIDC configured the server binds loopback only, and says so rather than
+quietly listening on every interface. A dashboard with a launch button does not
+belong on a network unauthenticated. To expose it, set the `LMLOOP_WEB_OIDC_*`
+variables in `~/.config/lmloop/web.env` (see `web/deploy/web.env.example`) and
+install its only two dependencies for the interpreter that runs it:
+
+```bash
+/usr/bin/python3 -m pip install "PyJWT[crypto]>=2.7,<3" "requests>=2.31,<3"
+```
+
+lmloop itself stays stdlib-only: those are imported in `web/auth.py` and nowhere
+else, and a missing one disables authentication rather than breaking the loop.
+
+`web/deploy/lmloop-web.service` runs it under systemd.
+
 ## Configuration
 
 `~/.config/lmloop/config.toml`, overridden by `.lmloop.toml` in the repo. See

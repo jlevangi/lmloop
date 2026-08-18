@@ -1,0 +1,9 @@
+{
+  "name": "lmloop",
+  "short_name": "lmloop",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090b18",
+  "theme_color": "#0b0d1d",
+  "icons": []
+}

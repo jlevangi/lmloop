@@ -321,6 +321,27 @@ def cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the dashboard.
+
+    Imported here rather than at module scope so the loop itself never pays for
+    the web package, and so a broken dashboard cannot stop a run from starting.
+    """
+    from web.server import configure, load_env, serve
+
+    load_env(Path(args.env).expanduser() if args.env else Path.home() / ".config" / "lmloop" / "web.env")
+    config = configure()
+    if args.host:
+        config["host"] = args.host
+    if args.port:
+        config["port"] = args.port
+    if args.roots:
+        config["roots"] = [Path(item).expanduser() for item in args.roots.split(":") if item.strip()]
+    if args.read_only:
+        config["read_only"] = True
+    return serve(config)
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     target = (
         Path.cwd() / config_module.PROJECT_CONFIG
@@ -369,6 +390,14 @@ def main() -> int:
     listing = sub.add_parser("models", help="what is loaded, measured, and selectable")
     listing.add_argument("--detect", action="store_true", help="measure the loaded model's real context")
     listing.set_defaults(func=cmd_models)
+
+    web = sub.add_parser("web", help="serve the dashboard: start, watch, pause and stop runs")
+    web.add_argument("--host", help="bind address (default 127.0.0.1; anything else needs OIDC)")
+    web.add_argument("--port", type=int, help="port (default 8082)")
+    web.add_argument("--roots", help="colon-separated directories to discover projects under")
+    web.add_argument("--read-only", action="store_true", help="serve the views, refuse every control")
+    web.add_argument("--env", help="env file to load (default ~/.config/lmloop/web.env)")
+    web.set_defaults(func=cmd_web)
 
     init = sub.add_parser("init", help="write a starting config")
     init.add_argument("--project", action="store_true", help="write ./.lmloop.toml instead of the global config")

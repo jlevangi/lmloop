@@ -25,7 +25,9 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import subprocess
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -94,13 +96,24 @@ def build_auth() -> OIDC:
     )
 
 
-def available_models(config: dict) -> dict:
+# `pi --list-models` costs ~2.6s: it starts node, loads every extension, and
+# asks llama-swap for its catalogue.  That is fine once and intolerable on every
+# page load, so the answer is cached and the endpoint that needs it is separate
+# from the one first paint waits on.  Models change when someone installs one.
+_MODEL_CACHE: dict = {"at": 0.0, "value": None}
+MODEL_CACHE_SECONDS = 300
+
+
+def available_models(config: dict, force: bool = False) -> dict:
     """Model ids pi will accept, asked of pi rather than guessed.
 
     A dashboard that offers a model the agent cannot resolve produces a run that
     dies on its first request, minutes later, for a reason nobody can see from
     here.
     """
+    fresh = time.monotonic() - _MODEL_CACHE["at"] < MODEL_CACHE_SECONDS
+    if _MODEL_CACHE["value"] and fresh and not force:
+        return _MODEL_CACHE["value"]
     try:
         result = subprocess.run(
             ["pi", "--list-models"], capture_output=True, text=True, timeout=30
@@ -112,10 +125,12 @@ def available_models(config: dict) -> dict:
         parts = line.split()
         if len(parts) >= 2 and parts[0] in ("llama-swap", "9router"):
             models.append(f"{parts[0]}/{parts[1]}")
-    return {
+    result = {
         "models": models or [config["default_model"]],
         "model_source": "pi" if models else "fallback",
     }
+    _MODEL_CACHE.update(at=time.monotonic(), value=result)
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -270,8 +285,11 @@ class Handler(BaseHTTPRequestHandler):
                 "user": session["name"],
                 "csrf": session["csrf"],
                 "oidc": self.auth.enabled,
-                **available_models(self.config),
             })
+        if path == "/api/models":
+            # Fetched only when the new-run form opens, so first paint never
+            # waits on a node process starting up.
+            return self.json(available_models(self.config, force="refresh" in parsed.query))
         if path == "/api/projects":
             return self.json({"projects": runs_module.projects(self.config["roots"])})
         if path == "/api/runs":
@@ -299,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         ):
             return self.json({"error": "bad CSRF token"}, 403)
 
+        if path == "/api/projects":
+            return self.create_project(self.body())
         if path == "/api/runs":
             return self.start_run(self.body())
         if path.startswith("/api/runs/"):
@@ -309,6 +329,58 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json({"error": "no such run"}, 404)
                 return self.control(project, run_dir, parts[2], self.body())
         return self.json({"error": "not found"}, 404)
+
+    def create_project(self, payload):
+        """Make a new repository and hand it back ready to be run against.
+
+        lmloop otherwise only works on code that already exists, which means an
+        idea has to be turned into a git repository by hand before the loop can
+        touch it.  This closes that gap: a name and an objective are enough to
+        get from nothing to a working run.
+
+        The name is the only untrusted path component in the system, so it is
+        matched against a strict pattern rather than sanitised -- rejecting a
+        bad name is always right, and guessing what someone meant by `../` is
+        never right.
+        """
+        name = str(payload.get("name", "")).strip()
+        objective = str(payload.get("objective", "")).strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+            return self.json({
+                "error": "name must be 1-64 characters of letters, digits, dot, dash or underscore"
+            }, 400)
+        if name in (".", "..") or name.startswith("."):
+            return self.json({"error": "name may not start with a dot"}, 400)
+
+        root = self.config["roots"][0]
+        target = (root / name).resolve()
+        if not str(target).startswith(str(root.resolve()) + os.sep):
+            return self.json({"error": "name escapes the project root"}, 400)
+        if target.exists():
+            return self.json({"error": f"{name} already exists"}, 409)
+
+        try:
+            target.mkdir(parents=True)
+            # A repository with no commits has no HEAD, and a worktree cannot be
+            # branched off nothing -- so the first commit is part of creating the
+            # project, not something the agent has to remember to do.
+            readme = f"# {name}\n"
+            if objective:
+                readme += f"\n{objective}\n"
+            (target / "README.md").write_text(readme)
+            for argv in (
+                ["git", "init", "-q"],
+                ["git", "add", "-A"],
+                ["git", "-c", "commit.gpgsign=false", "commit", "-qm",
+                 f"Start {name}"],
+            ):
+                done = subprocess.run(argv, cwd=target, capture_output=True, text=True, timeout=60)
+                if done.returncode != 0:
+                    return self.json({"error": (done.stderr or done.stdout).strip()[-400:]}, 500)
+        except OSError as error:
+            return self.json({"error": str(error)}, 500)
+
+        return self.json({"id": name, "name": name, "path": str(target), "runs": 0})
 
     def start_run(self, payload):
         project_id = str(payload.get("project", ""))

@@ -387,9 +387,18 @@ async function renderNew() {
     option.textContent = p.runs ? `${p.name} · ${plural(p.runs, "run")}` : p.name;
     return option;
   }));
+  const NEW = "\u0000new";
+  const fresh = document.createElement("option");
+  fresh.value = NEW;
+  fresh.textContent = "+ new project…";
+  $("project").append(fresh);
   if (state.project) $("project").value = state.project;
+  toggleNewProject();
 
-  $("model").replaceChildren(...(state.config.models || []).map((id) => {
+  // Fetched here rather than at startup: it costs a couple of seconds and only
+  // this form needs it.
+  const catalogue = state.models || (state.models = await api("/api/models"));
+  $("model").replaceChildren(...(catalogue.models || []).map((id) => {
     const option = document.createElement("option");
     option.value = option.textContent = id;
     return option;
@@ -399,14 +408,33 @@ async function renderNew() {
   $("iterations").value = state.config.default_max_iterations;
 }
 
+function toggleNewProject() {
+  const creating = $("project").value === "\u0000new";
+  $("new-project-fields").hidden = !creating;
+  $("project-name").required = creating;
+  $("launch-submit").textContent = creating ? "Create project and start" : "Start run";
+}
+
+$("project").addEventListener("change", toggleNewProject);
+
 $("launch-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = $("launch-submit");
   button.disabled = true;
   try {
+    let project = $("project").value;
+    if (project === "\u0000new") {
+      // Create first, then run against it: two calls, but one action as far as
+      // anyone using it is concerned.
+      const made = await api("/api/projects", {
+        body: { name: $("project-name").value.trim(), objective: $("objective").value },
+      });
+      project = made.id;
+      state.project = made.id;
+    }
     await api("/api/runs", {
       body: {
-        project: $("project").value,
+        project,
         objective: $("objective").value,
         model: $("model").value,
         thinking: $("thinking").value,
@@ -414,6 +442,8 @@ $("launch-form").addEventListener("submit", async (event) => {
       },
     });
     $("objective").value = "";
+    $("project-name").value = "";
+    state.models = state.models;   // catalogue is still good
     await poll();
     go("#");
   } catch (error) {

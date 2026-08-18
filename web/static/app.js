@@ -53,6 +53,14 @@ function duration(seconds) {
 
 const ago = (s) => (s == null ? "never" : s < 60 ? "just now" : `${duration(s)} ago`);
 
+/* The poll is every few seconds; a clock that only moves when it lands looks
+ * stuck. Elapsed is extrapolated from when the figure was fetched, so the page
+ * keeps time on its own between updates. */
+function liveElapsed(run) {
+  const drift = (Date.now() - (state.fetchedAt || Date.now())) / 1000;
+  return duration(Math.round((run.elapsed_seconds || 0) + drift));
+}
+
 function el(tag, className, content) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -64,8 +72,10 @@ function metaBits(run) {
   const bits = [];
   if (run.iteration) bits.push(`iter ${run.iteration}/${run.max_iterations ?? "?"}`);
   if (run.commits) bits.push(plural(run.commits, "commit"));
-  if (run.state === "running" && run.last_tool) bits.push(run.last_tool);
-  if (run.state === "running" && run.elapsed_seconds) bits.push(duration(run.elapsed_seconds));
+  // The tool is already on the activity line for a running run; repeating it
+  // here just spends a phone's width saying the same word twice.
+  if (run.state !== "running" && run.last_tool) bits.push(run.last_tool);
+  if (run.state === "running" && run.elapsed_seconds != null) bits.push(liveElapsed(run));
   if (run.compactions) bits.push(`${run.compactions} ovf`);
   if (run.model) bits.push(run.model.split("/").pop());
   bits.push(ago(run.age_seconds));
@@ -91,13 +101,19 @@ function makeRow(run) {
   track.append(fill);
   progress.append(track, steps);
 
+  const now = el("div", "now");
+  const nowStep = el("span", "now-step");
+  const nowAct = el("span", "now-act");
+  now.append(nowStep, nowAct);
+
   const pips = el("div", "pips");
   const meta = el("div", "meta");
 
-  node.append(head, title, progress, pips, meta);
+  node.append(head, title, progress, now, pips, meta);
   node.addEventListener("click", () => go(`#${run.project}/${run.run_id}`));
 
-  const parts = { node, where, stateLabel, title, progress, fill, steps, pips, meta, last: null };
+  const parts = { node, where, stateLabel, title, progress, track, fill, steps,
+                  now, nowStep, nowAct, pips, meta, last: null };
   patchRow(parts, run);
   return parts;
 }
@@ -106,8 +122,8 @@ function patchRow(parts, run) {
   // Cheap guard: nothing below runs unless something the row shows has moved.
   const key = JSON.stringify([
     run.state, run.title, run.plan_done, run.plan_total, run.outcomes,
-    run.iteration, run.commits, run.last_tool, run.elapsed_seconds,
-    run.compactions, run.model, run.age_seconds,
+    run.iteration, run.commits, run.last_tool, run.last_target, run.current_step,
+    run.elapsed_seconds, run.compactions, run.model, run.age_seconds,
   ]);
   if (key === parts.last) return;
   parts.last = key;
@@ -125,6 +141,15 @@ function patchRow(parts, run) {
     parts.progress.hidden = true;
   }
 
+  // What it is doing, right now, without opening anything.
+  const live = run.state === "running";
+  parts.track.classList.toggle("working", live);
+  parts.now.hidden = !(live && (run.current_step || run.last_tool));
+  parts.nowStep.textContent = run.current_step || "";
+  parts.nowAct.textContent = live
+    ? [run.last_tool, run.last_target].filter(Boolean).join(" ")
+    : "";
+
   const outcomes = run.outcomes || [];
   parts.pips.hidden = outcomes.length === 0;
   while (parts.pips.children.length > outcomes.length) parts.pips.lastChild.remove();
@@ -136,9 +161,11 @@ function patchRow(parts, run) {
 
   const bits = metaBits(run);
   while (parts.meta.children.length > bits.length) parts.meta.lastChild.remove();
+  const clockAt = bits.indexOf(live && run.elapsed_seconds != null ? liveElapsed(run) : "\u0000");
   bits.forEach((bit, index) => {
     const span = parts.meta.children[index] || parts.meta.appendChild(el("span"));
     span.textContent = bit;
+    span.className = index === clockAt ? "clock" : "";
   });
 }
 
@@ -330,6 +357,20 @@ async function renderRun(project, runId, { quiet = false } = {}) {
   );
   parts.push(facts);
 
+  if (ACTIVE.has(run.state) && (run.current_step || run.last_tool)) {
+    const doing = el("div", "doing");
+    doing.append(el("div", "label", run.paused ? "paused on" : "working on"));
+    if (run.current_step) doing.append(el("div", "step", run.current_step));
+    const act = [run.last_tool, run.last_target].filter(Boolean).join(" ");
+    const line = el("div", "act");
+    line.append(el("span", "clock", liveElapsed(run)));
+    if (act) line.append(` · ${act}`);
+    if (run.output_tokens) line.append(` · ${run.output_tokens} out`);
+    if (run.quiet_seconds > 60) line.append(` · quiet ${duration(run.quiet_seconds)}`);
+    doing.append(line);
+    parts.push(doing);
+  }
+
   if (!state.config?.read_only) {
     const controls = el("div", "controls");
     if (ACTIVE.has(run.state)) {
@@ -501,6 +542,7 @@ async function poll() {
   try {
     const { runs } = await api("/api/runs");
     state.runs = runs;
+    state.fetchedAt = Date.now();
     renderFilters();
     await route({ quiet: true });
   } catch (error) {
@@ -517,6 +559,21 @@ function schedule() {
 }
 
 document.addEventListener("visibilitychange", schedule);
+
+// One second, only while something is running and the tab is visible.
+setInterval(() => {
+  if (document.hidden) return;
+  if (!state.runs.some((run) => run.state === "running")) return;
+  for (const [runId, parts] of state.rows) {
+    const run = state.runs.find((item) => item.run_id === runId);
+    if (!run || run.state !== "running") continue;
+    const clock = parts.meta.querySelector(".clock");
+    if (clock) clock.textContent = liveElapsed(run);
+  }
+  const panel = document.querySelector("#view-run .clock");
+  const shown = state.runs.find((run) => run.run_id === state.route.run_id);
+  if (panel && shown?.state === "running") panel.textContent = liveElapsed(shown);
+}, 1000);
 
 (async function start() {
   try {

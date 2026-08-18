@@ -102,6 +102,7 @@ class _Stream:
         self.output_tokens = 0
         self.stderr = ""
         self.last_tool = ""
+        self.last_target = ""
 
     def note_output(self) -> None:
         """Any byte from pi. Keeps the stall clock fresh once it is running."""
@@ -115,12 +116,34 @@ class _Stream:
         self.last_event_at = now
 
 
+def _target(args: dict) -> str:
+    """What a tool call is pointed at, in a few words.
+
+    "read" tells you the agent is alive; "read players.py" tells you what it is
+    doing, which is the difference between a status line worth watching and one
+    worth ignoring.  Only the tail of a path is kept -- the worktree prefix is
+    the same for every call and would push the useful part off a phone screen.
+    """
+    for key in ("path", "file_path", "filePath"):
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            return value.rsplit("/", 1)[-1]
+    command = args.get("command")
+    if isinstance(command, str) and command:
+        return " ".join(command.split())[:60]
+    pattern = args.get("pattern") or args.get("query")
+    if isinstance(pattern, str) and pattern:
+        return pattern[:40]
+    return ""
+
+
 def _handle(event: dict, state: _Stream) -> None:
     kind = event.get("type")
     if kind == "tool_execution_start":
         state.tool_calls += 1
         name = event.get("toolName", "")
         state.last_tool = name
+        state.last_target = _target(event.get("args") or {})
         if name in WRITE_TOOLS:
             state.writes += 1
             path = (event.get("args") or {}).get("path")
@@ -268,6 +291,7 @@ def run(
                 "writes": state.writes,
                 "compactions": state.compactions,
                 "last_tool": state.last_tool,
+                "last_target": state.last_target,
                 "output_tokens": state.output_tokens,
                 # Before the first event this is time spent waiting on
                 # llama-swap to load, not the agent going quiet.

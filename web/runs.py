@@ -169,6 +169,26 @@ def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float 
     return "running", age
 
 
+def _current_step(text: str) -> str:
+    """The first unchecked step: what the run is working on right now.
+
+    This is the single most useful sentence about a live run, and it was
+    previously only visible by opening the plan.  Markdown emphasis is stripped
+    -- the agent writes `**Fix dark-mode.css conflict**` for itself, and a status
+    line should read as a sentence rather than as source.
+    """
+    import re as _re
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("- [", "* [")) and stripped[3:4].lower() != "x":
+            step = stripped[5:].strip()
+            step = _re.sub(r"\*\*([^*]+)\*\*", r"\1", step)
+            step = step.replace("`", "")
+            return step[:160]
+    return ""
+
+
 def _plan_progress(text: str) -> tuple[int, int]:
     done = total = 0
     for line in text.splitlines():
@@ -210,6 +230,10 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "max_iterations": status.get("max_iterations"),
         "phase": status.get("phase", ""),
         "last_tool": status.get("last_tool", ""),
+        "last_target": status.get("last_target", ""),
+        "current_step": _current_step(plan),
+        "quiet_seconds": status.get("quiet_seconds"),
+        "output_tokens": status.get("output_tokens"),
         "elapsed_seconds": status.get("elapsed_seconds"),
         "tool_calls": status.get("tool_calls"),
         "writes": status.get("writes"),

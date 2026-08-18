@@ -416,7 +416,8 @@ class Run:
         elif snap["quiet"] > 60:
             detail = paint.yellow(f"quiet {display.elapsed(snap['quiet'])}")
         elif snap["last_tool"]:
-            detail = paint.cyan(snap["last_tool"])
+            target = snap.get("last_target", "")
+            detail = paint.cyan(snap["last_tool"] + (f" {target}" if target else ""))
         else:
             detail = paint.dim("thinking")
 
@@ -456,6 +457,7 @@ class Run:
             "phase": "loading" if snap["loading"] else "working",
             "elapsed_seconds": round(snap["elapsed"]),
             "last_tool": snap["last_tool"],
+            "last_target": snap.get("last_target", ""),
             "tool_calls": snap["tool_calls"],
             "writes": snap["writes"],
             "compactions": snap["compactions"],

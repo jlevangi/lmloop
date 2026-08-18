@@ -209,6 +209,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   border: 1px solid var(--line-strong);
   border-radius: var(--radius) var(--radius) 0 0;
   width: min(680px, 100%); max-height: 92dvh;
+  /* Flex column with a min-height:0 body, or the body cannot scroll: an
+     auto-overflow child of an unconstrained parent just grows, and the dialog
+     clips it. That is why the sheet could be opened but not scrolled. */
+  display: flex; flex-direction: column;
   margin: auto auto 0;              /* bottom sheet on a phone */
   box-shadow: 0 -20px 60px #000a;
 
@@ -254,7 +258,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   padding: 16px;
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
   overflow-y: auto; overscroll-behavior: contain;
-  display: grid; gap: 10px;
+  min-height: 0; flex: 1;
+  -webkit-overflow-scrolling: touch;
+  display: grid; gap: 10px; align-content: start;
 }
 
 label { font-size: .78rem; color: var(--ink-dim); letter-spacing: .02em; }

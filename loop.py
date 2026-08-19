@@ -44,15 +44,20 @@ class Run:
         self.repo = repo
         self.config = config
         self.objective = objective
-        self.run_id = run_id or make_run_id(objective)
         self.max_iterations = max_iterations or config["stop"]["max_iterations"]
         self.model = config["agent"]["model"]
         self.interrupted = False
 
-        self.branch = config["worktree"]["branch"].format(repo=repo.name, run_id=self.run_id)
-        self.worktree = Path(
-            config["worktree"]["root"].format(repo=str(repo), run_id=self.run_id)
-        )
+        # An explicit run id is a run that already exists -- `lmloop resume`
+        # naming the one it means -- so it is taken literally.  A derived one is
+        # a new attempt, and gets a free lane if today already used that name.
+        self.run_id = run_id if run_id else self._free_run_id(make_run_id(objective))
+        self.collided_with = ""
+        if run_id is None and self.run_id != make_run_id(objective):
+            self.collided_with = make_run_id(objective)
+
+        self.branch = self._branch_for(self.run_id)
+        self.worktree = self._worktree_for(self.run_id)
         self.rundir = RunDir(self.worktree, self.run_id)
 
         self.gate_result = ""
@@ -61,6 +66,51 @@ class Run:
         self.linked: list[str] = []
         self.defects: list[str] = []
         self.screen = display.Screen()
+
+    def _branch_for(self, run_id: str) -> str:
+        return self.config["worktree"]["branch"].format(repo=self.repo.name, run_id=run_id)
+
+    def _worktree_for(self, run_id: str) -> Path:
+        return Path(
+            self.config["worktree"]["root"].format(repo=str(self.repo), run_id=run_id)
+        )
+
+    def _free_run_id(self, base: str) -> str:
+        """``base``, or ``base-2``, ``base-3`` ... if those names are taken.
+
+        The run id is date + slug + hash of the prompt, so the same objective on
+        the same day derives the same id -- and that is exactly the day it
+        happens, because the reason to re-run an objective is that the first
+        attempt went nowhere and the prompt or the config has been fixed since.
+        Failing there sent the operator to `git worktree remove` to get on with
+        the thing they had just decided to do again.
+
+        Nothing is discarded to make room: the earlier run keeps its worktree,
+        its branch and its handoff chain, and the new attempt simply takes the
+        next name.  The caller is told which run it stepped around, so that an
+        operator who meant `lmloop resume` finds out before the second worktree
+        is a surprise.
+        """
+        if not self._taken(base):
+            return base
+        for suffix in range(2, 100):
+            candidate = f"{base}-{suffix}"
+            if not self._taken(candidate):
+                return candidate
+        return base  # 99 attempts today; let prepare() say so plainly.
+
+    def _taken(self, run_id: str) -> bool:
+        """A name is taken if either half of it is: worktree or branch.
+
+        Checking only the directory would hand back a name whose branch still
+        exists from a worktree someone removed by hand, and `git worktree add`
+        would then fail on the branch instead -- the same dead end, one step
+        later and with a worse message.
+        """
+        return (
+            self._worktree_for(run_id).exists()
+            or gitops.branch_exists(self.repo, self._branch_for(run_id))
+        )
 
     # -- setup ------------------------------------------------------------
 
@@ -77,7 +127,17 @@ class Run:
 
     def prepare(self) -> None:
         if self.worktree.exists():
-            raise SystemExit(f"lmloop: {self.worktree} already exists")
+            # Only reachable when `_free_run_id` ran out of lanes, or when a run
+            # id was named explicitly.  Either way the two real options are
+            # continuing that run or clearing it out, so say both, with the
+            # commands: this used to be a dead end that the operator had to
+            # reverse-engineer from a path.
+            raise SystemExit(
+                f"lmloop: {self.worktree} already exists\n"
+                f"  continue it:  lmloop resume {self.run_id}\n"
+                f"  or clear it:  git worktree remove {self.worktree}"
+                f" && git branch -D {self.branch}"
+            )
 
         # `.lmloop.toml` is excluded too: it is the operator's config, it lives
         # at the repo root, and `git add -A` inside a worktree would otherwise

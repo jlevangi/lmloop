@@ -37,6 +37,26 @@ killed where it stands and the partial tree is committed as `interrupted`.
 Neither discards anything, so the choice is only about what you are willing to
 wait for. `SIGINT` is `STOP-NOW`; a second `SIGINT` exits without committing.
 
+## Run ids, and re-running the same objective
+
+A run id is `<date>-<slug>-<hash-of-the-prompt>`, so the same objective on the
+same day derives the same id — which is exactly the day it happens, because the
+reason to re-run an objective is that the first attempt went nowhere. The second
+attempt takes the next free name (`…-2`, `…-3`) rather than failing, and says
+which run it stepped around:
+
+```
+lmloop 2026-08-19-tidy-the-thing-9add55-2
+  note    2026-08-19-tidy-the-thing-9add55 exists; this is a separate attempt
+          lmloop resume 2026-08-19-tidy-the-thing-9add55  to continue that one instead
+```
+
+Nothing is reused and nothing is removed: the earlier run keeps its worktree,
+its branch and its handoff chain. A name counts as taken if *either* half of it
+is — the worktree directory or the `lmloop/<run-id>` branch — so a worktree
+removed by hand does not leave a branch behind for `git worktree add` to trip
+over later.
+
 ## Where a run lives
 
 ```

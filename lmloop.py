@@ -129,6 +129,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     # a phone as often as on a desktop, and the worktree path alone ran to 96
     # characters -- three wrapped lines before the run has even started.
     display.out(f"lmloop {run.run_id}")
+    if run.collided_with:
+        # Said before the run starts, not after it fails: this objective already
+        # has a run from today, and an operator who meant to carry that one on
+        # has one line in which to notice and one command to do it with.
+        display.out(f"  note    {run.collided_with} exists; this is a separate attempt")
+        display.out(f"          lmloop resume {run.collided_with}  to continue that one instead")
     display.out(f"  model   {run.model}")
     # The repo's basename, not its path: this is the longest and least useful
     # item on a phone, and the absolute path is already in the run:start event

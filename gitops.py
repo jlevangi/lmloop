@@ -47,6 +47,13 @@ def is_clean(cwd: Path) -> bool:
     return not git(["status", "--porcelain"], cwd)
 
 
+def branch_exists(repo: Path, branch: str) -> bool:
+    """Read-only.  Asked before naming a new run, never before removing one."""
+    return bool(
+        git(["for-each-ref", "--format=%(refname:short)", f"refs/heads/{branch}"], repo)
+    )
+
+
 def add_worktree(repo: Path, path: Path, branch: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     git(["worktree", "add", "-b", branch, str(path)], repo)

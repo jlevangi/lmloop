@@ -372,7 +372,10 @@ class Run:
         self.run_gate(number)
         # Structural checks run whatever the project configured, because the
         # damage an edit does is not project-specific -- see checks.py.
-        self.defects = checks.run(self.worktree, base)
+        # The plan is checked too, separately: it lives under `.lmloop/`, which
+        # git excludes, so `checks.run` -- which works from the git diff -- can
+        # never see the file that decides what every future iteration does.
+        self.defects = checks.run(self.worktree, base) + self.rundir.plan_problems()
         if self.defects:
             self.rundir.event("checks:failed", iteration=number, problems=self.defects[:20])
 

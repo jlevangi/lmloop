@@ -117,6 +117,43 @@ class RunDir:
         except OSError:
             return 0.0
 
+    def plan_problems(self) -> list[str]:
+        """Corruption in the plan itself, which nothing else can see.
+
+        `.lmloop/` is excluded from git, so the structural checks -- which work
+        from what git says changed -- never look at the one file that steers the
+        entire run.  Observed on one-project: an edit wrote a step twice, once in
+        its original unchecked form and once checked, and because both the prompt
+        and `_current_step` take the *first* unchecked line, the next iteration
+        was sent to redo work that was already finished.
+
+        A duplicated step is unambiguous damage rather than a decision, so it is
+        reported like any other broken file and repair becomes the iteration's
+        job.  The loop does not rewrite the plan itself: the plan is the agent's,
+        and a harness that silently edits it is a harness whose state the agent
+        can no longer trust.
+        """
+        seen: dict[str, int] = {}
+        problems: list[str] = []
+        for number, line in enumerate(self.read_plan().splitlines(), 1):
+            stripped = line.strip()
+            if not stripped.startswith(("- [", "* [")):
+                continue
+            # Compare the step text, ignoring whether it is checked: the same
+            # step present both checked and unchecked is exactly the failure.
+            text = " ".join(stripped[5:].split()).lower()
+            if not text:
+                continue
+            if text in seen:
+                problems.append(
+                    f"plan.md:{number}: step duplicated from line {seen[text]} "
+                    f"-- \"{text[:60]}\". The first unchecked copy is what the "
+                    "next iteration is sent to do, so remove the stale one."
+                )
+            else:
+                seen[text] = number
+        return problems
+
     def plan_progress(self) -> tuple[int, int]:
         """(done, total) checkbox items in the plan.
 

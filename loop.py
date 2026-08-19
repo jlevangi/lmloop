@@ -153,8 +153,24 @@ class Run:
         if self.no_diff_streak >= limit:
             # Iteration counts and self-reported summaries are not evidence of
             # work.  Git is the only honest witness, so this is the one guard
-            # that cannot be talked out of stopping.
-            return f"no git-visible change in {limit} consecutive iterations"
+            # that cannot be talked out of stopping -- plan progress deliberately
+            # does NOT reset the streak, because checking a box is a self-report
+            # and an agent that could reset this guard by doing so would be able
+            # to talk its way past the only check that never lies.
+            #
+            # But the operator needs to tell a stuck run from a clean stop, and
+            # those look identical in the streak alone: a plan can legitimately
+            # contain steps that change no files -- "verify the toggle still
+            # works" is real work with no diff.  So the plan movement is
+            # reported alongside, as context rather than as permission.
+            reason = f"no git-visible change in {limit} consecutive iterations"
+            done, total = self.rundir.plan_progress()
+            start = getattr(self, "_plan_at_start", None)
+            if total and start is not None and done > start:
+                reason += f" (plan advanced {start}/{total} -> {done}/{total}, so this may be steps that need no code)"
+            elif total:
+                reason += f" (plan still at {done}/{total})"
+            return reason
         return None
 
     # -- the environment the worktree does not inherit ---------------------
@@ -654,6 +670,7 @@ class Run:
 
         iteration = from_iteration
         reason = None
+        self._plan_at_start = self.rundir.plan_progress()[0]
         while True:
             iteration += 1
             display.wait_while_paused(self.rundir, self.screen, lambda: self.interrupted)

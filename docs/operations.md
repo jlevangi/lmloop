@@ -123,6 +123,11 @@ form, so the compaction harvest still works) and deletes the bytecode cache,
 which is the one thing in a run directory that carries no record. It refuses to
 touch a run whose `status.json` is less than five minutes old.
 
+It also runs when a run ends (`[prune] after_run`, default on), sweeping the
+whole repository including the run that just finished — the liveness test is the
+age of `status.json`, which would otherwise skip precisely the run holding the
+space, so the loop vouches for its own id.
+
 Nothing else is ever removed, and no worktree is ever deleted — a run that
 produced nothing still has to be diagnosable.
 

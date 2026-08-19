@@ -698,7 +698,40 @@ class Run:
         )
         self.screen.close()
         self._summarise(reason, started)
+        self._sweep()
         return 0
+
+    def _sweep(self) -> None:
+        """Reclaim the disk this run cost, now that it has stopped.
+
+        At the end rather than on a timer: this is the moment the space appears
+        and the moment somebody is watching, and one honest line about what was
+        freed is easier to trust than a cron job quietly rewriting run
+        directories overnight.  Nothing is lost -- streams are compressed and
+        stay readable; only regenerable bytecode is removed.
+        """
+        settings = self.config.get("prune", {})
+        if not settings.get("after_run", True):
+            return
+        try:
+            import prune
+
+            result = prune.prune(
+                [self.repo],
+                older_than_days=settings.get("older_than_days", 0.0),
+                finished={self.run_id},
+            )
+        except Exception as error:  # noqa: BLE001 - housekeeping never fails a run
+            self.rundir.event("prune:failed", detail=str(error))
+            return
+        freed = result["saved"] + result["bytecode"]
+        if freed:
+            self.rundir.event(
+                "prune", files=len(result["files"]), saved=result["saved"],
+                bytecode=result["bytecode"],
+            )
+            self.screen.log(f"  reclaimed {freed / 1e6:.0f} MB "
+                            f"({len(result['files'])} streams compressed, bytecode dropped)")
 
     def _on_interrupt(self, *_args) -> None:
         if self.interrupted:

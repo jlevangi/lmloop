@@ -109,6 +109,17 @@ DEFAULTS: dict = {
         # 0 disables the check.
         "max_compactions": 3,
     },
+    "prune": {
+        # Sweep when a run ends, rather than on a timer.  A run is exactly when
+        # the disk usage happens and exactly when someone is around to see the
+        # result, and a cron job that quietly rewrites run directories at 3am is
+        # harder to trust than one line at the end of a run that says what it
+        # did.  Nothing is deleted but regenerable bytecode; see prune.py.
+        "after_run": True,
+        # 0 sweeps every finished run in the repository, including the one that
+        # has just ended -- which is the one holding the space.
+        "older_than_days": 0.0,
+    },
     "gate": {
         "command": "",
         "blocks_commit": False,
@@ -189,6 +200,10 @@ link   = [".venv", "venv", "node_modules"]
 timeout_seconds = 14400   # 4h backstop
 stall_seconds   = 1200    # 20m of silence from the agent
 max_compactions = 3       # give up after N context overflows with no writes
+
+[prune]
+after_run       = true    # compress streams and drop bytecode when a run ends
+older_than_days = 0       # 0 = including the run that just finished
 
 [gate]
 command       = ""        # e.g. "python -m compileall -q backend"

@@ -115,15 +115,28 @@ def run_dirs(roots: list[Path]) -> list[Path]:
     return sorted(set(found))
 
 
-def prune(roots: list[Path], older_than_days: float = 0.0, dry_run: bool = False) -> dict:
-    """Compress every finished run's streams. Returns a summary."""
+def prune(
+    roots: list[Path],
+    older_than_days: float = 0.0,
+    dry_run: bool = False,
+    finished: set[str] | None = None,
+) -> dict:
+    """Compress every finished run's streams. Returns a summary.
+
+    `finished` names run ids the caller knows have stopped.  The liveness test
+    is the age of `status.json`, which is exactly wrong in the one case worth
+    optimising for: a run that has just ended wrote that file seconds ago, and
+    is also the run holding the 86 MB nobody has cleaned up yet.  The loop
+    passes its own id when it finishes so the sweep can include it.
+    """
+    finished = finished or set()
     cutoff = time.time() - older_than_days * 86400
     saved = before_total = after_total = bytecode = 0
     touched: list[str] = []
     skipped_live: list[str] = []
 
     for run_dir in run_dirs(roots):
-        if _is_live(run_dir):
+        if run_dir.name not in finished and _is_live(run_dir):
             skipped_live.append(run_dir.name)
             continue
 

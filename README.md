@@ -180,6 +180,11 @@ skipped.
 
 On one-project: 313 MB → 8.6 MB, with every stream still readable.
 
+This also runs automatically when a run ends — `[prune] after_run`, on by
+default. A run is exactly when the space appears and when someone is watching,
+which is easier to trust than a cron job quietly rewriting run directories at
+3am. It prints one line saying what it freed.
+
 ## Configuration
 
 `~/.config/lmloop/config.toml`, overridden by `.lmloop.toml` in the repo. See

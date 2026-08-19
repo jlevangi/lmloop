@@ -161,6 +161,26 @@ It is deliberately not a linter — style is the agent's business, and a noisy
 check is one that gets ignored. Anything encoding what a *particular* repository
 considers correct belongs in that repository's own `[gate] command`.
 
+## Notifications
+
+A run is unattended for hours by design, so the moment it ends is the moment
+nobody is watching.
+
+```toml
+[notify]
+url           = "https://ntfy.example.com"
+topic         = "lmloop"
+dashboard_url = "https://lmloop.example.com"   # taps through to the run
+```
+
+One push when the run stops, never per iteration — a notification every twenty
+minutes for ten hours is a channel you learn to ignore. The title carries the
+verdict, because that is what a lock screen shows: *"one-project: 9 commits"*,
+or *"one-project: nothing committed"* at high priority, which is the case worth
+interrupting someone for.
+
+Empty `url` disables it, and it can never fail a run.
+
 ## Disk
 
 A run costs about 86 MB, almost all of it pi's raw event stream, and a bytecode

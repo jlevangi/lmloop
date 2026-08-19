@@ -92,6 +92,20 @@ class RunDir:
         with self.log_path.open("a") as handle:
             handle.write(json.dumps(record) + "\n")
 
+    def read_events(self) -> list[dict]:
+        """The run's own event log, parsed.  Small: one line per lifecycle event."""
+        parsed = []
+        try:
+            text = self.log_path.read_text(errors="replace")
+        except OSError:
+            return []
+        for line in text.splitlines():
+            try:
+                parsed.append(json.loads(line))
+            except ValueError:
+                continue
+        return parsed
+
     # -- notes ------------------------------------------------------------
 
     def append_notes(self, number: int, summary: str, changes: list[str], learnings: list[str]) -> None:

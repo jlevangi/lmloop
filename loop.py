@@ -699,7 +699,51 @@ class Run:
         self.screen.close()
         self._summarise(reason, started)
         self._sweep()
+        self._announce(reason, started, iteration - 1)
         return 0
+
+    def _announce(self, reason: str | None, started: float, iterations: int) -> None:
+        """Push one notification saying the run has stopped.
+
+        Last, after the sweep, so the figures quoted are the ones that survive.
+        Like the sweep it can never fail a run: a dead server, a typo in a URL
+        and a network outage all end the same way, with an event in the log.
+        """
+        settings = self.config.get("notify", {})
+        if not settings.get("url"):
+            return
+
+        failures: dict[str, int] = {}
+        for event in self.rundir.read_events():
+            if event.get("event") == "iteration:end":
+                outcome = event.get("outcome", "")
+                if outcome and outcome != "ok":
+                    failures[outcome] = failures.get(outcome, 0) + 1
+
+        try:
+            import notify
+
+            problem = notify.send(settings, {
+                "repo": self.repo.name,
+                "project": self.repo.name,
+                "run_id": self.run_id,
+                "objective": self.objective,
+                "iterations": iterations,
+                "commits": gitops.commit_count(self.worktree, self.rundir.base_commit),
+                "hours": (time.monotonic() - started) / 3600,
+                "plan": self.rundir.plan_progress(),
+                "reason": reason or "complete",
+                "failures": failures,
+                "defects": self.defects,
+            })
+        except Exception as error:  # noqa: BLE001 - never fails a run
+            problem = str(error)
+
+        if problem:
+            self.rundir.event("notify:failed", detail=problem)
+            self.screen.log(f"  could not notify: {problem}")
+        else:
+            self.rundir.event("notify", topic=settings.get("topic", ""))
 
     def _sweep(self) -> None:
         """Reclaim the disk this run cost, now that it has stopped.

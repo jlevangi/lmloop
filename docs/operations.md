@@ -106,6 +106,16 @@ Then **run the thing**. Every real bug this project has found surfaced from
 running it, never from reading it — and for frontend work, "every file parses"
 told us nothing about 47 selectors that had stopped being loaded.
 
+## Notifications
+
+`[notify] url` (ntfy) pushes one message when a run stops. `dashboard_url`
+makes it tap through to that run via the hash route the dashboard already
+supports.
+
+Deliberately one push at the end, not per iteration. The title carries the
+verdict; no commits raises the priority, because a run that spent hours and left
+git with nothing is the case worth being interrupted for.
+
 ## Disk
 
 ```bash

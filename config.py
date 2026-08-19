@@ -109,6 +109,17 @@ DEFAULTS: dict = {
         # 0 disables the check.
         "max_compactions": 3,
     },
+    "notify": {
+        # A run is unattended for hours by design, so the moment it ends is the
+        # moment nobody is watching.  One push when it stops, never per
+        # iteration: a notification every twenty minutes for ten hours is a
+        # channel you learn to ignore, which costs more than it gives.
+        "url": "",            # e.g. "https://ntfy.example.com"
+        "topic": "lmloop",
+        "token": "",          # bearer, if the server requires one
+        # Makes the notification tap through to the run in the dashboard.
+        "dashboard_url": "",  # e.g. "https://lmloop.example.com"
+    },
     "prune": {
         # Sweep when a run ends, rather than on a timer.  A run is exactly when
         # the disk usage happens and exactly when someone is around to see the
@@ -200,6 +211,12 @@ link   = [".venv", "venv", "node_modules"]
 timeout_seconds = 14400   # 4h backstop
 stall_seconds   = 1200    # 20m of silence from the agent
 max_compactions = 3       # give up after N context overflows with no writes
+
+[notify]
+url           = ""        # e.g. "https://ntfy.example.com"; empty disables
+topic         = "lmloop"
+token         = ""        # bearer, if the server requires one
+dashboard_url = ""        # so the notification taps through to the run
 
 [prune]
 after_run       = true    # compress streams and drop bytecode when a run ends

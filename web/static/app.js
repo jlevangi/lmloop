@@ -77,6 +77,7 @@ function metaBits(run) {
   if (run.state !== "running" && run.last_tool) bits.push(run.last_tool);
   if (run.state === "running" && run.elapsed_seconds != null) bits.push(liveElapsed(run));
   if (run.compactions) bits.push(`${run.compactions} ovf`);
+  if (run.defects?.length) bits.push(`${run.defects.length} broken`);
   if (run.model) bits.push(run.model.split("/").pop());
   bits.push(ago(run.age_seconds));
   return bits;
@@ -149,6 +150,8 @@ function patchRow(parts, run) {
   parts.nowAct.textContent = live
     ? [run.last_tool, run.last_target].filter(Boolean).join(" ")
     : "";
+
+  parts.node.classList.toggle("broken", Boolean(run.defects?.length));
 
   const outcomes = run.outcomes || [];
   parts.pips.hidden = outcomes.length === 0;
@@ -380,6 +383,13 @@ async function renderRun(project, runId, { quiet = false } = {}) {
       controls.append(control("Continue 3 iterations", "continue", run, { body: { iterations: 3 } }));
     }
     parts.push(controls);
+  }
+
+  if (run.defects?.length) {
+    parts.push(el("h2", null, "Broken files"));
+    const panel = el("div", "panel broken-panel");
+    for (const defect of run.defects) panel.append(el("div", "defect", defect));
+    parts.push(panel);
   }
 
   parts.push(el("h2", null, "Objective"));

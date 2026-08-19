@@ -23,6 +23,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import checks
 import display
 import gitops
 import models
@@ -58,6 +59,7 @@ class Run:
         self.gate_output = ""
         self.no_diff_streak = 0
         self.linked: list[str] = []
+        self.defects: list[str] = []
         self.screen = display.Screen()
 
     # -- setup ------------------------------------------------------------
@@ -293,6 +295,7 @@ class Run:
             gate_command=self.config["gate"]["command"],
             gate_result=self.gate_result,
             gate_output=self.gate_output,
+            defects=self.defects,
         )
         self.rundir.iteration_prompt(number).write_text(prompt)
         self.rundir.event(
@@ -326,6 +329,11 @@ class Run:
         )
 
         self.run_gate(number)
+        # Structural checks run whatever the project configured, because the
+        # damage an edit does is not project-specific -- see checks.py.
+        self.defects = checks.run(self.worktree, base)
+        if self.defects:
+            self.rundir.event("checks:failed", iteration=number, problems=self.defects[:20])
 
         handoff_written = self.rundir.handoff_mtime() > handoff_before
         if not handoff_written:
@@ -544,6 +552,8 @@ class Run:
             learnings.append("plan exists but has no checkboxes")
         else:
             learnings.append("no plan written; the objective was never broken down")
+        for defect in self.defects[:6]:
+            learnings.append(f"structural check: {defect}")
         if result.compactions:
             learnings.append(
                 f"context overflowed {result.compactions}x; every overflow costs the"
@@ -595,6 +605,10 @@ class Run:
         # and one that ran out of room, and those want opposite responses.
         paint = self.screen.paint
         overflows = paint.red(f" | {result.compactions} overflows") if result.compactions else ""
+        if self.defects:
+            self.screen.log(paint.red(f"    {len(self.defects)} structural problem(s) in changed files:"))
+            for defect in self.defects[:4]:
+                self.screen.log(f"      {defect}")
         outcome = (paint.green if result.outcome == "ok" else paint.yellow)(result.outcome)
         self.screen.log(
             f"    {outcome} in {display.elapsed(result.elapsed_seconds)}"

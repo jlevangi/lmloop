@@ -169,6 +169,22 @@ def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float 
     return "running", age
 
 
+def _defects(events: list[dict]) -> list[str]:
+    """Structural problems the last iteration left behind, if any.
+
+    Worth surfacing on a phone: a run can be committing happily while every file
+    it touches has stopped parsing, and that is precisely the state where
+    stopping it early is worth something.
+    """
+    latest: list[str] = []
+    for event in events:
+        if event.get("event") == "checks:failed":
+            latest = event.get("problems", [])
+        elif event.get("event") == "iteration:start":
+            latest = []
+    return latest
+
+
 def _current_step(text: str) -> str:
     """The first unchecked step: what the run is working on right now.
 
@@ -232,6 +248,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "last_tool": status.get("last_tool", ""),
         "last_target": status.get("last_target", ""),
         "current_step": _current_step(plan),
+        "defects": _defects(events),
         "quiet_seconds": status.get("quiet_seconds"),
         "output_tokens": status.get("output_tokens"),
         "elapsed_seconds": status.get("elapsed_seconds"),

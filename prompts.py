@@ -48,7 +48,7 @@ Commits so far this run:
 Cumulative diff against the base commit:
 {diff}
 
-{environment_section}{tree_section}{gate_section}{plan_section}# Handoff from the previous iteration
+{environment_section}{tree_section}{gate_section}{defects_section}{plan_section}# Handoff from the previous iteration
 
 {handoff}
 
@@ -163,6 +163,22 @@ you spend your context on it:
 ```
 """
 
+DEFECTS_TEMPLATE = """\
+# Broken files
+
+The harness checked the files this run has changed and found problems that are
+almost certainly damage from an edit rather than decisions you made -- a file
+that no longer parses, a conflict marker, or a block of lines pasted twice.
+
+```
+{problems}
+```
+
+Fix these first, before the next plan step. They are cheap to repair now and
+they compound: later edits to a file that no longer parses tend to make it
+worse, and nothing downstream of a broken file can be trusted.
+"""
+
 GATE_TEMPLATE = """\
 # Commit gate
 
@@ -196,6 +212,7 @@ def build(
     plan_progress: tuple[int, int] = (0, 0),
     linked: list[str] | None = None,
     interpreter: str = "",
+    defects: list[str] | None = None,
     gate_command: str = "",
     gate_result: str = "",
     gate_output: str = "",
@@ -203,6 +220,9 @@ def build(
     tree_section = TREE_TEMPLATE.format(tree=tree.strip()) + "\n" if tree.strip() else ""
     environment_section = _environment(linked or [], interpreter)
     plan_section = _plan(plan, plan_path, plan_progress)
+    defects_section = (
+        DEFECTS_TEMPLATE.format(problems="\n".join(defects[:15])) + "\n" if defects else ""
+    )
 
     gate_section = ""
     if gate_command:
@@ -226,6 +246,7 @@ def build(
         tree_section=tree_section,
         environment_section=environment_section,
         plan_section=plan_section,
+        defects_section=defects_section,
         gate_section=gate_section,
         handoff=handoff.strip() or FIRST_HANDOFF,
         handoff_path=handoff_path,

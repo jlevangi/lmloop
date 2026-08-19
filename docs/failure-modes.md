@@ -106,7 +106,7 @@ broad objective then produced 124 passing tests over 14 iterations.
 | `no-action` | ended cleanly having called no tool at all |
 | `stalled` | silent for `stall_seconds` after the model was demonstrably alive |
 | `timeout` | exceeded `timeout_seconds` |
-| `interrupted` | STOP sentinel or signal |
+| `interrupted` | STOP-NOW sentinel or signal, mid-iteration |
 | `agent-error` | pi reported an error, or produced no assistant message |
 
 Collapsing these to pass/fail throws away the diagnosis, and they imply

@@ -142,6 +142,8 @@ class Run:
     def _abort_reason(self, iteration: int, started: float) -> str | None:
         if self.interrupted:
             return "interrupted"
+        if self.rundir.stop_now_requested():
+            return "STOP-NOW sentinel present"
         if self.rundir.stop_requested():
             return "STOP sentinel present"
         if iteration > self.max_iterations:
@@ -367,7 +369,13 @@ class Run:
             stall_seconds=self.config["iteration"]["stall_seconds"],
             max_compactions=self.config["iteration"]["max_compactions"],
             env=self.env(),
-            should_stop=lambda: self.interrupted or self.rundir.stop_requested(),
+            # Only the *hard* stop reaches in here.  A plain STOP means "end the
+            # run", and the boundary -- where the gate runs, the handoff is
+            # written and the tree is committed -- is where ending it is worth
+            # something; killing pi at minute 55 to save five minutes throws
+            # away the handoff that made the hour reusable.  STOP-NOW, and a
+            # SIGINT, say the iteration itself is the thing to end.
+            should_stop=lambda: self.interrupted or self.rundir.stop_now_requested(),
             on_progress=lambda snap: self._show(number, snap),
         )
 
@@ -784,7 +792,12 @@ class Run:
         if self.interrupted:
             raise KeyboardInterrupt
         self.interrupted = True
-        self.screen.log("  stop requested; finishing the current iteration")
+        # A signal is the operator asking for the terminal back, not for another
+        # forty minutes of generation, so it cuts the iteration short rather than
+        # waiting it out -- and says so, because the previous wording promised the
+        # opposite of what the code did.  Nothing is lost either way: whatever the
+        # iteration wrote is gated, checked and committed on the way out.
+        self.screen.log("  stop requested; ending this iteration now and committing what it has")
 
     def _backoff(self, iteration: int, detail: str) -> bool:
         """1m, 2m, 4m, then give up.  Only for a llama-swap that is not there."""

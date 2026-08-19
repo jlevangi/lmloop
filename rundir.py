@@ -13,6 +13,7 @@ Layout, at ``<worktree>/.lmloop/runs/<run-id>/``::
     gate-<n>.log             gate command output
     sessions/iter-<n>.jsonl  pi session transcript
     STOP                     sentinel; stop after the current iteration
+    STOP-NOW                 sentinel; cut the current iteration short
 
 The event names in ``lmloop.log`` and the heading format in ``notes.md`` are
 the predecessor's, deliberately.  They are a wire format the predecessor-dashboard dashboard already
@@ -55,6 +56,7 @@ class RunDir:
         self.handoff_path = self.path / "handoff.md"
         self.plan_path = self.path / "plan.md"
         self.stop_path = self.path / "STOP"
+        self.stop_now_path = self.path / "STOP-NOW"
         self.pause_path = self.path / "PAUSE"
 
     # -- creation ---------------------------------------------------------
@@ -355,7 +357,21 @@ class RunDir:
     # -- control ----------------------------------------------------------
 
     def stop_requested(self) -> bool:
-        return self.stop_path.exists()
+        """The run should end -- either at the boundary, or right now."""
+        return self.stop_path.exists() or self.stop_now_path.exists()
+
+    def stop_now_requested(self) -> bool:
+        """The in-flight iteration should be cut short rather than finished.
+
+        Two sentinels because the two stops answer different questions.  STOP is
+        for a run you are done with: the current iteration finishes, is gated,
+        checked, handed off and committed, and only then does the run exit --
+        which is the whole value of it, because that is where an hour of work
+        becomes a commit and a handoff the next run can start from.  STOP-NOW is
+        for an iteration that is visibly wasting its hour, and cannot wait for
+        it.  Neither discards anything: the partial tree is committed either way.
+        """
+        return self.stop_now_path.exists()
 
     def paused(self) -> bool:
         return self.pause_path.exists()

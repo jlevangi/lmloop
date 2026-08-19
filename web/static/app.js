@@ -379,6 +379,7 @@ async function renderRun(project, runId, { quiet = false } = {}) {
     if (ACTIVE.has(run.state)) {
       controls.append(run.paused ? control("Resume", "resume", run) : control("Pause", "pause", run));
       if (!run.stopping) controls.append(control("Stop after this iteration", "stop", run, { risk: true }));
+      controls.append(control("Stop now", "stop-now", run, { risk: true }));
     } else {
       controls.append(control("Continue 3 iterations", "continue", run, { body: { iterations: 3 } }));
     }

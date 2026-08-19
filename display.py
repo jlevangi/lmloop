@@ -13,10 +13,20 @@ files a person could touch by hand:
     touch <run-dir>/PAUSE     hold after the current iteration
     rm    <run-dir>/PAUSE     carry on
     touch <run-dir>/STOP      finish the current iteration, commit, exit
+    touch <run-dir>/STOP-NOW  cut the current iteration short, commit, exit
 
 Pausing mid-iteration is deliberately not offered. The model is mid-generation
 and there is nothing honest to freeze; the pause takes effect at the iteration
 boundary, where the tree is committed and the handoff is written.
+
+*Stopping* mid-iteration is offered, because the two stops answer different
+questions and only the operator knows which one they are asking. STOP is "I am
+done with this run": the iteration finishes and the boundary does its work --
+gate, checks, handoff, commit -- which is what makes the hour reusable, and is
+worth waiting for. STOP-NOW is "this iteration is wasting its hour": pi is
+killed where it stands and the partial tree is committed as `interrupted`.
+Neither discards anything; they differ only in what they are willing to wait
+for, and the keys are labelled to say so.
 """
 
 from __future__ import annotations
@@ -281,7 +291,7 @@ class Keys(threading.Thread):
     normal case for a detached run, and must not be an error.
     """
 
-    HELP = "keys: [p]ause  [r]esume  [q]uit after this iteration"
+    HELP = "keys: [p]ause  [r]esume  [q]uit after this iteration  [Q]uit now"
 
     def __init__(self, rundir, screen: Screen):
         super().__init__(daemon=True)
@@ -307,7 +317,9 @@ class Keys(threading.Thread):
                 key = sys.stdin.read(1)
                 if not key:
                     return
-                self._handle(key.lower())
+                # Case is meaning here, not noise: `q` and `Q` are the two
+                # different stops, so the key cannot be folded on the way in.
+                self._handle(key)
         except (OSError, ValueError):
             return
         finally:
@@ -317,15 +329,22 @@ class Keys(threading.Thread):
                 pass
 
     def _handle(self, key: str) -> None:
-        if key == "p":
+        if key in ("p", "P"):
             self.rundir.pause_path.touch()
             self.screen.log("  paused; will hold after this iteration ([r] to resume)")
-        elif key == "r":
+        elif key in ("r", "R"):
             self.rundir.pause_path.unlink(missing_ok=True)
             self.screen.log("  resumed")
         elif key == "q":
             self.rundir.stop_path.touch()
-            self.screen.log("  stopping after this iteration; work will be committed")
+            self.screen.log("  stopping when this iteration finishes and commits ([Q] to stop now)")
+        elif key == "Q":
+            # Both sentinels, so that everything already watching for STOP --
+            # the dashboard, `lmloop status`, the status line's flag -- sees the
+            # run stopping without having to learn a second file name.
+            self.rundir.stop_now_path.touch()
+            self.rundir.stop_path.touch()
+            self.screen.log("  stopping now; this iteration is cut short, its work still committed")
         elif key == "?":
             self.screen.log("  " + self.HELP)
 

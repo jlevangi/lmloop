@@ -23,10 +23,19 @@ away:
 touch <run-dir>/PAUSE    # hold at the next iteration boundary
 rm    <run-dir>/PAUSE    # carry on
 touch <run-dir>/STOP     # finish the current iteration, commit, exit
+touch <run-dir>/STOP-NOW # cut the current iteration short, commit, exit
 ```
 
 Pausing mid-iteration is deliberately not offered: the model is mid-generation
 and there is nothing honest to freeze.
+
+Stopping mid-iteration is offered, under a different name. `STOP` waits for the
+boundary — gate, checks, handoff, commit — which is where an hour of generation
+turns into something the next run can start from, and is worth the wait unless
+the iteration is visibly going nowhere. `STOP-NOW` is for when it is: pi is
+killed where it stands and the partial tree is committed as `interrupted`.
+Neither discards anything, so the choice is only about what you are willing to
+wait for. `SIGINT` is `STOP-NOW`; a second `SIGINT` exits without committing.
 
 ## Where a run lives
 

@@ -267,8 +267,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
         raise SystemExit(f"lmloop: no run {run_id} under this repo")
 
     run = Run(repo, config, objective="", max_iterations=None, run_id=run_id)
-    # A leftover STOP would stop the resumed run before its first iteration.
+    # A leftover STOP -- or the STOP-NOW that accompanies a hard stop -- would
+    # stop the resumed run before its first iteration.
     run.rundir.stop_path.unlink(missing_ok=True)
+    run.rundir.stop_now_path.unlink(missing_ok=True)
     done = run.attach(args.iterations)
     display.out(f"lmloop {run_id}")
     display.out(f"  resuming after {done} iterations")

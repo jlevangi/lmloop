@@ -162,7 +162,7 @@ def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float 
         # The loop stopped writing without recording a completion: killed,
         # OOMed, rebooted.  Its status file still says "working".
         return "stale", age
-    if (run_dir / "STOP").exists():
+    if (run_dir / "STOP").exists() or (run_dir / "STOP-NOW").exists():
         return "stopping", age
     if (run_dir / "PAUSE").exists():
         return "paused", age
@@ -258,7 +258,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "plan_done": done,
         "plan_total": total,
         "paused": (run_dir / "PAUSE").exists(),
-        "stopping": (run_dir / "STOP").exists(),
+        "stopping": (run_dir / "STOP").exists() or (run_dir / "STOP-NOW").exists(),
         "iterations_done": len(outcomes),
         "outcomes": outcomes[-12:],
         "commits": commits,

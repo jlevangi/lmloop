@@ -421,6 +421,12 @@ class Handler(BaseHTTPRequestHandler):
             (run_dir / "PAUSE").unlink(missing_ok=True)
         elif action == "stop":
             (run_dir / "STOP").touch()
+        elif action == "stop-now":
+            # The stop that does not wait for the iteration to finish.  Both
+            # sentinels, so every reader that only knows about STOP still sees a
+            # run that is stopping -- see rundir.stop_now_requested.
+            (run_dir / "STOP-NOW").touch()
+            (run_dir / "STOP").touch()
         elif action == "continue":
             # The one that needs a process: the run has already exited, and more
             # iterations mean starting the loop again on the same worktree.
@@ -433,6 +439,7 @@ class Handler(BaseHTTPRequestHandler):
                 if payload.get(key):
                     argv += [flag, str(payload[key])]
             (run_dir / "STOP").unlink(missing_ok=True)
+            (run_dir / "STOP-NOW").unlink(missing_ok=True)
             subprocess.Popen(
                 argv, cwd=project["path"], stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

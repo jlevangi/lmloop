@@ -77,14 +77,20 @@ lmloop models                              # what is loaded, measured, selectabl
 lmloop models --detect                     # measure the loaded model's real context
 ```
 
-Stop a run without killing it mid-write:
+Stop a run, at the boundary or right now:
 
 ```bash
-touch <worktree>/.lmloop/runs/<run-id>/STOP
+touch <worktree>/.lmloop/runs/<run-id>/STOP      # after this iteration
+touch <worktree>/.lmloop/runs/<run-id>/STOP-NOW  # cut this iteration short
 ```
 
-The run finishes the current iteration, commits it, and exits. `SIGINT` does the
-same thing; a second `SIGINT` is immediate.
+`STOP` lets the current iteration finish, so the boundary can do its work — gate,
+checks, handoff, commit — and only then does the run exit. That is worth waiting
+for: the handoff is what makes the hour reusable. `STOP-NOW` is for an iteration
+that is visibly wasting its hour; pi is killed where it stands, the partial tree
+is still committed, and the iteration is recorded as `interrupted`. Neither
+discards anything. `SIGINT` means `STOP-NOW`, because that is what asking for
+your terminal back means; a second `SIGINT` exits without committing.
 
 ## What a run leaves behind
 
@@ -302,10 +308,16 @@ another script, and survives the terminal going away:
 | `p` | `touch <run-dir>/PAUSE` | hold after the current iteration |
 | `r` | `rm <run-dir>/PAUSE` | carry on |
 | `q` | `touch <run-dir>/STOP` | finish the current iteration, commit, exit |
+| `Q` | `touch <run-dir>/STOP-NOW` | cut the current iteration short, commit, exit |
 
 Pausing mid-iteration is deliberately not offered: the model is mid-generation
 and there is nothing honest to freeze. The pause lands at the iteration
 boundary, where the tree is committed and the handoff is written.
+
+Stopping mid-iteration *is* offered, because the two stops answer different
+questions. `q` is "I am done with this run" and waits for the boundary, where an
+hour of work becomes a commit and a handoff. `Q` is "this iteration is wasting
+its hour" and does not wait. The keys are separate so that neither is a surprise.
 
 ### From Paseo
 

@@ -11,6 +11,18 @@ It drives [`pi`](https://github.com/earendil-works) and nothing else. Tools,
 skills, models and prompts belong to the agent; the loop's only jobs are
 isolation, iteration, and never throwing work away.
 
+## Documentation
+
+| Document | For |
+|---|---|
+| [docs/design.md](docs/design.md) | the invariants and why each one exists |
+| [docs/failure-modes.md](docs/failure-modes.md) | how runs fail, with the evidence for each |
+| [docs/models.md](docs/models.md) | measured local-model behaviour and window budgets |
+| [docs/architecture.md](docs/architecture.md) | what each module does |
+| [docs/operations.md](docs/operations.md) | running, steering, reviewing, deploying |
+
+`AGENTS.md` is the short version for an agent working on this repo.
+
 ## Why this exists
 
 Existing loops are tuned for fast, reliable cloud agents, where a discarded
@@ -137,6 +149,18 @@ else, and a missing one disables authentication rather than breaking the loop.
 
 `web/deploy/lmloop-web.service` runs it under systemd.
 
+## Checks
+
+Every iteration, whatever the project configured, the files git says changed are
+checked for damage an *edit* does rather than for whether the program is
+correct: a file that stops parsing (Python, JSON, TOML, CSS braces, JS), a
+conflict marker, or a block of lines pasted twice. When something fails, repair
+becomes the next iteration's job and the plan waits.
+
+It is deliberately not a linter — style is the agent's business, and a noisy
+check is one that gets ignored. Anything encoding what a *particular* repository
+considers correct belongs in that repository's own `[gate] command`.
+
 ## Configuration
 
 `~/.config/lmloop/config.toml`, overridden by `.lmloop.toml` in the repo. See
@@ -163,6 +187,10 @@ else, and a missing one disables authentication rather than breaking the loop.
   agent that does not know the environment is there goes looking for it.
   `.env` is deliberately not a default: add it per project if the code needs
   it, rather than having the loop hand a model your secrets uninvited.
+- `[agent] planner_model` — a different model for the iteration that writes the
+  plan. Deciding the steps is a whole-repository question that happens once and
+  wants the widest window; carrying one out happens every iteration and wants
+  throughput. Empty uses `model` for both.
 - `[gate] command` — run after every iteration. `blocks_commit = false` records
   the result in the commit message and the next iteration's prompt but commits
   regardless, which is usually what you want.

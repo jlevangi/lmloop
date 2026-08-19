@@ -1,3 +1,75 @@
+# lmloop — notes for agents working on this repo
+
+A loop that hands one objective to a local model, works on it for hours in a git
+worktree, and commits what it actually did. ~2,600 lines, Python 3.11+, standard
+library only, no build step.
+
+**Read `docs/design.md` before changing behaviour.** Most of what looks arbitrary
+in this codebase is load-bearing and was paid for with a failed run.
+
+## The invariants — do not break these
+
+1. **Nothing is ever discarded.** No `git reset --hard`, no `git clean`, no
+   automatic worktree removal, anywhere. A run that produced nothing still has
+   to be diagnosable.
+2. **Git is the only witness.** Not iteration counts, not the agent's summary,
+   not tool-call counts — the write counter under-counts by design.
+3. **The handoff is a file the agent writes,** never a message the loop parses.
+4. **The status line must fit the terminal.** This is correctness: an overlong
+   line wraps and turns every refresh into a new scrolled line.
+
+## Things that will waste your time if you rediscover them
+
+- **`pi --mode json` always exits 0.** The branch setting `exitCode = 1` sits
+  inside `if (mode === "text")`. Outcome comes from the event stream or nowhere.
+- **Never pass `--no-extensions`.** `~/.pi/agent/extensions/9router-catalog.js`
+  registers both the `llama-swap` and `9router` providers; disabling extension
+  discovery takes the whole model catalogue with it.
+- **pi sets `process.title = "pi"`.** `pkill -f 'pi --model …'` never matches;
+  use `pkill -x pi`.
+- **llama-swap holds one model at a time.** `GET /running` is free;
+  `GET /upstream/<model>/props` *causes* the swap it was meant to observe.
+- **A cold model load takes ~4 minutes and emits nothing,** which is why the
+  stall clock does not start until the first message or tool event.
+- **The gate runs with `cwd` = the worktree,** not the repo — so a gate script
+  must be tracked, or it will not exist there.
+- **`[hidden]` loses to any `display` rule** in the dashboard's CSS, and a
+  block-level progress fill with no width renders as 100%. Both shipped once.
+
+## Working on this
+
+```bash
+python3 -m compileall -q . web/     # there is no test suite yet
+lmloop run "..." --max-iterations 1 # on a scratch repo, with a cloud model
+```
+
+See `docs/operations.md` for the scratch-repo recipe that exercises every code
+path in about a minute, and the narrow-terminal recipe for display work.
+
+**Verify by running the thing.** Every real bug this project has found surfaced
+from running it, never from reading it — including four in one session, and a
+CSS regression that no amount of file-reading revealed because every file parsed
+perfectly.
+
+## Documentation
+
+| Document | For |
+|---|---|
+| `docs/design.md` | why the invariants exist |
+| `docs/failure-modes.md` | how runs fail, with the evidence for each |
+| `docs/models.md` | measured local-model behaviour and window budgets |
+| `docs/architecture.md` | what each module does |
+| `docs/operations.md` | running, steering, reviewing, deploying |
+
+## Scope
+
+lmloop is general. It drives `pi` and nothing else, and it must work on any
+repository and any task. Checks in `checks.py` ask only "did the edit land
+intact"; anything encoding what a *particular* project considers correct belongs
+in that project's own `.lmloop.toml` gate.
+
+---
+
 # Agent Instructions
 
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.

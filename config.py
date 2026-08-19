@@ -37,6 +37,20 @@ DEFAULTS: dict = {
         # model the deliberation is not free thinking, it is the budget
         # the work needed.
         "thinking": "",
+        # Planning and editing are different jobs, and on local hardware they
+        # want different models.
+        #
+        # Deciding what the steps are is a whole-repository question: it wants
+        # the widest context available and can afford to be slow, because it
+        # happens once per run.  Carrying out a step is a two-file question that
+        # happens every iteration, where throughput is what matters and a large
+        # window is wasted.  local-wide has a 90112-token prompt budget against
+        # local-fast's 49152; local-fast produces real edits at several times the rate.
+        #
+        # Empty means "use the model above for both", which is the behaviour
+        # this had before and remains a perfectly reasonable setting.
+        "planner_model": "",
+        "planner_thinking": "",
     },
     "models": {
         # llama-swap directly, not through a router.  A router reports model
@@ -152,6 +166,11 @@ tools = "read,write,edit,bash,grep,find,ls"
 # default.  Lower it when a model deliberates its whole output budget away
 # before calling a tool -- both local models here have done exactly that.
 thinking = ""
+# Writing the plan is a different job from carrying it out: it reads the whole
+# repository once per run, so it wants the widest window you have, while editing
+# happens every iteration and wants throughput.  Empty uses `model` for both.
+planner_model    = ""      # e.g. "llama-swap/local-wide"
+planner_thinking = ""
 
 [models]
 llama_swap_url = "http://127.0.0.1:8080"

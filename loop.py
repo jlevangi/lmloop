@@ -269,8 +269,29 @@ class Run:
 
     # -- one iteration ----------------------------------------------------
 
+    def roles(self) -> tuple[str, str, str]:
+        """Which model runs this iteration, and why.
+
+        The first iteration of a run has no plan, so its job is to read the
+        repository and decide the steps -- a whole-repository question that
+        happens once and wants the widest window available.  Every iteration
+        after it carries out one step, which is a two-file question that happens
+        constantly and wants throughput.  Those are different models on local
+        hardware, and `planner_model` is how a project says so.
+        """
+        agent = self.config["agent"]
+        planning = not self.rundir.read_plan().strip()
+        if planning and agent.get("planner_model"):
+            return (
+                agent["planner_model"],
+                agent.get("planner_thinking") or agent.get("thinking", ""),
+                "planning",
+            )
+        return agent["model"], agent.get("thinking", ""), "editing"
+
     def iterate(self, number: int) -> None:
         base = self.rundir.base_commit
+        self.model, thinking, role = self.roles()
         ok, detail = models.preflight(self.model, self.config["models"]["llama_swap_url"])
         self.rundir.event("preflight", iteration=number, ok=ok, detail=detail)
         if not ok:
@@ -303,9 +324,13 @@ class Run:
             iteration=number,
             promptLength=len(prompt),
             preflight=detail,
+            model=self.model,
+            role=role,
             git={"head": gitops.head_commit(self.worktree), "commitCount": gitops.commit_count(self.worktree, base)},
         )
         self.screen.log(f"  iteration {number}: {detail}")
+        if role == "planning":
+            self.screen.log(f"    planning with {self.model}")
 
         self._loading = True
         handoff_before = self.rundir.handoff_mtime()
@@ -314,7 +339,7 @@ class Run:
         result = pi_runner.run(
             model=self.model,
             tools=self.config["agent"]["tools"],
-            thinking=self.config["agent"].get("thinking", ""),
+            thinking=thinking,
             prompt=prompt,
             cwd=self.worktree,
             session_dir=self.rundir.sessions,

@@ -54,7 +54,7 @@ Cumulative diff against the base commit:
 
 # What to do now
 
-Do the one step the plan names, and nothing else. You are one iteration in a
+{task_line} You are one iteration in a
 long chain: the objective is not yours to finish today, and there is no credit
 for getting further than the step. The run is measured in commits, so one small
 finished step beats three half-finished ones.
@@ -163,6 +163,16 @@ you spend your context on it:
 ```
 """
 
+REPAIR_TASK = """\
+**This iteration's job is repair, not the plan.** The files listed under "Broken
+files" above do not parse, and until they do, the plan is not what matters: an
+edit to a file that is already broken tends to break it further, and nothing
+that reads it can be trusted. Fix those, leave the plan step for next time, and
+say in your handoff what you repaired."""
+
+PLAN_TASK = """\
+Do the one step the plan names, and nothing else."""
+
 DEFECTS_TEMPLATE = """\
 # Broken files
 
@@ -174,9 +184,9 @@ that no longer parses, a conflict marker, or a block of lines pasted twice.
 {problems}
 ```
 
-Fix these first, before the next plan step. They are cheap to repair now and
-they compound: later edits to a file that no longer parses tend to make it
-worse, and nothing downstream of a broken file can be trusted.
+These are this iteration's work. They are cheap to repair now and they compound:
+later edits to a file that no longer parses tend to make it worse, and nothing
+downstream of a broken file can be trusted.
 """
 
 GATE_TEMPLATE = """\
@@ -223,6 +233,8 @@ def build(
     defects_section = (
         DEFECTS_TEMPLATE.format(problems="\n".join(defects[:15])) + "\n" if defects else ""
     )
+    # A broken file outranks the plan: repair is the whole task this iteration.
+    task_line = REPAIR_TASK if defects else PLAN_TASK
 
     gate_section = ""
     if gate_command:
@@ -247,6 +259,7 @@ def build(
         environment_section=environment_section,
         plan_section=plan_section,
         defects_section=defects_section,
+        task_line=task_line,
         gate_section=gate_section,
         handoff=handoff.strip() or FIRST_HANDOFF,
         handoff_path=handoff_path,

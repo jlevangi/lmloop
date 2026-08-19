@@ -321,6 +321,35 @@ def cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Compress finished runs' event streams.  Deletes nothing."""
+    import prune as prune_module
+
+    roots = (
+        [Path(item).expanduser() for item in args.roots.split(":") if item.strip()]
+        if args.roots
+        else [gitops.repo_root(Path.cwd())]
+    )
+    result = prune_module.prune(roots, args.older_than, args.dry_run)
+
+    mb = lambda n: f"{n / 1e6:.1f} MB"
+    if not result["files"]:
+        display.out("nothing to compress")
+    elif args.dry_run:
+        display.out(f"would compress {len(result['files'])} file(s), {mb(result['before'])}")
+        for path in result["files"][:10]:
+            display.out(f"  {path}")
+    else:
+        display.out(f"compressed {len(result['files'])} file(s)")
+        display.out(f"  {mb(result['before'])} -> {mb(result['after'])}, saved {mb(result['saved'])}")
+    if result.get("bytecode"):
+        verb = "would free" if args.dry_run else "freed"
+        display.out(f"  {verb} {mb(result['bytecode'])} of regenerable bytecode cache")
+    for name in result["skipped_live"]:
+        display.out(f"  skipped {name}: still running")
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     """Serve the dashboard.
 
@@ -390,6 +419,13 @@ def main() -> int:
     listing = sub.add_parser("models", help="what is loaded, measured, and selectable")
     listing.add_argument("--detect", action="store_true", help="measure the loaded model's real context")
     listing.set_defaults(func=cmd_models)
+
+    prune = sub.add_parser("prune", help="compress finished runs' event streams (deletes nothing)")
+    prune.add_argument("--roots", help="colon-separated directories to search; default is this repo")
+    prune.add_argument("--older-than", type=float, default=0.0, metavar="DAYS",
+                       help="only streams untouched for this many days")
+    prune.add_argument("--dry-run", action="store_true", help="report what would be compressed")
+    prune.set_defaults(func=cmd_prune)
 
     web = sub.add_parser("web", help="serve the dashboard: start, watch, pause and stop runs")
     web.add_argument("--host", help="bind address (default 127.0.0.1; anything else needs OIDC)")

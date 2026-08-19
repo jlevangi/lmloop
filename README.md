@@ -161,6 +161,25 @@ It is deliberately not a linter — style is the agent's business, and a noisy
 check is one that gets ignored. Anything encoding what a *particular* repository
 considers correct belongs in that repository's own `[gate] command`.
 
+## Disk
+
+A run costs about 86 MB, almost all of it pi's raw event stream, and a bytecode
+cache that reached 105 MB on one repository. Left alone this fills a disk.
+
+```bash
+lmloop prune --dry-run          # what it would do
+lmloop prune                    # this repo's finished runs
+lmloop prune --roots ~/git --older-than 7
+```
+
+It **deletes no record**. Event streams are gzipped, which saves about 97% on a
+file that is 88% single-token deltas, and everything reads either form. The only
+thing removed is the bytecode cache, which is derived from source that is still
+present and records nothing about what the agent did. A run still writing is
+skipped.
+
+On one-project: 313 MB → 8.6 MB, with every stream still readable.
+
 ## Configuration
 
 `~/.config/lmloop/config.toml`, overridden by `.lmloop.toml` in the repo. See

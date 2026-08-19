@@ -203,14 +203,13 @@ class RunDir:
         is a list of paths with no contents, and its only effect on the next
         iteration would be to invite the re-reading that caused the overflow.
         """
-        path = self.iteration_jsonl(number)
         line = ""
         try:
-            with path.open("rb") as handle:
+            with self.open_iteration(number) as handle:
                 for raw in handle:
                     if b'"compaction_end"' in raw:
                         line = raw.decode(errors="replace")
-        except OSError:
+        except (OSError, EOFError):
             return ""
         try:
             summary = ((json.loads(line).get("result") or {}).get("summary") or "").strip()
@@ -289,7 +288,26 @@ class RunDir:
     # -- per-iteration paths ----------------------------------------------
 
     def iteration_jsonl(self, number: int) -> Path:
+        """Where this iteration's raw stream is written.  Always uncompressed:
+        `lmloop prune` archives it later, once nothing is writing to it."""
         return self.path / f"iteration-{number}.jsonl"
+
+    def open_iteration(self, number: int):
+        """Read an iteration's stream in binary, compressed or not.
+
+        `lmloop prune` gzips finished streams, so anything that reads one has to
+        accept either form -- otherwise pruning a run would silently break the
+        compaction harvest, which is the single most valuable thing in the file.
+        """
+        plain = self.iteration_jsonl(number)
+        if plain.exists():
+            return plain.open("rb")
+        archived = plain.with_suffix(".jsonl.gz")
+        if archived.exists():
+            import gzip
+
+            return gzip.open(archived, "rb")
+        raise FileNotFoundError(plain)
 
     def iteration_prompt(self, number: int) -> Path:
         return self.path / f"iteration-{number}-prompt.md"

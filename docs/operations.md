@@ -106,6 +106,26 @@ Then **run the thing**. Every real bug this project has found surfaced from
 running it, never from reading it — and for frontend work, "every file parses"
 told us nothing about 47 selectors that had stopped being loaded.
 
+## Disk
+
+```bash
+lmloop prune --dry-run
+lmloop prune --roots ~/git --older-than 7
+```
+
+Runs are large: ~86 MB each, of which ~81 MB is `iteration-*.jsonl` — pi's raw
+stream, 88% single-token `message_update` deltas. Plus a `pycache` directory
+that reached 105 MB on one repo, because the gate and the agent's own commands
+compile the whole virtualenv into it.
+
+`prune` gzips the streams (≈97% saved; `rundir.open_iteration` reads either
+form, so the compaction harvest still works) and deletes the bytecode cache,
+which is the one thing in a run directory that carries no record. It refuses to
+touch a run whose `status.json` is less than five minutes old.
+
+Nothing else is ever removed, and no worktree is ever deleted — a run that
+produced nothing still has to be diagnosable.
+
 ## Merging
 
 ```bash

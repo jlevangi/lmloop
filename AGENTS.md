@@ -22,7 +22,7 @@ in this codebase is load-bearing and was paid for with a failed run.
 
 - **`pi --mode json` always exits 0.** The branch setting `exitCode = 1` sits
   inside `if (mode === "text")`. Outcome comes from the event stream or nowhere.
-- **Never pass `--no-extensions`.** `~/.pi/agent/extensions/9router-catalog.js`
+- **Never pass `--no-extensions`.** `~/.pi/agent/extensions/model-catalog.js`
   registers both the `llama-swap` and `9router` providers; disabling extension
   discovery takes the whole model catalogue with it.
 - **pi sets `process.title = "pi"`.** `pkill -f 'pi --model …'` never matches;

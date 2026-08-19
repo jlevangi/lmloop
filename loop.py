@@ -355,6 +355,7 @@ class Run:
         self._plan_steps_before = self._plan_steps()
         result = pi_runner.run(
             model=self.model,
+            agent_name=self.config["agent"].get("harness", "pi"),
             tools=self.config["agent"]["tools"],
             thinking=thinking,
             prompt=prompt,
@@ -388,7 +389,9 @@ class Run:
             self.rundir.write_synthetic_handoff(
                 number,
                 gitops.diff_shortstat(self.worktree, base),
-                carried=self.rundir.last_compaction_summary(number),
+                carried=self.rundir.last_compaction_summary(
+                number, self.config["agent"].get("harness", "pi")
+            ),
             )
         summary = self._subject(number, result, handoff_written)
 

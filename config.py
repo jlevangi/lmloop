@@ -16,6 +16,11 @@ PROJECT_CONFIG = ".lmloop.toml"
 
 DEFAULTS: dict = {
     "agent": {
+        # Which agent does the typing.  See harness.py -- the loop needs an
+        # argv and a JSON event stream, and nothing else, so swapping one is a
+        # config line rather than a rewrite.  "pi" also covers anything layered
+        # on pi, such as oh-my-pi, which is an extension pi auto-discovers.
+        "harness": "pi",
         "model": "llama-swap/local-fast",
         # Every extension in ~/.pi/agent/settings.json adds tool definitions,
         # and those escape whatever budget a harness compacts to.  On a 57344
@@ -182,6 +187,7 @@ def sample() -> str:
 # defaults, or to <repo>/.lmloop.toml to override them for one project.
 
 [agent]
+harness = "pi"           # pi (incl. oh-my-pi) | opencode
 model = "llama-swap/local-fast"
 tools = "read,write,edit,bash,grep,find,ls"
 # off | minimal | low | medium | high | xhigh | max.  Empty uses pi's

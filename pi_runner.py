@@ -35,6 +35,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import harness
+
 # pi's built-in mutating tools, plus `replace` from pi-hashline-edit-pro and the
 # names other edit extensions use.  Which one is live depends on what is
 # installed in ~/.pi/agent/settings.json, so match them all.
@@ -43,23 +45,6 @@ from pathlib import Path
 # a file with a bash heredoc changes the tree without touching an edit tool.
 # Progress is measured with git, never with this number.
 WRITE_TOOLS = {"write", "edit", "replace", "multiedit", "apply_patch"}
-
-# Only these four event types are ever parsed.  Everything else is teed to disk
-# and skipped -- see the volume note above.
-_INTERESTING = (
-    '"tool_execution_start"',
-    '"message_end"',
-    '"agent_end"',
-    '"compaction_start"',
-)
-
-# What counts as the model actually doing something, for the stall clock.
-# pi writes a session header to stdout the instant it starts, before it has
-# contacted a model at all -- so "we have seen output" is not the same as "the
-# model is alive", and treating them as the same would start the stall timer
-# while llama-swap is still loading weights.  That load legitimately takes
-# minutes and emits nothing.
-_ACTIVITY = (b'"message_', b'"tool_execution')
 
 TERM_GRACE_SECONDS = 30
 
@@ -116,54 +101,35 @@ class _Stream:
         self.last_event_at = now
 
 
-def _target(args: dict) -> str:
-    """What a tool call is pointed at, in a few words.
+def _handle(event: dict, state: _Stream, agent) -> None:
+    """Fold one event into the run state, in the adapter's normalised terms.
 
-    "read" tells you the agent is alive; "read players.py" tells you what it is
-    doing, which is the difference between a status line worth watching and one
-    worth ignoring.  Only the tail of a path is kept -- the worktree prefix is
-    the same for every call and would push the useful part off a phone screen.
+    Nothing below knows which agent produced the event -- see `harness.py`.
     """
-    for key in ("path", "file_path", "filePath"):
-        value = args.get(key)
-        if isinstance(value, str) and value:
-            return value.rsplit("/", 1)[-1]
-    command = args.get("command")
-    if isinstance(command, str) and command:
-        return " ".join(command.split())[:60]
-    pattern = args.get("pattern") or args.get("query")
-    if isinstance(pattern, str) and pattern:
-        return pattern[:40]
-    return ""
-
-
-def _handle(event: dict, state: _Stream) -> None:
-    kind = event.get("type")
-    if kind == "tool_execution_start":
+    note = agent.classify(event)
+    if not note:
+        return
+    kind = note["kind"]
+    if kind == harness.TOOL:
         state.tool_calls += 1
-        name = event.get("toolName", "")
-        state.last_tool = name
-        state.last_target = _target(event.get("args") or {})
-        if name in WRITE_TOOLS:
+        state.last_tool = note["name"]
+        state.last_target = note["target"]
+        if note["name"] in WRITE_TOOLS:
             state.writes += 1
-            path = (event.get("args") or {}).get("path")
+            path = note.get("path")
             if path and path not in state.files:
                 state.files.append(path)
-    elif kind == "compaction_start":
+    elif kind == harness.COMPACTION:
         state.compactions += 1
-    elif kind == "message_end":
-        message = event.get("message") or {}
-        if message.get("role") != "assistant":
-            return
+    elif kind == harness.MESSAGE_END:
         state.saw_message_end = True
-        state.stop_reason = message.get("stopReason") or ""
-        state.error_message = message.get("errorMessage") or ""
-        usage = message.get("usage") or {}
-        state.input_tokens = max(state.input_tokens, int(usage.get("input") or 0))
-        state.output_tokens += int(usage.get("output") or 0)
+        state.stop_reason = note["stop_reason"]
+        state.error_message = note["error"]
+        state.input_tokens = max(state.input_tokens, note["input"])
+        state.output_tokens += note["output"]
 
 
-def _read_stdout(pipe, raw_path: Path, state: _Stream) -> None:
+def _read_stdout(pipe, raw_path: Path, state: _Stream, agent) -> None:
     buffer = b""
     with raw_path.open("wb") as sink:
         while True:
@@ -177,17 +143,17 @@ def _read_stdout(pipe, raw_path: Path, state: _Stream) -> None:
             buffer += chunk
             *lines, buffer = buffer.split(b"\n")
             for line in lines:
-                if any(marker in line for marker in _ACTIVITY):
+                if any(marker in line for marker in agent.activity):
                     with state.lock:
                         state.note_activity()
-                if not any(marker.encode() in line for marker in _INTERESTING):
+                if not any(marker.encode() in line for marker in agent.interesting):
                     continue
                 try:
                     event = json.loads(line)
                 except ValueError:
                     continue
                 with state.lock:
-                    _handle(event, state)
+                    _handle(event, state, agent)
 
 
 def _read_stderr(pipe, state: _Stream) -> None:
@@ -220,6 +186,7 @@ def _terminate(process: subprocess.Popen) -> None:
 
 def run(
     *,
+    agent_name: str = "pi",
     model: str,
     tools: str,
     thinking: str,
@@ -235,17 +202,11 @@ def run(
     should_stop=lambda: False,
     on_progress=None,
 ) -> IterationResult:
-    argv = [
-        "pi",
-        "--model", model,
-        "--mode", "json",
-        "--session-dir", str(session_dir),
-        "--session-id", session_id,
-    ]
-    if tools:
-        argv += ["--tools", tools]
-    if thinking:
-        argv += ["--thinking", thinking]
+    agent = harness.get(agent_name)
+    argv = agent.argv(
+        model=model, tools=tools, thinking=thinking,
+        session_dir=session_dir, session_id=session_id,
+    )
 
     started = time.monotonic()
     state = _Stream()
@@ -270,7 +231,7 @@ def run(
 
     threads = [
         threading.Thread(target=feed, daemon=True),
-        threading.Thread(target=_read_stdout, args=(process.stdout, raw_path, state), daemon=True),
+        threading.Thread(target=_read_stdout, args=(process.stdout, raw_path, state, agent), daemon=True),
         threading.Thread(target=_read_stderr, args=(process.stderr, state), daemon=True),
     ]
     for thread in threads:

@@ -7,7 +7,7 @@ that killed three runs on HTTP 400 mid-iteration.
 
 ## Where the catalogue comes from
 
-`~/.pi/agent/extensions/9router-catalog.js` registers **two** providers despite
+`~/.pi/agent/extensions/model-catalog.js` registers **two** providers despite
 its name:
 
 | Provider | Endpoint | For |

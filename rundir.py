@@ -199,7 +199,7 @@ class RunDir:
         except OSError:
             return 0.0
 
-    def last_compaction_summary(self, number: int) -> str:
+    def last_compaction_summary(self, number: int, agent_name: str = "pi") -> str:
         """The summary the agent wrote for itself the last time pi compacted.
 
         An iteration that overflows its context has already written a handoff --
@@ -221,13 +221,17 @@ class RunDir:
         try:
             with self.open_iteration(number) as handle:
                 for raw in handle:
+                    # Agents that do not compact simply never match, and the
+                    # loop falls back to a git-synthesised handoff.
                     if b'"compaction_end"' in raw:
                         line = raw.decode(errors="replace")
         except (OSError, EOFError):
             return ""
         try:
-            summary = ((json.loads(line).get("result") or {}).get("summary") or "").strip()
-        except ValueError:
+            import harness
+
+            summary = harness.get(agent_name).compaction_summary(json.loads(line))
+        except (ValueError, SystemExit):
             return ""
 
         summary = summary.split("<read-files>")[0].strip()

@@ -17,6 +17,7 @@ loop.
 | `gitops.py` | Every git invocation. **No reset, no clean, no worktree removal** — grep it. |
 | `checks.py` | "Did the edit land intact", on the files git says changed, whatever the project configured. |
 | `models.py` | llama-swap preflight and context measurement. |
+| `harness.py` | What lmloop needs from an agent: an argv, and what its events mean. One small adapter per agent. |
 | `config.py` | Defaults → global TOML → the repo's `.lmloop.toml`. |
 | `display.py` | The status line and its width arithmetic. Load-bearing; see design.md. |
 
@@ -53,6 +54,21 @@ preflight (is the model loadable?)
 
 The order matters in one place: checks run *after* the gate so both results are
 available to the same commit and the same next prompt.
+
+## Adding a harness
+
+The loop needs two things from an agent and nothing else: a command that runs
+one iteration, and a JSON event stream it can read. `harness.py` is where that
+lives — an adapter answers what to exec, which lines are worth parsing, and what
+each event means, then everything downstream speaks one normalised vocabulary
+and knows nothing about which agent produced it.
+
+`pi` and `opencode` are both implemented, each written against captured output
+rather than documentation. `oh-my-pi` needs no adapter: it is a pi *extension*
+that pi auto-discovers, so it arrives through the pi adapter unchanged.
+
+An agent that does not compact simply returns no summary, and the loop falls
+back to synthesising a handoff from git — worse, but never wrong.
 
 ## Adding a check
 

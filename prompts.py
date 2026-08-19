@@ -207,7 +207,7 @@ GATE_TEMPLATE = """\
 # Commit gate
 
 `{command}` runs after every iteration. Last run: {result}
-{output}
+{inherited}{output}
 """
 
 FIRST_HANDOFF = """\
@@ -241,6 +241,7 @@ def build(
     gate_command: str = "",
     gate_result: str = "",
     gate_output: str = "",
+    gate_baseline: str = "",
 ) -> str:
     tree_section = TREE_TEMPLATE.format(tree=tree.strip()) + "\n" if tree.strip() else ""
     environment_section = _environment(linked or [], interpreter)
@@ -255,11 +256,24 @@ def build(
     gate_section = ""
     if gate_command:
         output = ""
-        if gate_result.startswith("fail") and gate_output:
+        # Anything that is not a pass is worth showing, including a gate that
+        # could not be run at all -- that output is the only thing that says why.
+        if gate_result and not gate_result.startswith("pass") and gate_output:
             output = "\n```\n" + gate_output.strip()[-1500:] + "\n```\n"
+        inherited = ""
+        if gate_result and gate_result == gate_baseline and not gate_result.startswith("pass"):
+            # The gate failed the same way before this run touched anything, so
+            # it is the repository's failure to own or ignore -- not evidence
+            # that this iteration broke something, and not a reason to spend the
+            # hour chasing it unless the objective says to.
+            inherited = (
+                "\nIt failed identically on the base commit, before this run"
+                " changed anything.\n"
+            )
         gate_section = GATE_TEMPLATE.format(
             command=gate_command,
             result=gate_result or "not yet run",
+            inherited=inherited,
             output=output,
         ) + "\n"
 

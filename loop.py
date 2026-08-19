@@ -62,6 +62,7 @@ class Run:
 
         self.gate_result = ""
         self.gate_output = ""
+        self.gate_baseline = ""
         self.no_diff_streak = 0
         self.linked: list[str] = []
         self.defects: list[str] = []
@@ -148,6 +149,7 @@ class Run:
         self.rundir.create(self.objective, base)
         self.publish_sessions()
         self.linked = self.link_environment()
+        self.probe_gate(base)
         self.rundir.event(
             "run:start",
             runId=self.run_id,
@@ -321,6 +323,58 @@ class Run:
 
     # -- the gate ---------------------------------------------------------
 
+    def probe_gate(self, base: str) -> None:
+        """Run the gate once, on the untouched worktree, before any iteration.
+
+        A gate whose command cannot be found fails identically every iteration,
+        and reads as a broken project rather than a broken path -- the one-project
+        run recorded `fail (rc=127)` twelve times for a `.venv` that was simply
+        not in the worktree, and nothing surfaced it but the event log.  One run
+        against the base commit separates the two questions for good, and it is
+        cheap next to the hour that follows it.
+
+        It also answers a second question worth having: whether the gate was
+        already failing before the agent touched anything.  That failure belongs
+        to the repository, not to the run, and an iteration that inherits it
+        should not read as the iteration that caused it.
+
+        Only an unrunnable gate stops the run.  A gate that runs and fails is a
+        fact about the repository, and refusing to start on it would make lmloop
+        useless for the case it is most wanted in: a project that is broken.
+        """
+        command = self.config["gate"]["command"]
+        if not command:
+            return
+        self.run_gate(0)
+        self.gate_baseline = self.gate_result
+        self.rundir.event(
+            "gate:probe", command=command, result=self.gate_result, baseCommit=base
+        )
+        if self.gate_result.startswith("misconfigured") or self.gate_result == "fail (could not run)":
+            raise SystemExit(
+                f"lmloop: the gate cannot be run, so every iteration would record the"
+                f" same failure\n"
+                f"  gate:  {command}\n"
+                f"  cwd:   {self.worktree}\n"
+                f"  said:  {self.gate_output.strip()[-300:] or self.gate_result}\n"
+                f"\n"
+                f"  The gate runs inside the worktree, not the repo root, so a path"
+                f" that only exists\n"
+                f"  in the main checkout has to be absolute or listed under"
+                f" [worktree] link.\n"
+                f"\n"
+                f"  This worktree holds no work -- no iteration ran -- so fixing the"
+                f" gate and\n"
+                f"  re-running is enough; the next attempt takes its own name. To"
+                f" clear this one:\n"
+                f"    git worktree remove {self.worktree} && git branch -D {self.branch}"
+            )
+        if self.gate_result.startswith("fail"):
+            self.screen.log(
+                f"  gate already fails on the base commit ({self.gate_result});"
+                " that failure is the repository's, not this run's"
+            )
+
     def run_gate(self, number: int) -> None:
         command = self.config["gate"]["command"]
         if not command:
@@ -337,7 +391,17 @@ class Run:
                 env=self.env(),
             )
             output = (completed.stdout + completed.stderr).strip()
-            self.gate_result = "pass" if completed.returncode == 0 else f"fail (rc={completed.returncode})"
+            if completed.returncode == 0:
+                self.gate_result = "pass"
+            elif completed.returncode == 127:
+                # 127 is the shell saying it could not find the command, which is
+                # a broken gate, not broken code.  Kept out of the "fail" family
+                # deliberately: `blocks_commit` keys off that prefix, and a gate
+                # that cannot run must never be the reason an hour of work sits
+                # uncommitted.
+                self.gate_result = "misconfigured (rc=127: command not found)"
+            else:
+                self.gate_result = f"fail (rc={completed.returncode})"
         except subprocess.TimeoutExpired:
             output, self.gate_result = "gate timed out after 600s", "fail (timeout)"
         except OSError as error:
@@ -395,6 +459,7 @@ class Run:
             gate_command=self.config["gate"]["command"],
             gate_result=self.gate_result,
             gate_output=self.gate_output,
+            gate_baseline=self.gate_baseline,
             defects=self.defects,
         )
         self.rundir.iteration_prompt(number).write_text(prompt)

@@ -241,9 +241,16 @@ which is easier to trust than a cron job quietly rewriting run directories at
   plan. Deciding the steps is a whole-repository question that happens once and
   wants the widest window; carrying one out happens every iteration and wants
   throughput. Empty uses `model` for both.
-- `[gate] command` — run after every iteration. `blocks_commit = false` records
-  the result in the commit message and the next iteration's prompt but commits
-  regardless, which is usually what you want.
+- `[gate] command` — run after every iteration, **with the worktree as its
+  working directory**, so a path that only exists in the main checkout has to be
+  absolute or listed under `[worktree] link`. It is also run once before the
+  first iteration: a gate that cannot be executed at all (`rc=127`) stops the run
+  there rather than recording the same failure every hour, and a gate that
+  already fails on the base commit is reported as the repository's failure, in
+  the log and in the agent's prompt. `blocks_commit = false` records the result
+  in the commit message and the next iteration's prompt but commits regardless,
+  which is usually what you want; a gate that could not be run never blocks a
+  commit, whatever that setting says.
 - `[stop] no_diff_iterations` — stop after N iterations that git says changed
   nothing. This is the guard that catches an agent confidently going nowhere.
 

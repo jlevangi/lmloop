@@ -57,6 +57,27 @@ is — the worktree directory or the `lmloop/<run-id>` branch — so a worktree
 removed by hand does not leave a branch behind for `git worktree add` to trip
 over later.
 
+## The gate
+
+The gate command runs after every iteration, and once before the first one,
+inside the **worktree** — not the repo root. Three outcomes are kept apart
+because they ask for three different things:
+
+| Result | Means | What happens |
+| --- | --- | --- |
+| `pass` | the gate ran and succeeded | nothing |
+| `fail (rc=N)` | the gate ran and the code failed it | recorded; blocks the commit only if `blocks_commit` is set |
+| `misconfigured (rc=127…)` | the shell could not find the command | the run refuses to start, and never blocks a commit |
+
+The third row is why the probe exists. A gate of `.venv/bin/python -m compileall
+-q backend` recorded `fail (rc=127)` on every one of a twelve-iteration run
+because the worktree had no `.venv`, and nothing surfaced it but the event log —
+the code was fine the whole time. It now stops at run start, naming the cwd.
+
+A gate that fails identically on the base commit is reported as such, in the
+terminal and in the agent's prompt, so an inherited failure does not read as one
+the iteration caused.
+
 ## Where a run lives
 
 ```

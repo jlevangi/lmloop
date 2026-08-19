@@ -48,7 +48,7 @@ Commits so far this run:
 Cumulative diff against the base commit:
 {diff}
 
-{environment_section}{tree_section}{gate_section}{defects_section}{plan_section}# Handoff from the previous iteration
+{environment_section}{history_section}{tree_section}{gate_section}{defects_section}{plan_section}# Handoff from the previous iteration
 
 {handoff}
 
@@ -151,6 +151,20 @@ LINKED_LINE = """\
 are present even though git does not track them.
 """
 
+HISTORY_TEMPLATE = """\
+# Earlier runs on this repository
+
+Other objectives have been worked on here. You start in a fresh worktree and
+would otherwise rediscover this repository from scratch, including the dead
+ends, so here is what happened before:
+
+{runs}
+
+Treat it as background, not instruction. Your objective is the one at the top of
+this prompt, and anything here that contradicts what you find in the files is
+out of date -- the files win.
+"""
+
 TREE_TEMPLATE = """\
 # The repository
 
@@ -217,6 +231,7 @@ def build(
     handoff: str,
     handoff_path: str,
     tree: str = "",
+    history: list[dict] | None = None,
     plan: str = "",
     plan_path: str = "",
     plan_progress: tuple[int, int] = (0, 0),
@@ -229,6 +244,7 @@ def build(
 ) -> str:
     tree_section = TREE_TEMPLATE.format(tree=tree.strip()) + "\n" if tree.strip() else ""
     environment_section = _environment(linked or [], interpreter)
+    history_section = _history(history or [])
     plan_section = _plan(plan, plan_path, plan_progress)
     defects_section = (
         DEFECTS_TEMPLATE.format(problems="\n".join(defects[:15])) + "\n" if defects else ""
@@ -257,6 +273,7 @@ def build(
         diff=_block(diff, "(no changes yet)"),
         tree_section=tree_section,
         environment_section=environment_section,
+        history_section=history_section,
         plan_section=plan_section,
         defects_section=defects_section,
         task_line=task_line,
@@ -297,6 +314,31 @@ def _plan(plan: str, path: str, progress: tuple[int, int]) -> str:
         summary = "It has no checkboxes yet; add them as you go."
     body = HAVE_PLAN.format(plan=plan.strip(), path=path, progress=summary).strip()
     return PLAN_TEMPLATE.format(body=body) + "\n"
+
+
+def _history(runs: list[dict]) -> str:
+    """A few lines per earlier run: what it tried, whether it landed.
+
+    Outcomes are listed rather than summarised because they mean different
+    things -- a run of `thrashing` says the objective was too big for the window
+    here, which is worth knowing before writing a plan against the same
+    codebase.
+    """
+    if not runs:
+        return ""
+    lines = []
+    for run in runs:
+        verdict = f"{run['iterations']} iterations, {run['commits']} commits"
+        failures = [o for o in run.get("outcomes", []) if o not in ("ok", "")]
+        if failures:
+            counts: dict[str, int] = {}
+            for outcome in failures:
+                counts[outcome] = counts.get(outcome, 0) + 1
+            verdict += " (" + ", ".join(f"{n}x {o}" for o, n in counts.items()) + ")"
+        lines.append(f"- **{run['objective']}**\n  {verdict}")
+        if run.get("handoff") and "without writing a handoff" not in run["handoff"]:
+            lines.append(f"  ended: {run['handoff']}")
+    return HISTORY_TEMPLATE.format(runs="\n".join(lines)) + "\n"
 
 
 def _environment(linked: list[str], interpreter: str) -> str:

@@ -29,7 +29,7 @@ import gitops
 import models
 import prompts
 import pi_runner
-from rundir import RunDir, make_run_id
+from rundir import RunDir, make_run_id, previous_runs
 
 
 class Run:
@@ -324,6 +324,7 @@ class Run:
             handoff=self.rundir.read_handoff(),
             handoff_path=str(self.rundir.handoff_path),
             tree=gitops.tracked_files(self.worktree),
+            history=previous_runs(self.worktree.parent, self.run_id),
             plan=self.rundir.read_plan(),
             plan_path=str(self.rundir.plan_path),
             plan_progress=self.rundir.plan_progress(),

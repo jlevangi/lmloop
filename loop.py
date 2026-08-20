@@ -48,13 +48,16 @@ class Run:
         self.model = config["agent"]["model"]
         self.interrupted = False
 
-        # An explicit run id is a run that already exists -- `lmloop resume`
-        # naming the one it means -- so it is taken literally.  A derived one is
-        # a new attempt, and gets a free lane if today already used that name.
-        self.run_id = run_id if run_id else self._free_run_id(make_run_id(objective))
-        self.collided_with = ""
-        if run_id is None and self.run_id != make_run_id(objective):
-            self.collided_with = make_run_id(objective)
+        # An explicit run id is one somebody else already resolved -- `lmloop
+        # resume` naming the run it means, or `--detach`'s parent naming the lane
+        # it picked -- so it is taken literally.  A derived one is a new attempt,
+        # and gets a free lane if today already used that name.
+        derived = make_run_id(objective) if objective.strip() else ""
+        self.run_id = run_id if run_id else self._free_run_id(derived)
+        # Computed by comparison rather than remembered, so it is true however
+        # the id arrived: a detached run is told its id by its parent, and would
+        # otherwise never mention the run it stepped around.
+        self.collided_with = derived if derived and self.run_id != derived else ""
 
         self.branch = self._branch_for(self.run_id)
         self.worktree = self._worktree_for(self.run_id)

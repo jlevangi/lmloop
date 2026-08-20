@@ -67,18 +67,26 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
 
     This exists so something else can kick off a run and get its identity back
     at once -- a pi slash command, a Paseo script, an ssh one-liner from a
-    phone.  The run id is a pure function of the objective and the date, so the
-    parent can print it before the child has created anything.
+    phone.  So the parent has to name the run, not guess at it: the id is no
+    longer a pure function of the objective and the date, because a second
+    attempt at the same objective today takes the next free lane.  Guessing
+    printed an id that belonged to the *previous* run -- so `lmloop resume` on
+    it would have resumed the wrong one -- and named the log after it too.
+
+    The parent therefore resolves the id the same way the child would, and
+    passes it down, so both agree.
 
     The log lands outside the worktree on purpose: it has to survive whatever
     happens to the run, including the run never getting far enough to make a
     run directory.
     """
-    run_id = make_run_id(objective)
+    repo = gitops.repo_root(Path.cwd())
+    run_id = Run(repo, config_module.load(repo), objective).run_id
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     log_path = STATE_DIR / f"{run_id}.log"
 
-    argv = [sys.executable, str(Path(__file__).resolve()), "run", objective]
+    argv = [sys.executable, str(Path(__file__).resolve()), "run", objective,
+            "--run-id", run_id]
     for flag, value in (("--model", args.model), ("--tools", args.tools),
                         ("--gate", args.gate), ("--thinking", args.thinking)):
         if value is not None:
@@ -124,7 +132,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.detach:
         return _detach(objective, args)
 
-    run = Run(repo, config, objective, max_iterations=args.max_iterations)
+    run = Run(repo, config, objective, max_iterations=args.max_iterations,
+              run_id=getattr(args, "run_id", None))
     # Labels are short and paths are repo-relative because this header is read on
     # a phone as often as on a desktop, and the worktree path alone ran to 96
     # characters -- three wrapped lines before the run has even started.
@@ -406,6 +415,9 @@ def main() -> int:
     run.add_argument("--gate", help="override the commit gate command")
     run.add_argument("--max-iterations", type=int, help="override the iteration cap")
     run.add_argument("--detach", action="store_true", help="start in the background and print the run id")
+    # How --detach tells its child which lane it picked, so parent and child
+    # agree on the id even when today already used the derived one.
+    run.add_argument("--run-id", help=argparse.SUPPRESS)
     run.add_argument("--dry-run", action="store_true", help="print the plan, create nothing")
     run.set_defaults(func=cmd_run)
 

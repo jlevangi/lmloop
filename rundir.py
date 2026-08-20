@@ -187,6 +187,20 @@ class RunDir:
                     done += 1
         return done, total
 
+    def current_step(self) -> str:
+        """The first unchecked plan step -- what the next iteration is here for.
+
+        The *first* one, deliberately, and the same rule the prompt uses: a plan
+        is ordered, so the earliest unfinished step is the one in play.  Anything
+        that wants to talk about "the step that thrashed" has to agree with the
+        prompt about which step that was, or it will name the wrong one.
+        """
+        for line in self.read_plan().splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("- [", "* [")) and stripped[3:4].lower() != "x":
+                return stripped[5:].strip().strip("`")
+        return ""
+
     # -- handoff ----------------------------------------------------------
 
     def read_handoff(self) -> str:

@@ -112,3 +112,28 @@ broad objective then produced 124 passing tests over 14 iterations.
 Collapsing these to pass/fail throws away the diagnosis, and they imply
 different fixes: `thrashing` wants a smaller step, `truncated` wants a bigger
 output budget or less thinking, `stalled` wants investigating.
+
+### What happens after a thrash
+
+Two things, automatically, and neither of them edits the plan.
+
+**The retry goes to a wider model.** Thrashing is the window losing to the
+codebase, so retrying the same step on the same model retries what just failed
+for a reason that has not changed. The next iteration runs on whichever model
+the project already names that measures widest — on one-project, 90112 tokens of
+prompt budget against 49152. Only configured models are considered: picking one
+the operator never named would be lmloop deciding what their hardware should
+load. If nothing configured is wider, or the models are unmeasured, nothing
+changes.
+
+**The next prompt names the step that thrashed** and asks the agent to split it
+before attempting it again — by *file*, not by concept. Restating one goal as
+three sub-goals changes nothing, because each still needs the same files open at
+once; the read budget is what overflowed, and only naming fewer files per step
+reduces it.
+
+The agent does the splitting. The harness never edits `plan.md` — the plan is
+the agent's, and a harness that silently rewrites it is a harness whose state
+the agent can no longer trust. The warning retires itself as soon as the step
+it names stops being the first unchecked one, whether the agent split it or
+finished it.

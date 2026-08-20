@@ -63,6 +63,11 @@ class Run:
         self.gate_result = ""
         self.gate_output = ""
         self.gate_baseline = ""
+        self.last_outcome = ""
+        # How many iterations each plan step has thrashed on, keyed by the step
+        # text.  A step that has defeated the window twice is a step to split,
+        # and the agent is the one who can split it.
+        self.thrashed_steps: dict[str, int] = {}
         self.no_diff_streak = 0
         self.linked: list[str] = []
         self.defects: list[str] = []
@@ -429,7 +434,52 @@ class Run:
                 agent.get("planner_thinking") or agent.get("thinking", ""),
                 "planning",
             )
+        wider = self._wider_model() if self.last_outcome == "thrashing" else ""
+        if wider:
+            return (
+                wider,
+                agent.get("planner_thinking") or agent.get("thinking", ""),
+                "retry",
+            )
         return agent["model"], agent.get("thinking", ""), "editing"
+
+    def _retry_step(self) -> str:
+        """The step in play, if it is one that has already thrashed.
+
+        Checked against the plan as it stands now rather than remembered: the
+        agent may have split the step itself, or checked it off, and in either
+        case the warning has done its job and should stop being shown.
+        """
+        step = self.rundir.current_step()
+        return step if step and step in self.thrashed_steps else ""
+
+    def _wider_model(self) -> str:
+        """The configured model with the most room, when the last one ran out.
+
+        Thrashing is the window losing to the codebase: the agent reads until it
+        overflows, compacts, distrusts the summary and reads again.  Retrying the
+        same step on the same model is retrying the thing that just failed for a
+        reason that has not changed, so the retry goes to whichever model this
+        project already names that measures widest -- on one-project that is
+        90112 tokens of prompt budget against 49152, which is the difference
+        between a file fitting and not.
+
+        Only models the project configured are considered.  Picking a model the
+        operator never named would be lmloop deciding what their hardware should
+        load, and a wider window it has to swap in for is not obviously a better
+        trade than a narrower one already resident.
+        """
+        agent = self.config["agent"]
+        current = agent["model"]
+        candidates = {name for name in (current, agent.get("planner_model")) if name}
+        best, best_room = "", models.declared_window(current)
+        if best_room is None:
+            return ""  # unmeasured: no basis to call anything wider
+        for name in candidates:
+            room = models.declared_window(name)
+            if room and room[0] > best_room[0]:
+                best, best_room = name, room
+        return best
 
     def iterate(self, number: int) -> None:
         base = self.rundir.base_commit
@@ -461,6 +511,8 @@ class Run:
             gate_output=self.gate_output,
             gate_baseline=self.gate_baseline,
             defects=self.defects,
+            thrashed_step=self._retry_step(),
+            thrashed_times=self.thrashed_steps.get(self._retry_step(), 0),
         )
         self.rundir.iteration_prompt(number).write_text(prompt)
         self.rundir.event(
@@ -480,6 +532,7 @@ class Run:
         handoff_before = self.rundir.handoff_mtime()
         self._plan_before = self.rundir.plan_progress()
         self._plan_steps_before = self._plan_steps()
+        self._step_before = self.rundir.current_step()
         result = pi_runner.run(
             model=self.model,
             agent_name=self.config["agent"].get("harness", "pi"),
@@ -503,6 +556,23 @@ class Run:
             should_stop=lambda: self.interrupted or self.rundir.stop_now_requested(),
             on_progress=lambda snap: self._show(number, snap),
         )
+
+        # Which step defeated the window, and how often.  Recorded from the step
+        # that was in play when the iteration started, not the one in play now:
+        # a thrashing iteration writes nothing, so the plan has not moved, but
+        # reading it after the fact would still be reading a file the agent was
+        # free to edit mid-iteration.
+        self.last_outcome = result.outcome
+        if result.outcome == "thrashing" and self._step_before:
+            self.thrashed_steps[self._step_before] = (
+                self.thrashed_steps.get(self._step_before, 0) + 1
+            )
+            self.rundir.event(
+                "step:thrashed",
+                iteration=number,
+                step=self._step_before[:160],
+                times=self.thrashed_steps[self._step_before],
+            )
 
         self.run_gate(number)
         # Structural checks run whatever the project configured, because the

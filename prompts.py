@@ -48,7 +48,7 @@ Commits so far this run:
 Cumulative diff against the base commit:
 {diff}
 
-{environment_section}{history_section}{tree_section}{gate_section}{defects_section}{plan_section}# Handoff from the previous iteration
+{environment_section}{history_section}{tree_section}{gate_section}{defects_section}{thrash_section}{plan_section}# Handoff from the previous iteration
 
 {handoff}
 
@@ -187,6 +187,39 @@ say in your handoff what you repaired."""
 PLAN_TASK = """\
 Do the one step the plan names, and nothing else."""
 
+SPLIT_TASK = """\
+**This iteration's job is to split one plan step, then do the first piece.**
+The step named under "A step that will not fit" above has already defeated the
+context window {times}x. Attempting it again as written is attempting the thing
+that just failed, for a reason that has not changed."""
+
+THRASH_TEMPLATE = """\
+# A step that will not fit
+
+```
+{step}
+```
+
+{times_line} the iteration read files until the context window overflowed,
+compacted to a summary, and overflowed again without writing a line. That is the
+window losing to the codebase, not the step being wrong: the work is real, there
+is just more of it in view at once than there is room for.
+
+The fix is to make the step smaller **in what it has to read**, which is not the
+same as smaller in what it has to do. Restating one goal as three sub-goals
+changes nothing, because each of the three still needs the same files open at
+once. Splitting the step by *file* does change something.
+
+So, before anything else, edit `{plan_path}`: replace that one step with two or
+more that each name the specific file they touch, ordered so the first can be
+done knowing only that file. Then do the first of them. Leave the rest checked
+off by later iterations.
+
+If the step genuinely cannot be split -- one file is simply too large to read --
+then say so in your handoff and change the step to work on a named region of it
+instead: a single function, a single selector block, a single component.
+"""
+
 DEFECTS_TEMPLATE = """\
 # Broken files
 
@@ -242,6 +275,8 @@ def build(
     gate_result: str = "",
     gate_output: str = "",
     gate_baseline: str = "",
+    thrashed_step: str = "",
+    thrashed_times: int = 0,
 ) -> str:
     tree_section = TREE_TEMPLATE.format(tree=tree.strip()) + "\n" if tree.strip() else ""
     environment_section = _environment(linked or [], interpreter)
@@ -250,8 +285,24 @@ def build(
     defects_section = (
         DEFECTS_TEMPLATE.format(problems="\n".join(defects[:15])) + "\n" if defects else ""
     )
-    # A broken file outranks the plan: repair is the whole task this iteration.
-    task_line = REPAIR_TASK if defects else PLAN_TASK
+    thrash_section = ""
+    if thrashed_step and thrashed_times:
+        times_line = (
+            "Twice now," if thrashed_times == 2
+            else "Last iteration," if thrashed_times < 2
+            else f"{thrashed_times} times now,"
+        )
+        thrash_section = THRASH_TEMPLATE.format(
+            step=thrashed_step.strip(),
+            times_line=times_line,
+            plan_path=plan_path or "the plan",
+        ) + "\n"
+
+    # A broken file outranks the plan -- repair is the whole task this iteration,
+    # because editing around a file that does not parse only makes it worse.
+    # A step that will not fit outranks doing that step, for the same shape of
+    # reason: attempting it again as written is attempting what just failed.
+    task_line = REPAIR_TASK if defects else SPLIT_TASK.format(times=thrashed_times) if thrash_section else PLAN_TASK
 
     gate_section = ""
     if gate_command:
@@ -290,6 +341,7 @@ def build(
         history_section=history_section,
         plan_section=plan_section,
         defects_section=defects_section,
+        thrash_section=thrash_section,
         task_line=task_line,
         gate_section=gate_section,
         handoff=handoff.strip() or FIRST_HANDOFF,

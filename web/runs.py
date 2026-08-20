@@ -164,11 +164,20 @@ def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float 
     to stop is still running, so the sentinels are checked after.
     """
     age = _age_seconds(status.get("updated_at"))
-    last_lifecycle = ""
+    # The last thing that happened, not the last *lifecycle* thing that
+    # happened.  A `run:complete` followed by an `iteration:start` is a run that
+    # is plainly still going, and reading only lifecycle events made the
+    # dashboard report "finished" over the top of a working loop: a second loop
+    # had been started beside the first and wrote its own `run:complete` into
+    # the shared log when it died.  That second loop can no longer happen, but
+    # the log it poisoned is still on disk, and anything that can be settled by
+    # looking at what came last should be.
+    latest = ""
     for event in events:
-        if event.get("event") in ("run:start", "run:complete"):
-            last_lifecycle = event["event"]
-    if last_lifecycle == "run:complete":
+        name = event.get("event")
+        if name in ("run:start", "run:complete", "iteration:start", "iteration:end"):
+            latest = name
+    if latest == "run:complete" and not _holder(run_dir):
         return "finished", age
     if age is None:
         return "unknown", None

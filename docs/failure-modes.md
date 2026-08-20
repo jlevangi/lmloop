@@ -113,6 +113,27 @@ Collapsing these to pass/fail throws away the diagnosis, and they imply
 different fixes: `thrashing` wants a smaller step, `truncated` wants a bigger
 output budget or less thinking, `stalled` wants investigating.
 
+### When the server went away, not the model
+
+`agent-error` covers two unrelated things: the agent did something wrong, and
+the model server disappeared underneath it. Only the first is worth spending an
+iteration on.
+
+A run whose iteration ends in `agent-error`, left no commit, and whose detail
+names a transport failure — `Stream ended without finish_reason`, a refused or
+reset connection, a 502/503/504 — is retried on the same backoff as a failed
+preflight (1m, 2m, 4m, then give up), reusing the iteration number. pi retries
+these itself first, so one that reaches lmloop means the server was gone for
+minutes: a restart, a reload, a model swap.
+
+Observed here: fifty minutes of generation ended by a llama-server being
+swapped for a faster build mid-stream. That cost one of twelve iterations for a
+reason that had nothing to do with the work.
+
+The commit check is the guard. If the agent got far enough to change files, the
+iteration is worth keeping whatever killed it, and redoing it would mean redoing
+work that is already in git.
+
 ### What happens after a thrash
 
 Two things, automatically, and neither of them edits the plan.

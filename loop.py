@@ -67,6 +67,8 @@ class Run:
         self.gate_output = ""
         self.gate_baseline = ""
         self.last_outcome = ""
+        self.last_detail = ""
+        self.last_commit: str | None = None
         # How many iterations each plan step has thrashed on, keyed by the step
         # text.  A step that has defeated the window twice is a step to split,
         # and the agent is the one who can split it.
@@ -615,6 +617,8 @@ class Run:
 
         commit = self.commit(number, summary, result, handoff_written, base)
         self.record(number, summary, result, handoff_written, commit, base)
+        self.last_detail = result.detail or ""
+        self.last_commit = commit
 
     def _subject(self, number: int, result, handoff_written: bool) -> str:
         """One line describing what this iteration did, for the commit subject.
@@ -909,6 +913,16 @@ class Run:
                     reason = f"preflight failed: {error}"
                     break
                 iteration -= 1
+                continue
+            transport = self._transport_failure()
+            if transport:
+                # The server, not the work.  Same backoff as a failed preflight,
+                # and the iteration number is reused, so a restart of llama-swap
+                # does not quietly cost one of twelve iterations.
+                if not self._backoff(iteration, transport):
+                    reason = f"model server unreachable: {transport}"
+                    break
+                iteration -= 1
 
         self.rundir.event(
             "run:complete",
@@ -1009,6 +1023,39 @@ class Run:
         # opposite of what the code did.  Nothing is lost either way: whatever the
         # iteration wrote is gated, checked and committed on the way out.
         self.screen.log("  stop requested; ending this iteration now and committing what it has")
+
+    # What the agent says when the model server went away underneath it, rather
+    # than when the model did something wrong.  pi retries these itself a few
+    # times; these are the ones that outlast its retries, which means the server
+    # was gone for minutes -- a restart, a reload, a swap -- not a blip.
+    TRANSPORT = (
+        "stream ended without finish_reason",
+        "connection refused",
+        "connection reset",
+        "connection error",
+        "remote end closed",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+    )
+
+    def _transport_failure(self) -> str:
+        """The detail, if this iteration died of the server rather than itself.
+
+        An iteration that ends this way has produced nothing and learned
+        nothing, and charging it against `max_iterations` spends one of a very
+        small number on an event that had nothing to do with the work.  Observed
+        here: fifty minutes of generation ended by a llama-server being swapped
+        for a faster build mid-stream.
+
+        Only when it left no commit.  If the agent got far enough to change
+        files, the iteration is worth keeping whatever killed it, and redoing it
+        would mean redoing work that is already in git.
+        """
+        if self.last_outcome != "agent-error" or self.last_commit:
+            return ""
+        detail = (self.last_detail or "").lower()
+        return self.last_detail if any(t in detail for t in self.TRANSPORT) else ""
 
     def _backoff(self, iteration: int, detail: str) -> bool:
         """1m, 2m, 4m, then give up.  Only for a llama-swap that is not there."""

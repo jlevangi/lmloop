@@ -360,5 +360,12 @@ def wait_while_paused(rundir, screen: Screen, interrupted) -> None:
             (3, f"  paused {elapsed(time.monotonic() - since)}"),
             (1, "[r] or rm PAUSE to resume"),
         ])
+        # Keep status.json current while holding.  Anything reading the run from
+        # outside -- the dashboard, `lmloop list` -- decides a run is stale from
+        # how long it has been since that file moved, and a hold that goes quiet
+        # for an hour is indistinguishable from a loop that was killed.  A
+        # paused run is the healthiest state there is; it should not have to look
+        # dead to prove it.
+        rundir.heartbeat()
         time.sleep(2)
     screen.log(f"  resumed after {elapsed(time.monotonic() - since)}")

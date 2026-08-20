@@ -155,6 +155,7 @@ class Run:
         gitops.add_worktree(self.repo, self.worktree, self.branch)
         base = gitops.head_commit(self.worktree)
         self.rundir.create(self.objective, base)
+        self.rundir.claim()
         self.publish_sessions()
         self.linked = self.link_environment()
         self.probe_gate(base)
@@ -183,6 +184,17 @@ class Run:
         """
         if not self.rundir.path.is_dir():
             raise SystemExit(f"lmloop: no run directory at {self.rundir.path}")
+        holder = self.rundir.holder()
+        if holder:
+            # Two loops in one worktree commit over each other and write the
+            # same status file.  A paused run still has a loop; resuming beside
+            # it is the mistake this catches.
+            raise SystemExit(
+                f"lmloop: run {self.run_id} already has a loop (pid {holder})\n"
+                f"  it may just be paused:  rm {self.rundir.pause_path}\n"
+                f"  or stop it first:       touch {self.rundir.stop_path}"
+            )
+        self.rundir.claim()
         done = max(
             (int(path.stem.split("-")[1]) for path in self.rundir.path.glob("iteration-*-prompt.md")),
             default=0,
@@ -905,6 +917,7 @@ class Run:
             commitCount=gitops.commit_count(self.worktree, self.rundir.base_commit),
             worktreePath=str(self.worktree),
         )
+        self.rundir.release()
         self.screen.close()
         self._summarise(reason, started)
         self._sweep()

@@ -55,6 +55,8 @@ class RunDir:
         self.notes_path = self.path / "notes.md"
         self.handoff_path = self.path / "handoff.md"
         self.plan_path = self.path / "plan.md"
+        self.status_path = self.path / "status.json"
+        self.pid_path = self.path / "loop.pid"
         self.stop_path = self.path / "STOP"
         self.stop_now_path = self.path / "STOP-NOW"
         self.pause_path = self.path / "PAUSE"
@@ -351,6 +353,69 @@ class RunDir:
 
     # -- live status ------------------------------------------------------
 
+    # -- ownership --------------------------------------------------------
+
+    def claim(self) -> None:
+        """Record that this process is the loop for this run."""
+        try:
+            self.pid_path.write_text(f"{os.getpid()}\n")
+        except OSError:
+            pass  # advisory only; never worth failing a run over
+
+    def release(self) -> None:
+        """Drop this process's claim, if the claim is still ours.
+
+        Read straight from the file rather than through `holder`, which reports
+        0 for our own pid on purpose so that a loop never blocks itself.
+        """
+        try:
+            mine = int(self.pid_path.read_text().strip()) == os.getpid()
+        except (OSError, ValueError):
+            return
+        if mine:
+            self.pid_path.unlink(missing_ok=True)
+
+    def holder(self) -> int:
+        """The pid of a live lmloop loop on this run, or 0.
+
+        Advisory, and deliberately conservative: it says yes only when the pid
+        is running *and* its command line still looks like lmloop, so a recycled
+        pid cannot lock a run out.  A stale file left by a killed loop reads as
+        0 and the next run simply overwrites it.
+
+        This exists because two loops on one run directory is not a harmless
+        race.  The dashboard's "continue" spawned a resume beside a loop that
+        was merely paused; both then held on the same PAUSE, and had it been
+        cleared, both would have run iterations in the same worktree, writing
+        the same status.json and committing over each other.
+        """
+        try:
+            pid = int(self.pid_path.read_text().strip())
+        except (OSError, ValueError):
+            return 0
+        if pid <= 0 or pid == os.getpid():
+            return 0
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return 0  # gone, or a platform without /proc: do not block on it
+        return pid if b"lmloop" in cmdline else 0
+
+    def heartbeat(self) -> None:
+        """Restamp `status.json` without otherwise changing it.
+
+        For the pause hold, which has nothing new to say but still has to say
+        it: readers judge staleness by how long ago this file moved, so a run
+        that is deliberately holding must keep proving it is there.  Missing or
+        unreadable is not an error -- the caller is a display loop, and there is
+        nothing useful it could do about it.
+        """
+        try:
+            state = json.loads(self.status_path.read_text())
+        except (OSError, ValueError):
+            return
+        self.write_status(state)
+
     def write_status(self, state: dict) -> None:
         """Overwrite `status.json` with what the run is doing right now.
 
@@ -361,10 +426,10 @@ class RunDir:
         Written atomically because something is always reading it.
         """
         state = dict(state, updated_at=datetime.now(timezone.utc).isoformat())
-        temporary = self.path / "status.json.tmp"
+        temporary = self.status_path.with_suffix(".json.tmp")
         try:
             temporary.write_text(json.dumps(state, indent=2) + "\n")
-            temporary.replace(self.path / "status.json")
+            temporary.replace(self.status_path)
         except OSError:
             pass  # a status file is never worth failing a run over
 

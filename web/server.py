@@ -431,6 +431,16 @@ class Handler(BaseHTTPRequestHandler):
             # The one that needs a process: the run has already exited, and more
             # iterations mean starting the loop again on the same worktree.
             iterations = int(payload.get("iterations") or 3)
+            # A run that still has a live loop does not need continuing, and
+            # starting a second one puts two loops in one worktree.  Refused
+            # here rather than by the child, because the child's complaint goes
+            # to a pipe nobody reads and the button just looks broken.
+            holder = runs_module._holder(run_dir)
+            if holder:
+                return self.json({
+                    "error": f"this run already has a loop (pid {holder});"
+                             " resume it instead of continuing it",
+                }, 409)
             argv = [
                 self.config["python"], LMLOOP, "resume", run_dir.name,
                 "--iterations", str(iterations),
@@ -438,13 +448,31 @@ class Handler(BaseHTTPRequestHandler):
             for flag, key in (("--model", "model"), ("--thinking", "thinking")):
                 if payload.get(key):
                     argv += [flag, str(payload[key])]
+            # Every sentinel, PAUSE included.  "Continue" is the button for a
+            # run that has stopped, and a run is just as stopped when it is
+            # holding on PAUSE -- leaving that one behind spawned a second loop
+            # that went straight back into the hold, so the button did nothing
+            # and said nothing about why.
             (run_dir / "STOP").unlink(missing_ok=True)
             (run_dir / "STOP-NOW").unlink(missing_ok=True)
-            subprocess.Popen(
-                argv, cwd=project["path"], stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            (run_dir / "PAUSE").unlink(missing_ok=True)
+            # To a file, not to DEVNULL: when this fails it fails in the first
+            # second, and throwing the reason away is what made a dead button
+            # indistinguishable from a working one.
+            log_path = run_dir / "continue.log"
+            with log_path.open("wb") as log:
+                child = subprocess.Popen(
+                    argv, cwd=project["path"], stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                )
+            try:
+                if child.wait(timeout=1.5) != 0:
+                    return self.json(
+                        {"error": log_path.read_text().strip()[-500:] or "resume failed"},
+                        500,
+                    )
+            except subprocess.TimeoutExpired:
+                pass  # still running after a second and a half: it started
         else:
             return self.json({"error": f"unknown action {action}"}, 400)
         return self.json(runs_module.summarise(project, run_dir))

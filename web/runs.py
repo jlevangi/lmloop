@@ -142,6 +142,20 @@ def _events(run_dir: Path) -> list[dict]:
     return parsed
 
 
+def _holder(run_dir: Path) -> int:
+    """The pid of a live lmloop loop on this run, or 0.  See rundir.holder."""
+    try:
+        pid = int((run_dir / "loop.pid").read_text().strip())
+    except (OSError, ValueError):
+        return 0
+    if pid <= 0:
+        return 0
+    try:
+        return pid if b"lmloop" in Path(f"/proc/{pid}/cmdline").read_bytes() else 0
+    except OSError:
+        return 0
+
+
 def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float | None]:
     """What is actually happening, from evidence rather than self-report.
 
@@ -158,9 +172,15 @@ def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float 
         return "finished", age
     if age is None:
         return "unknown", None
-    if age > STALE_AFTER_SECONDS:
+    if age > STALE_AFTER_SECONDS and not _holder(run_dir):
         # The loop stopped writing without recording a completion: killed,
         # OOMed, rebooted.  Its status file still says "working".
+        #
+        # Only when no loop is actually there, though.  "Stale" is a claim about
+        # the process, not about the clock, and a run holding on PAUSE went
+        # quiet for forty minutes and got called stale -- which pushed the
+        # dashboard into offering "continue", which started a second loop beside
+        # the first.  A live pid is the difference between quiet and gone.
         return "stale", age
     if (run_dir / "STOP").exists() or (run_dir / "STOP-NOW").exists():
         return "stopping", age

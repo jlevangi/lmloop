@@ -98,6 +98,24 @@ the iteration caused.
 append-only history; parsing it to the end is what the old dashboard did and why
 it needed a cache.
 
+It also carries what the *model* is doing, which on local hardware is a separate
+question from what the agent is doing:
+
+| field | meaning |
+|---|---|
+| `model` | the model running this iteration, which is not always the configured one -- planning and thrash retries use others |
+| `thinking`, `role` | the settings behind that choice |
+| `tokens_per_second` | output tokens per second, measured between message ends over the last five minutes |
+| `input_tokens` | the prompt as the model counted it |
+| `context_window` | what lmloop believes is safe for this model, or `0` if it has never been measured |
+| `max_output_tokens` | the per-reply cap, which is what a `truncated` outcome ran into |
+
+`tokens_per_second` is windowed rather than cumulative on purpose. A cumulative
+average divides by every second the iteration spent running tools and waiting on
+llama-swap to load a model, and so reports a speed the model never produced.
+The windowed figure is the slope between message ends, which is the number that
+answers "is it worth waiting for this".
+
 ## The dashboard
 
 ```bash

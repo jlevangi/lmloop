@@ -227,6 +227,50 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 
 /* ── Run view ───────────────────────────────────────────────────────── */
 #view-run { padding-top: 18px; display: grid; gap: 14px; }
+
+/* The head holds everything that moves and is never re-created; the body below
+   it is replaced on every poll.  See app.js -- a re-parented node restarts its
+   animation, which is why these are two boxes rather than one. */
+.live, .run-body { display: grid; gap: 14px; }
+
+/* ── Model card ─────────────────────────────────────────────────────────
+   A local run is a model working against a window it can fall out of.  Speed
+   says whether waiting is worth it; the gauge says how long until the next
+   compaction.  Neither was visible anywhere but the terminal. */
+.model {
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 12px 14px; display: grid; gap: 10px;
+}
+.model-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.model-id { font-family: var(--mono); font-size: .84rem; }
+.model-tag {
+  font-size: .64rem; text-transform: uppercase; letter-spacing: .12em;
+  color: var(--text-faint);
+}
+/* Pinned right and tabular: this is the number being watched, and digits that
+   shift the text sideways as they change cannot be read at a glance. */
+.model-rate {
+  margin-left: auto; font-family: var(--mono); font-size: .84rem;
+  color: var(--moon); font-variant-numeric: tabular-nums;
+}
+.gauge { display: grid; gap: 5px; }
+.gauge-label {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: .64rem; text-transform: uppercase; letter-spacing: .12em;
+  color: var(--text-faint);
+}
+.gauge-value { font-family: var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-dim); }
+.gauge-track { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.gauge-track span {
+  display: block; width: 0; height: 100%; background: var(--ok);
+  transition: width .5s ease, background .5s ease;
+}
+.gauge-track span.warn { background: var(--warn); }
+.gauge-track span.bad { background: var(--bad); }
+.model-meta {
+  display: flex; flex-wrap: wrap; gap: 3px 12px;
+  font-family: var(--mono); font-size: .7rem; color: var(--text-faint);
+}
 .step strong { font-weight: 600; color: var(--text); }
 .step code { background: var(--ink-sink); color: var(--moon); padding: 1px 5px; font-size: .82em; }
 .step.done strong, .step.done code { color: inherit; font-weight: 500; }

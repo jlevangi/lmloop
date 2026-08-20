@@ -271,6 +271,12 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "objective": objective,
         "title": objective.splitlines()[0][:120] if objective else run_dir.name,
         "model": status.get("model", ""),
+        "thinking": status.get("thinking", ""),
+        "role": status.get("role", ""),
+        "context_window": status.get("context_window"),
+        "max_output_tokens": status.get("max_output_tokens"),
+        "input_tokens": status.get("input_tokens"),
+        "tokens_per_second": status.get("tokens_per_second"),
         "iteration": status.get("iteration"),
         "max_iterations": status.get("max_iterations"),
         "phase": status.get("phase", ""),
@@ -323,7 +329,15 @@ def _iterations(run_dir: Path) -> list[dict]:
         if not isinstance(number, int):
             continue
         if event.get("event") == "iteration:start":
-            rows.setdefault(number, {"iteration": number})["started_at"] = event.get("timestamp")
+            # The model is recorded per iteration, not per run: planning uses one
+            # and a thrash retry escalates to another, so a history that names
+            # only the configured model misattributes exactly the iterations
+            # worth looking at.
+            rows.setdefault(number, {"iteration": number}).update({
+                "started_at": event.get("timestamp"),
+                "model": event.get("model", ""),
+                "role": event.get("role", ""),
+            })
         elif event.get("event") == "iteration:end":
             rows.setdefault(number, {"iteration": number}).update({
                 "outcome": event.get("outcome"),
@@ -336,6 +350,8 @@ def _iterations(run_dir: Path) -> list[dict]:
                 "gate": event.get("gate", ""),
                 "plan_done": event.get("planDone"),
                 "plan_total": event.get("planTotal"),
+                "input_tokens": event.get("totalInputTokens"),
+                "output_tokens": event.get("totalOutputTokens"),
             })
     return [rows[key] for key in sorted(rows)]
 

@@ -54,6 +54,10 @@ TERM_GRACE_SECONDS = 30
 # tick is a lock, a dict, and one small atomic file write.
 POLL_SECONDS = 2
 
+# How far back `_Stream.rate` looks.  Long enough to span a couple of messages
+# on a 2 tok/s model, short enough that a model that has slowed down says so.
+RATE_WINDOW_SECONDS = 300
+
 
 @dataclass
 class IterationResult:
@@ -88,6 +92,31 @@ class _Stream:
         self.stderr = ""
         self.last_tool = ""
         self.last_target = ""
+        # (monotonic, cumulative output tokens) at each message end.  Output
+        # tokens only become known in lumps -- one lump per assistant message,
+        # which on a slow model is minutes apart -- so a rate needs the times
+        # those lumps landed, not a difference against a fixed start.
+        self.token_marks: list[tuple[float, int]] = []
+
+    def rate(self) -> float:
+        """Output tokens per second, over the recent past.
+
+        Windowed rather than cumulative because the two answer different
+        questions: cumulative includes every second spent running tools and
+        waiting on llama-swap, and so reports a number no model has ever
+        produced.  What a watcher wants is the speed of the thing generating
+        right now, which is the slope between message ends.
+
+        Falls back to the cumulative average until two marks exist, because one
+        number that is roughly right beats a blank space.
+        """
+        marks = [m for m in self.token_marks if m[0] >= time.monotonic() - RATE_WINDOW_SECONDS]
+        if len(marks) >= 2:
+            span = marks[-1][0] - marks[0][0]
+            if span > 0:
+                return (marks[-1][1] - marks[0][1]) / span
+        span = time.monotonic() - self.first_event_at
+        return self.output_tokens / span if self.first_event_at and span > 0 else 0.0
 
     def note_output(self) -> None:
         """Any byte from pi. Keeps the stall clock fresh once it is running."""
@@ -127,6 +156,8 @@ def _handle(event: dict, state: _Stream, agent) -> None:
         state.error_message = note["error"]
         state.input_tokens = max(state.input_tokens, note["input"])
         state.output_tokens += note["output"]
+        state.token_marks.append((time.monotonic(), state.output_tokens))
+        del state.token_marks[:-64]
 
 
 def _read_stdout(pipe, raw_path: Path, state: _Stream, agent) -> None:
@@ -260,6 +291,11 @@ def run(
                 "last_tool": state.last_tool,
                 "last_target": state.last_target,
                 "output_tokens": state.output_tokens,
+                # The prompt as the model actually counted it, which is the only
+                # honest measure of how close this iteration is to the window it
+                # will compact at.
+                "input_tokens": state.input_tokens,
+                "tokens_per_second": state.rate(),
                 # Before the first event this is time spent waiting on
                 # llama-swap to load, not the agent going quiet.
                 "quiet": (now - last_event) if first_event else 0.0,

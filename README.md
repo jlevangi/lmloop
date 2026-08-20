@@ -140,6 +140,13 @@ A run that dies is reported as `stale`, never as running. A crashed loop leaves
 a `status.json` that still says `working`, so liveness comes from the age of that
 file and from whether the log records a completion.
 
+A live run also shows the model working it: which one (not always the configured
+one -- planning and thrash retries escalate), at what thinking level, how fast it
+is generating, and how much of its context window the current prompt is using.
+The last of those is the one that predicts trouble: past about three quarters of
+the window, the next tool result is what triggers a compaction, and a compaction
+is where a slow run starts thrashing.
+
 Without OIDC configured the server binds loopback only, and says so rather than
 quietly listening on every interface. A dashboard with a launch button does not
 belong on a network unauthenticated. To expose it, set the `LMLOOP_WEB_OIDC_*`
@@ -276,7 +283,7 @@ A run is a foreground process with a live status line, not a background job:
 
 ```
   iteration 2: local-fast already loaded
-  iter 2/3  41m18s  17 tools  12043 out  read
+  iter 2/3  41m18s  17 tools  3.5 tok/s  12043 out  read
 ```
 
 The bottom line keeps moving so an attached terminal never looks dead. It shows
@@ -292,8 +299,8 @@ log. Segments are dropped by priority as the terminal narrows, so a phone
 terminal degrades to what matters:
 
 ```
- 60 |  2/3  41m18s  read  17 tools  12043 out|
- 44 |  2/3  41m18s  read  17 tools  [STOP]|
+ 60 |  2/3  41m18s  read  17 tools  3.5 tok/s  12043 out|
+ 44 |  2/3  41m18s  read  3.5 tok/s  [STOP]|
  32 |  2/3  41m18s  read  [STOP]|
  24 |  2/3  read  [STOP]|
 ```

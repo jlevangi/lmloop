@@ -21,7 +21,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   config: null, runs: [], project: null, timer: null,
-  route: { name: "list" }, rows: new Map(), detailKey: null,
+  route: { name: "list" }, rows: new Map(), detailKey: null, shell: null,
 };
 
 /* ── Fetch ─────────────────────────────────────────────────────────────── */
@@ -53,6 +53,21 @@ function duration(seconds) {
 
 const ago = (s) => (s == null ? "never" : s < 60 ? "just now" : `${duration(s)} ago`);
 
+/* Token counts run to five figures and are read on a phone. Three significant
+ * digits is the whole of the signal: 42.5k against a 57.3k window says what
+ * 42506 against 57344 says, in half the width. */
+function compact(n) {
+  if (n == null) return "";
+  if (n < 1000) return String(n);
+  const k = n / 1000;
+  // Tested against the rounded value, not the raw one: 9999 rounds to 10.0 at
+  // one decimal, which is a wider string than the two significant figures this
+  // is for.
+  return k < 9.95 ? `${k.toFixed(1)}k` : `${Math.round(k)}k`;
+}
+
+const rate = (r) => (r ? `${r < 10 ? r.toFixed(1) : Math.round(r)} tok/s` : "");
+
 /* The poll is every few seconds; a clock that only moves when it lands looks
  * stuck. Elapsed is extrapolated from when the figure was fetched, so the page
  * keeps time on its own between updates. */
@@ -76,6 +91,7 @@ function metaBits(run) {
   // here just spends a phone's width saying the same word twice.
   if (run.state !== "running" && run.last_tool) bits.push(run.last_tool);
   if (run.state === "running" && run.elapsed_seconds != null) bits.push(liveElapsed(run));
+  if (run.state === "running" && run.tokens_per_second) bits.push(rate(run.tokens_per_second));
   if (run.compactions) bits.push(`${run.compactions} ovf`);
   if (run.defects?.length) bits.push(`${run.defects.length} broken`);
   if (run.model) bits.push(run.model.split("/").pop());
@@ -125,6 +141,7 @@ function patchRow(parts, run) {
     run.state, run.title, run.plan_done, run.plan_total, run.outcomes,
     run.iteration, run.commits, run.last_tool, run.last_target, run.current_step,
     run.elapsed_seconds, run.compactions, run.model, run.age_seconds,
+    run.tokens_per_second,
   ]);
   if (key === parts.last) return;
   parts.last = key;
@@ -134,16 +151,20 @@ function patchRow(parts, run) {
   parts.stateLabel.className = `state ${run.state}`;
   parts.title.textContent = run.title;
 
-  if (run.plan_total) {
-    parts.progress.hidden = false;
-    parts.fill.style.width = `${Math.round((run.plan_done / run.plan_total) * 100)}%`;
-    parts.steps.textContent = `${run.plan_done}/${run.plan_total}`;
-  } else {
-    parts.progress.hidden = true;
-  }
-
   // What it is doing, right now, without opening anything.
   const live = run.state === "running";
+
+  // The bar stays up for a live run with no plan yet, showing nothing done.
+  // That is the first iteration, which is the longest one and the one with the
+  // least to show for itself -- exactly when a moving bar is worth the most.
+  parts.progress.hidden = !run.plan_total && !live;
+  parts.fill.style.width = run.plan_total
+    ? `${Math.round((run.plan_done / run.plan_total) * 100)}%`
+    : "0%";
+  parts.steps.textContent = run.plan_total
+    ? `${run.plan_done}/${run.plan_total}`
+    : (live ? "planning" : "");
+
   parts.track.classList.toggle("working", live);
   parts.now.hidden = !(live && (run.current_step || run.last_tool));
   parts.nowStep.textContent = run.current_step || "";
@@ -232,11 +253,151 @@ function renderFilters() {
 
 /* ── Run view ──────────────────────────────────────────────────────────── */
 
-function fact(label, value, hot = false) {
-  const box = el("div", "fact");
-  const dd = el("dd", hot ? "hot" : null, value);
-  box.append(el("dt", null, label), dd);
-  return box;
+/* ── The live head (built once per run, patched thereafter) ───────────────
+ *
+ * Everything on the run page that moves lives in here, for one reason: the rest
+ * of the page is rebuilt on every poll, and a rebuilt node restarts its CSS
+ * animation. The travelling highlight that says "this run is alive" was reset
+ * every few seconds by that rebuild and so never actually travelled -- which is
+ * the whole of what it exists to do. Re-parenting restarts animations too, so
+ * this node is never passed through `replaceChildren`; it stays put, and only
+ * the body below it is replaced.
+ */
+
+const FACTS = ["state", "plan", "commits", "iter", "updated"];
+
+function makeHead() {
+  const node = el("div", "live");
+  node.hidden = true;
+
+  const track = el("div", "track");
+  const fill = el("span");
+  track.append(fill);
+
+  const facts = el("div", "facts");
+  const cells = {};
+  for (const label of FACTS) {
+    const box = el("div", "fact");
+    cells[label] = el("dd");
+    box.append(el("dt", null, label), cells[label]);
+    facts.append(box);
+  }
+
+  const doing = el("div", "doing");
+  const doingLabel = el("div", "label");
+  const doingStep = el("div", "step");
+  const doingAct = el("div", "act");
+  doing.append(doingLabel, doingStep, doingAct);
+
+  const parts = { node, track, fill, cells, doing, doingLabel, doingStep, doingAct };
+  node.append(track, facts, doing, makeModel(parts));
+  return parts;
+}
+
+/* The model card. A run is a model doing work, and until now the page named the
+ * model and stopped there -- which left the two questions actually worth asking
+ * of a local model unanswerable from the UI: how fast is it going, and how close
+ * is this prompt to the window it will compact at. */
+function makeModel(head) {
+  const card = el("div", "model");
+  head.model = {
+    id: el("span", "model-id"),
+    tag: el("span", "model-tag"),
+    rate: el("span", "model-rate"),
+    gaugeText: el("span", "gauge-value"),
+    gaugeFill: el("span"),
+    meta: el("div", "model-meta"),
+  };
+
+  const line = el("div", "model-head");
+  line.append(head.model.id, head.model.tag, head.model.rate);
+
+  const gauge = el("div", "gauge");
+  const label = el("div", "gauge-label");
+  label.append(el("span", null, "context"), head.model.gaugeText);
+  const bar = el("div", "gauge-track");
+  bar.append(head.model.gaugeFill);
+  gauge.append(label, bar);
+  head.model.gauge = gauge;
+
+  card.append(line, gauge, head.model.meta);
+  head.model.card = card;
+  return card;
+}
+
+function patchHead(head, run) {
+  head.node.hidden = false;
+
+  const live = run.state === "running";
+  head.fill.style.width = run.plan_total
+    ? `${Math.round((run.plan_done / run.plan_total) * 100)}%`
+    : "0%";
+  // Toggled, never re-created: assigning the same class list back would be
+  // harmless, but removing and re-adding it would restart the sweep.
+  head.track.classList.toggle("working", live);
+
+  const values = {
+    state: run.state,
+    plan: run.plan_total ? `${run.plan_done}/${run.plan_total}` : "—",
+    commits: String(run.commits),
+    iter: `${run.iteration ?? "?"}/${run.max_iterations ?? "?"}`,
+    updated: ago(run.age_seconds),
+  };
+  for (const label of FACTS) {
+    const dd = head.cells[label];
+    if (dd.textContent !== values[label]) dd.textContent = values[label];
+    dd.className = label === "state" && ACTIVE.has(run.state) ? "hot" : "";
+  }
+
+  const doing = ACTIVE.has(run.state) && (run.current_step || run.last_tool);
+  head.doing.hidden = !doing;
+  if (doing) {
+    head.doingLabel.textContent = run.paused ? "paused on" : "working on";
+    head.doingStep.textContent = run.current_step || "";
+    head.doingStep.hidden = !run.current_step;
+    const act = [run.last_tool, run.last_target].filter(Boolean).join(" ");
+    head.doingAct.replaceChildren(el("span", "clock", liveElapsed(run)));
+    if (act) head.doingAct.append(` · ${act}`);
+    if (run.quiet_seconds > 60) head.doingAct.append(` · quiet ${duration(run.quiet_seconds)}`);
+  }
+
+  patchModel(head.model, run);
+}
+
+function patchModel(model, run) {
+  model.card.hidden = !run.model;
+  if (!run.model) return;
+
+  model.id.textContent = run.model.split("/").pop();
+  // Role and thinking are per-iteration, not per-run: planning gets the wide
+  // model, a thrash retry gets a wider one still, and knowing which of those is
+  // on screen is the difference between "slow" and "wrong model".
+  model.tag.textContent = [run.role, run.thinking && `thinking ${run.thinking}`]
+    .filter(Boolean).join(" · ");
+  model.rate.textContent = run.state === "running" ? rate(run.tokens_per_second) : "";
+
+  const used = run.input_tokens || 0;
+  const window = run.context_window || 0;
+  model.gauge.hidden = !used;
+  if (used) {
+    const share = window ? used / window : 0;
+    model.gaugeText.textContent = window
+      ? `${compact(used)} / ${compact(window)} · ${Math.round(share * 100)}%`
+      : `${compact(used)} · window unmeasured`;
+    model.gaugeFill.style.width = `${Math.round(Math.min(share, 1) * 100)}%`;
+    // The bands are about what happens next, not about tidiness: past ~75% the
+    // next tool result is what triggers a compaction, and a compaction is where
+    // a slow run starts thrashing.
+    model.gaugeFill.className = share > 0.9 ? "bad" : share > 0.75 ? "warn" : "";
+  }
+
+  const bits = [];
+  if (run.output_tokens) bits.push(`${compact(run.output_tokens)} out`);
+  if (run.max_output_tokens) bits.push(`${compact(run.max_output_tokens)} reply cap`);
+  if (run.tool_calls) bits.push(`${run.tool_calls} tools`);
+  if (run.writes) bits.push(plural(run.writes, "write"));
+  bits.push(run.compactions ? plural(run.compactions, "overflow") : "no overflow");
+  model.meta.replaceChildren(...bits.map((bit) => el("span", null, bit)));
 }
 
 /* Plan steps are markdown the agent wrote for itself, so they arrive with
@@ -289,7 +450,10 @@ function iterationTable(rows) {
   const wrap = el("div", "scroll-x");
   const table = document.createElement("table");
   const head = document.createElement("tr");
-  for (const label of ["#", "outcome", "time", "wr", "ovf", "plan", "commit"]) {
+  // `in` is the prompt as the model counted it -- the number that decides
+  // whether the next iteration compacts -- and is the one column here that
+  // explains a thrash rather than just recording one.
+  for (const label of ["#", "outcome", "time", "wr", "ovf", "in", "out", "plan", "commit"]) {
     head.append(el("th", null, label));
   }
   table.append(head);
@@ -300,6 +464,8 @@ function iterationTable(rows) {
     tr.append(el("td", null, row.seconds ? duration(row.seconds) : ""));
     tr.append(el("td", null, row.writes ?? ""));
     tr.append(el("td", null, row.compactions || ""));
+    tr.append(el("td", null, compact(row.input_tokens)));
+    tr.append(el("td", null, compact(row.output_tokens)));
     tr.append(el("td", null, row.plan_total ? `${row.plan_done}/${row.plan_total}` : ""));
     tr.append(el("td", null, row.commit ? row.commit.slice(0, 8) : ""));
     table.append(tr);
@@ -325,8 +491,20 @@ function control(label, action, run, { risk = false, body = {} } = {}) {
   return button;
 }
 
-async function renderRun(project, runId, { quiet = false } = {}) {
+/* The run page is a fixed head plus a replaceable body. `#view-run` itself is
+ * never cleared while a run is on screen, because clearing it would take the
+ * head with it. */
+function runShell(runId) {
   const view = $("view-run");
+  if (state.shell?.runId === runId && view.contains(state.shell.head.node)) return state.shell;
+  const head = makeHead();
+  const body = el("div", "run-body");
+  view.replaceChildren(head.node, body);
+  state.shell = { runId, head, body };
+  return state.shell;
+}
+
+async function renderRun(project, runId, { quiet = false } = {}) {
   const summary = state.runs.find((r) => r.run_id === runId);
   const key = `${runId}:${summary?.updated_at || ""}:${summary?.state || ""}`;
   if (quiet && key === state.detailKey) return;
@@ -334,45 +512,24 @@ async function renderRun(project, runId, { quiet = false } = {}) {
   $("bar-title").textContent = project;
   $("bar-sub").textContent = runId;
 
-  if (!quiet) view.replaceChildren(el("p", "empty", "Loading…"));
+  const { head, body } = runShell(runId);
+  if (!quiet) body.replaceChildren(el("p", "empty", "Loading…"));
 
   let run;
   try {
     run = await api(`/api/runs/${project}/${runId}`);
   } catch (error) {
-    view.replaceChildren(el("p", "alert", error.message));
+    body.replaceChildren(el("p", "alert", error.message));
     return;
   }
 
+  patchHead(head, run);
+
   // Preserve what the reader was doing across a background refresh.
   const scroll = window.scrollY;
-  const open = [...view.querySelectorAll("details")].map((node) => node.open);
+  const open = [...body.querySelectorAll("details")].map((node) => node.open);
 
   const parts = [];
-
-  const facts = el("div", "facts");
-  facts.append(
-    fact("state", run.state, ACTIVE.has(run.state)),
-    fact("plan", run.plan_total ? `${run.plan_done}/${run.plan_total}` : "—"),
-    fact("commits", String(run.commits)),
-    fact("iter", `${run.iteration ?? "?"}/${run.max_iterations ?? "?"}`),
-    fact("updated", ago(run.age_seconds)),
-  );
-  parts.push(facts);
-
-  if (ACTIVE.has(run.state) && (run.current_step || run.last_tool)) {
-    const doing = el("div", "doing");
-    doing.append(el("div", "label", run.paused ? "paused on" : "working on"));
-    if (run.current_step) doing.append(el("div", "step", run.current_step));
-    const act = [run.last_tool, run.last_target].filter(Boolean).join(" ");
-    const line = el("div", "act");
-    line.append(el("span", "clock", liveElapsed(run)));
-    if (act) line.append(` · ${act}`);
-    if (run.output_tokens) line.append(` · ${run.output_tokens} out`);
-    if (run.quiet_seconds > 60) line.append(` · quiet ${duration(run.quiet_seconds)}`);
-    doing.append(line);
-    parts.push(doing);
-  }
 
   if (!state.config?.read_only) {
     const controls = el("div", "controls");
@@ -419,8 +576,8 @@ async function renderRun(project, runId, { quiet = false } = {}) {
     parts.push(box);
   }
 
-  view.replaceChildren(...parts);
-  view.querySelectorAll("details").forEach((node, index) => { if (open[index]) node.open = true; });
+  body.replaceChildren(...parts);
+  body.querySelectorAll("details").forEach((node, index) => { if (open[index]) node.open = true; });
   if (quiet) window.scrollTo(0, scroll);
   state.detailKey = key;
 }

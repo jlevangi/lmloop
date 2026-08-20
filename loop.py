@@ -46,6 +46,9 @@ class Run:
         self.objective = objective
         self.max_iterations = max_iterations or config["stop"]["max_iterations"]
         self.model = config["agent"]["model"]
+        self.thinking = config["agent"].get("thinking", "")
+        self.role = "editing"
+        self.window, self.max_output = models.declared_window(self.model) or (0, 0)
         self.interrupted = False
 
         # An explicit run id is one somebody else already resolved -- `lmloop
@@ -501,6 +504,12 @@ class Run:
     def iterate(self, number: int) -> None:
         base = self.rundir.base_commit
         self.model, thinking, role = self.roles()
+        # Kept on the run so the status file can say which model is working and
+        # under what settings.  `roles` can hand back a different model than the
+        # one configured -- planning uses one, a thrash retry another -- and a
+        # dashboard that shows the configured model is showing the wrong one.
+        self.thinking, self.role = thinking, role
+        self.window, self.max_output = models.declared_window(self.model) or (0, 0)
         ok, detail = models.preflight(self.model, self.config["models"]["llama_swap_url"])
         self.rundir.event("preflight", iteration=number, ok=ok, detail=detail)
         if not ok:
@@ -724,6 +733,7 @@ class Run:
             # but how much of the plan is behind it.
             (4, paint.green(f"{plan_done}/{plan_total} steps") if plan_total else ""),
             (2, paint.dim(f"{snap['tool_calls']} tools")),
+            (2, paint.dim(f"{snap['tokens_per_second']:.1f} tok/s") if snap["tokens_per_second"] else ""),
             (1, paint.dim(f"{snap['output_tokens']} out")),
             (7, paint.red(f"[{flags}]") if flags else ""),
         ])
@@ -732,6 +742,12 @@ class Run:
             "iteration": number,
             "max_iterations": self.max_iterations,
             "model": self.model,
+            "thinking": self.thinking,
+            "role": self.role,
+            # Zero for a model nobody has measured; the display says "unmeasured"
+            # rather than inventing a denominator.
+            "context_window": self.window,
+            "max_output_tokens": self.max_output,
             "phase": "loading" if snap["loading"] else "working",
             "elapsed_seconds": round(snap["elapsed"]),
             "last_tool": snap["last_tool"],
@@ -742,6 +758,8 @@ class Run:
             "plan_done": plan_done,
             "plan_total": plan_total,
             "output_tokens": snap["output_tokens"],
+            "input_tokens": snap["input_tokens"],
+            "tokens_per_second": round(snap["tokens_per_second"], 2),
             "quiet_seconds": round(snap["quiet"]),
             "paused": self.rundir.paused(),
             "stopping": self.rundir.stop_requested(),

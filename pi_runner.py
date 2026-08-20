@@ -133,7 +133,13 @@ def _read_stdout(pipe, raw_path: Path, state: _Stream, agent) -> None:
     buffer = b""
     with raw_path.open("wb") as sink:
         while True:
-            chunk = pipe.read(65536)
+            # read1, not read: `read` waits for the whole 65536 bytes before
+            # returning, so on a slow model the stall clock only ticks once a
+            # full buffer has accumulated -- roughly every two minutes at the
+            # ~570 B/s a 2 tok/s model produces.  The clock is supposed to mean
+            # "pi has said nothing at all", so it has to see bytes when they
+            # arrive, not when they amount to 64KB.
+            chunk = pipe.read1(65536)
             if not chunk:
                 break
             sink.write(chunk)

@@ -44,7 +44,14 @@ class Run:
         self.repo = repo
         self.config = config
         self.objective = objective
-        self.max_iterations = max_iterations or config["stop"]["max_iterations"]
+        # Two numbers, not one.  The floor is what the operator asked for and is
+        # always honoured; the ceiling is what no plan can argue past.  An
+        # explicit `--max-iterations` raises the floor rather than pinning the
+        # run, because the request behind it is "at least this much", and a run
+        # that stops one step short of a finished plan is the thing being fixed.
+        self.iteration_floor = max_iterations or config["stop"]["max_iterations"]
+        self.iteration_ceiling = max(self.iteration_floor, config["stop"]["max_iterations"])
+        self.max_iterations = self.iteration_floor
         self.model = config["agent"]["model"]
         self.thinking = config["agent"].get("thinking", "")
         self.role = "editing"
@@ -205,7 +212,11 @@ class Run:
             default=0,
         )
         self.objective = (self.rundir.path / "prompt.md").read_text().strip()
-        self.max_iterations = done + extra_iterations
+        self.iteration_floor = done + extra_iterations
+        self.iteration_ceiling = max(
+            self.iteration_floor, done + self.config["stop"]["max_iterations"]
+        )
+        self.max_iterations = self.iteration_floor
         # Runs that predate this, and runs resumed after the exclude list grew.
         gitops.exclude(self.repo, self._exclusions())
         self.publish_sessions()
@@ -226,6 +237,39 @@ class Run:
 
     # -- stop conditions --------------------------------------------------
 
+    def _budget(self, iteration: int) -> int:
+        """How many iterations this run may use, recomputed from the plan.
+
+        A fixed count is the wrong shape for a plan whose length is not known
+        when the run starts.  This run planned twelve steps, grew to thirteen,
+        then to fifteen, and spent five of its fourteen iterations on transport
+        failures and a server that was switched off -- so it stopped at 10/15
+        having never once been short of *work*, only of budget.
+
+        One iteration per step plus `retry_allowance` spare, so a step that
+        needs a second attempt does not cost the run its last step.
+
+        Two things keep this from being a number the agent writes for itself.
+        It never shrinks below the explicit figure the operator asked for, and
+        it is capped by `max_iterations`, which no amount of plan growth can
+        argue past.  Between them, growing the plan buys attempts up to a
+        ceiling, and never buys an unbounded run.
+        """
+        if not self.config["stop"].get("budget_follows_plan", False):
+            return self.iteration_floor
+        done, total = self.rundir.plan_progress()
+        if not total:
+            # No plan yet.  Deriving a budget from an empty plan would say
+            # "one", and stop the run at the planning iteration.
+            return max(self.iteration_floor, iteration + 1)
+        # Spent, plus what is left, plus slack.  A wasted iteration raises the
+        # first term without lowering the second, so the budget moves out by
+        # exactly the one that was wasted -- which is the whole request: a step
+        # that fails twice must not cost the run its last step.
+        spent, remaining = iteration - 1, max(total - done, 0)
+        wanted = spent + remaining + self.config["stop"].get("retry_allowance", 5)
+        return max(self.iteration_floor, min(wanted, self.iteration_ceiling))
+
     def _abort_reason(self, iteration: int, started: float) -> str | None:
         if self.interrupted:
             return "interrupted"
@@ -233,7 +277,21 @@ class Run:
             return "STOP-NOW sentinel present"
         if self.rundir.stop_requested():
             return "STOP sentinel present"
+        # Before the budget check: a run that has done everything it set out to
+        # do has finished, and reporting that as "ran out of iterations" tells
+        # the operator to add more of something it does not need.
+        #
+        # This one trusts a self-report, which nothing else here does.  It is
+        # the safe direction to trust: the failure is a run that stops early
+        # leaving its commits behind, which the operator sees as a checked plan
+        # and can continue.  The dangerous direction -- a self-report that keeps
+        # a run alive -- stays guarded by `no_diff_iterations`.
+        done, total = self.rundir.plan_progress()
+        if total and done >= total and iteration > 1:
+            return f"plan complete ({done}/{total})"
         if iteration > self.max_iterations:
+            if self.max_iterations >= self.iteration_ceiling:
+                return f"iteration ceiling reached ({self.iteration_ceiling})"
             return f"max iterations reached ({self.max_iterations})"
         hours = (time.monotonic() - started) / 3600
         if hours >= self.config["stop"]["max_wall_hours"]:
@@ -921,6 +979,12 @@ class Run:
         while True:
             iteration += 1
             display.wait_while_paused(self.rundir, self.screen, lambda: self.interrupted)
+            # Recomputed here rather than fixed at the start: the plan is the
+            # agent's, it changes while the run is going, and the budget is
+            # supposed to follow it.  Everything downstream -- the status line,
+            # status.json, the prompt -- reads `max_iterations`, so setting it
+            # here is enough to make all of them agree.
+            self.max_iterations = self._budget(iteration)
             reason = self._abort_reason(iteration, started)
             if reason:
                 break

@@ -149,6 +149,14 @@ DEFAULTS: dict = {
         "max_iterations": 20,
         "max_wall_hours": 10,
         "no_diff_iterations": 3,
+        # A fixed iteration count is the wrong shape for a plan whose length is
+        # not known when the run starts.  With this on, the budget is recomputed
+        # from the plan every iteration -- one per step, plus `retry_allowance`
+        # spare -- so a step that needs two attempts does not cost the run its
+        # last step, and a plan the agent grows mid-run grows the budget with
+        # it.  `max_iterations` stops being the target and becomes the ceiling.
+        "budget_follows_plan": True,
+        "retry_allowance": 5,
     },
 }
 
@@ -233,7 +241,12 @@ command       = ""        # e.g. "python -m compileall -q backend"
 blocks_commit = false     # record the result; commit either way
 
 [stop]
-max_iterations     = 20      # the cap, not the plan; git is what stops a bad run
-max_wall_hours     = 10
-no_diff_iterations = 3
+# The budget follows the plan: one iteration per step plus retry_allowance
+# spare, recomputed as the plan changes.  max_iterations is then the ceiling
+# the plan cannot argue past, not the number of steps you expect.
+budget_follows_plan = true
+retry_allowance     = 5
+max_iterations      = 20     # the cap, not the plan; git is what stops a bad run
+max_wall_hours      = 10
+no_diff_iterations  = 3
 """

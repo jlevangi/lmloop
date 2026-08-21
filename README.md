@@ -258,8 +258,29 @@ which is easier to trust than a cron job quietly rewriting run directories at
   in the commit message and the next iteration's prompt but commits regardless,
   which is usually what you want; a gate that could not be run never blocks a
   commit, whatever that setting says.
+- `[stop] budget_follows_plan` — the iteration budget is recomputed from the
+  plan every iteration: what has been spent, plus one per remaining step, plus
+  `retry_allowance` spare. A fixed count is the wrong shape for a plan whose
+  length is not known when the run starts. One run here planned twelve steps,
+  grew to thirteen, then fifteen, spent five of its fourteen iterations on
+  transport failures and a server that had been switched off, and stopped at
+  10/15 — never once short of work, only of budget. With the budget following
+  the plan, a step that fails twice costs the run two attempts rather than its
+  last step.
+- `[stop] max_iterations` — the **ceiling**, not the target. Growing the plan
+  buys attempts up to this number and never past it, so an agent cannot write
+  itself an unbounded run. An explicit `--max-iterations` raises the *floor*
+  instead: the request behind it is "at least this much".
+- A run also stops when every plan step is checked (`plan complete (15/15)`).
+  That is the one stop condition here that trusts a self-report, and it is the
+  safe direction to trust — the failure is a run that stops early leaving its
+  commits behind, which shows as a checked plan and can be continued. The
+  dangerous direction, a self-report that keeps a run *alive*, stays guarded by
+  the next line.
 - `[stop] no_diff_iterations` — stop after N iterations that git says changed
-  nothing. This is the guard that catches an agent confidently going nowhere.
+  nothing. This is the guard that catches an agent confidently going nowhere,
+  and the one the budget cannot outrun: plan progress deliberately does not
+  reset the streak.
 
 ## Notes on local models
 

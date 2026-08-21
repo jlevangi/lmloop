@@ -20,9 +20,15 @@
   --line:       #23232b;
   --line-soft:  #1a1a20;
 
+  /* Three steps, measured rather than eyeballed.  Against a panel (#131317)
+     these are 14.9 : 7.8 : 5.2 -- the first two AAA, the third comfortably AA.
+     `--text-faint` used to be 2.7, which fails even the large-text floor of 3,
+     and it is not decoration: meta lines, field labels and the gauge readout
+     are all set in it.  Everything moved up one step, so what was `--text-dim`
+     is roughly what `--text-faint` is now. */
   --text:       #e8e6e3;
-  --text-dim:   #8d8a83;
-  --text-faint: #5d5a54;
+  --text-dim:   #aba8a1;
+  --text-faint: #8b8881;
 
   --moon:       #f0dfa8;   /* the one accent */
   --moon-dim:   #6b6248;
@@ -64,11 +70,15 @@ body {
 .bar {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 11px;
-  padding: 12px 16px;
-  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding: 10px 16px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
   background: var(--ink);
   border-bottom: 1px solid var(--line);
 }
+/* Content scrolled underneath needs saying, and a hairline that is already
+   there cannot say it.  The shadow appears only once the page has moved, so a
+   page sitting at the top keeps the flat surface the design asks for. */
+.bar.scrolled { box-shadow: 0 6px 16px -8px #000c; }
 .bar-text { min-width: 0; flex: 1; }
 .bar h1 {
   font-size: .95rem; margin: 0; font-weight: 600; letter-spacing: .01em;
@@ -97,12 +107,59 @@ body {
 .moon.live { background: var(--moon); box-shadow: 0 0 9px #f0dfa855; }
 .moon.stale { background: var(--bad); }
 
-.back {
-  background: none; border: none; color: var(--text-dim); cursor: pointer;
-  font-size: 1.15rem; line-height: 1; padding: 4px 8px; margin-left: -8px;
-  border-radius: var(--r); flex: none;
+/* The back button was a bare arrow glyph in an 8px box: no hit area, no press
+   state, and nothing about it said "control".  It is now a real 40px target
+   with a drawn chevron, which strokes crisply at any size where a text arrow
+   goes fuzzy, and it lights the accent on press so the tap is acknowledged
+   before the next view has painted. */
+/* Both leading marks live in the same grid cell, so exactly one of them is
+   ever on screen and the cell's width never changes.  The title used to jump
+   sideways by the width of the back button on every navigation, which is the
+   sort of thing that reads as cheap without being possible to name. */
+.bar-lead {
+  flex: none; width: 40px; height: 40px; margin-left: -8px;
+  display: grid; place-items: center;
 }
-.back:hover { color: var(--text); background: var(--ink-raise); }
+.bar-lead > * { grid-area: 1 / 1; }
+
+.back {
+  background: none; border: 1px solid transparent; cursor: pointer;
+  color: var(--text-dim);
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  border-radius: var(--r);
+  transition: color .12s ease, background .12s ease, border-color .12s ease;
+}
+.back svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.back:hover { color: var(--text); background: var(--ink-raise); border-color: var(--line); }
+.back:active { color: var(--moon); border-color: var(--moon-dim); background: #1a1812; }
+
+/* The state of the run you are looking at, kept in the sticky header.  It was
+   only in the facts grid, which scrolls away -- so ten screens into an
+   iteration table there was nothing on screen saying the run had stopped. */
+#bar-state { flex: none; }
+
+/* The header's trailing slot holds a different thing on each view -- a state
+   label on a run, the New run button on the list -- and they were set in
+   different faces at different sizes, so the corner changed voice as you moved
+   about.  One treatment for whatever occupies the slot.  `.bar` prefixed
+   because `.act` is declared further down and would otherwise win on order. */
+.bar .bar-chip {
+  font-family: var(--mono); font-size: .66rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .13em;
+}
+.bar .act.bar-chip { padding: 7px 11px; }
+
+/* The header's bottom hairline, doing double duty as the plan's progress bar.
+   Absolutely positioned over the existing border rather than added to the flow,
+   so the bar's height does not change between views and the page beneath it
+   does not shift when a run is opened. */
+/* An id, not a class.  `.track` is defined further down the file and would
+   otherwise win on source order and put back its own height and radius. */
+#bar-track {
+  position: absolute; left: 0; right: 0; bottom: -1px;
+  height: 2px; border-radius: 0;
+}
 
 /* ── Buttons ────────────────────────────────────────────────────────── */
 button, input, select, textarea { font: inherit; }
@@ -182,6 +239,9 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 .state.running  { color: var(--moon); }
 .state.paused, .state.stopping { color: var(--warn); }
 .state.stale    { color: var(--bad); }
+/* Archived is not a failure and must not read as one: it is the quietest label
+   on the page, because an archived run is one nobody needs to act on. */
+.state.archived { color: var(--text-faint); }
 
 /* Progress is plan steps: what the run has done, not what it has spent. */
 .progress { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
@@ -293,9 +353,32 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 .fact { min-width: 0; }
 .fact { padding: 10px 12px; border-right: 1px solid var(--line-soft); }
 .fact:last-child { border-right: none; }
+/* Four cells and a 104px floor gives three columns on a phone, which leaves the
+   fourth stranded alone on a second row.  Two even columns is the same
+   information without the orphan -- and the borders have to follow, or the
+   right-hand cell of each row keeps a divider against nothing. */
+@media (max-width: 560px) {
+  .facts { grid-template-columns: repeat(2, 1fr); }
+  .fact:nth-child(2n) { border-right: none; }
+  .fact:nth-child(-n+2) { border-bottom: 1px solid var(--line-soft); }
+}
 .fact dt { font-size: .62rem; text-transform: uppercase; letter-spacing: .12em; color: var(--text-faint); }
 .fact dd { margin: 3px 0 0; font-family: var(--mono); font-size: .84rem; }
 .fact dd.hot { color: var(--moon); }
+
+/* The run's name, at the top of the page about it.  Sized as a page title
+   rather than as the section labels below it -- it is the one line that says
+   what you are looking at, and the header's copy is a 15px subtitle. */
+.run-name {
+  /* `display: block` deliberately: the global h2 rule sets flex, which would
+     make this text an anonymous flex item and stop `overflow-wrap` reaching
+     it -- a long unbroken name would then widen the whole column. */
+  display: block;
+  margin: 0; font-size: 1.12rem; line-height: 1.35; font-weight: 600;
+  letter-spacing: -.01em; color: var(--text);
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
 
 /* The run view's headline: step, then call, then clock. */
 .doing { border: 1px solid var(--moon-dim); border-radius: var(--r); padding: 13px 14px; display: grid; gap: 7px; }
@@ -307,7 +390,6 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 .doing .step, .doing .act, .objective, .model-id { overflow-wrap: anywhere; }
 
 .controls { display: flex; flex-wrap: wrap; gap: 7px; }
-.panel { border: 1px solid var(--line); border-radius: var(--r); padding: 13px 14px; }
 .objective { font-size: .85rem; line-height: 1.65; white-space: pre-wrap; color: var(--text-dim); }
 
 .plan { display: grid; gap: 7px; }
@@ -331,7 +413,56 @@ td.warn { color: var(--warn); }
 td.bad { color: var(--bad); }
 .scroll-x { overflow-x: auto; overscroll-behavior-x: contain; }
 
-details { border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px; }
+/* ── Sections ───────────────────────────────────────────────────────────
+   Every block on the run page folds, and they all look the same folded or not,
+   so the page reads as one list of things rather than a stack of unrelated
+   panels.  The summary carries the old h2's typography, so nothing about the
+   page's voice changes -- only whether the body underneath is on screen. */
+.sect { border: 1px solid var(--line); border-radius: var(--r); }
+/* Block, not flex.  The summary can carry a second row -- the plan's folded
+   window -- and as a flex container that row wrapped between the label and the
+   caret.  The row that must stay together is `.sect-head`, so that is the flex
+   container now and the summary is just a stack. */
+.sect > summary {
+  cursor: pointer; list-style: none; padding: 12px 14px;
+  display: block;
+}
+.sect > summary::-webkit-details-marker { display: none; }
+.sect-head { display: flex; align-items: center; gap: 9px; min-height: 22px; }
+.sect-label {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .16em;
+  color: var(--text-faint); font-weight: 600;
+  min-width: 0; overflow-wrap: anywhere;
+}
+.sect > summary:hover .sect-label { color: var(--text-dim); }
+/* 17px of drawn chevron in a 22px box, matching the back button and the strip.
+   It was a 10.5px `▾`, which at that size read as punctuation rather than as
+   something you could press. */
+.sect-caret {
+  margin-left: auto; flex: none;
+  display: grid; place-items: center; width: 22px; height: 22px;
+  color: var(--text-faint);
+  transition: transform .2s ease, color .12s ease;
+}
+.sect-caret svg {
+  width: 17px; height: 17px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.sect > summary:hover .sect-caret { color: var(--text-dim); }
+.sect[open] > summary .sect-caret { transform: rotate(180deg); }
+.sect-body { padding: 0 14px 13px; min-width: 0; }
+.sect-body > .scroll-x { margin: 0 -14px; padding: 0 14px; }
+
+/* The folded plan's three-step window.  A phone is the only place the trade is
+   worth making -- on a wide screen there is room for the whole plan, and folded
+   should mean folded. */
+.plan-window { width: 100%; margin-top: 4px; display: none; }
+.sect > summary > .plan-window { pointer-events: none; }
+@media (max-width: 640px) {
+  .sect[data-key="plan"]:not([open]) > summary > .plan-window { display: grid; }
+}
+
+details:not(.sect) { border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px; }
 summary { cursor: pointer; font-size: .78rem; color: var(--text-dim); }
 summary:hover { color: var(--text); }
 pre {
@@ -365,4 +496,191 @@ main > section { animation: settle .18s ease both; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+
+  /* One exception, because this one is not decoration.  The sweep is the only
+     thing on the page that distinguishes a run that is working from a run that
+     has stalled with the same numbers on screen -- kill it and a healthy run
+     and a dead one look identical.  What the preference is actually asking to
+     be spared is *positional* motion, so liveness is re-signalled by fading the
+     highlight in place: no travel, nothing sliding across the eye, and the bar
+     still visibly breathes. */
+  .track.working::after {
+    animation: breathe 2.4s ease-in-out infinite !important;
+    transform: none;
+  }
+}
+@keyframes breathe { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+
+/* ── Run status: strip on a phone, rail on a desktop ────────────────────
+   Below 1080px this is a strip across the bottom that opens upward.  At and
+   above it, the 760px column is already leaving a third of the window empty,
+   so the same component becomes a rail down the side that is simply always
+   open -- a drawer you have to keep reopening is a phone affordance. */
+.runbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  display: flex; flex-direction: column;
+  background: var(--ink); border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+/* Reserve the strip's height only while it is on the page, so a quiet machine
+   gets the full screen back. */
+body.has-runbar main { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+
+/* 60px, not the 40 it was.  This is the one control on the page that gets
+   pressed with a thumb, at arm's length, on a moving bus, and it was missing.
+   44px is the documented floor; the extra is because it also has to be findable
+   without looking. */
+.runbar-strip {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  min-height: 60px; padding: 12px 18px;
+  background: none; border: none; color: inherit; cursor: pointer;
+  text-align: left; font: inherit;
+}
+.runbar-strip:hover { background: var(--ink-raise); }
+
+/* With the progress bar gone from the strip, this moon is the only thing left
+   in it saying a run is alive -- so it does what the emblem is for and runs
+   through its phases, once every eight seconds, for as long as the run does.
+   The occluding disc travels; the moon itself never changes colour.
+
+   It never reaches new moon.  The disc stops at 3px, which still leaves a
+   sliver lit, because an indicator that goes fully dark once a cycle is
+   indistinguishable from one that has stopped -- which is the single thing
+   this element exists to tell you apart.
+
+   Reduced motion loses the phases and keeps the colour: `.moon.live` is cream
+   against `#34323a` either way, so "running" is still legible without any
+   movement at all, and nothing here needs an exception to the blanket rule. */
+#runbar-moon.live::after { animation: moon-phase 8s ease-in-out infinite; }
+@keyframes moon-phase {
+  0%, 100% { transform: translate(3px, -2.5px); }
+  50%      { transform: translate(11px, -2.5px); }
+}
+#runbar-moon.live { animation: moon-glow 8s ease-in-out infinite; }
+@keyframes moon-glow {
+  0%, 100% { box-shadow: 0 0 5px #f0dfa833; }
+  50%      { box-shadow: 0 0 13px #f0dfa888; }
+}
+.runbar-strip:focus-visible { outline: 2px solid var(--moon); outline-offset: -2px; }
+.runbar-text {
+  flex: 1; min-width: 0; font-size: .84rem; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Tabular, because it is a figure that changes under the eye and digits of
+   different widths make the caret beside it twitch. */
+.runbar-count {
+  flex: none; font-family: var(--mono); font-size: .72rem; color: var(--text-faint);
+  font-variant-numeric: tabular-nums; letter-spacing: .02em;
+}
+.runbar-count:empty { display: none; }
+/* The same drawn chevron as the back button, at the same weight.  It was a
+   `⌃` glyph, which renders at a different weight and sits off the baseline in
+   every font that has it -- two marks doing one job in two voices. */
+.runbar-caret {
+  flex: none; display: grid; place-items: center;
+  width: 22px; height: 22px; color: var(--text-faint);
+  transition: transform .2s ease, color .12s ease;
+}
+.runbar-caret svg {
+  width: 17px; height: 17px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.runbar-strip:hover .runbar-caret { color: var(--text-dim); }
+.runbar.open .runbar-caret { transform: rotate(180deg); }
+
+
+/* The panel is capped and scrolls: a dozen live runs must not push the strip
+   they were opened from off the top of the screen. */
+/* Opening animates, and it animates `max-height` to a value the layout already
+   uses as its cap -- so there is no guessed magic number that clips a tall
+   panel.  Closed is a real 0, not `hidden`: `display: none` cannot be
+   transitioned, and the whole complaint was that the panel appeared rather than
+   opened.  `visibility` is switched at the far end of the transition so the
+   rows inside are not tab-reachable while the thing is shut. */
+.runbar-panel {
+  border-bottom: 1px solid transparent;
+  max-height: 0; overflow: hidden; visibility: hidden;
+  overscroll-behavior: contain;
+  transition: max-height .26s cubic-bezier(.22, .61, .36, 1),
+              visibility 0s linear .26s,
+              border-color .26s linear;
+}
+.runbar.open .runbar-panel {
+  max-height: min(50dvh, 380px); overflow-y: auto; visibility: visible;
+  border-bottom-color: var(--line-soft);
+  transition: max-height .26s cubic-bezier(.22, .61, .36, 1),
+              visibility 0s linear,
+              border-color .26s linear;
+}
+
+/* The rows arrive rather than being there already -- a short, staggered lift
+   that reads as the panel handing them to you.  Capped at six because past
+   that the last row waits longer than the animation is worth. */
+.runbar.open .runbar-row { animation: runbar-row-in .26s ease both; }
+.runbar.open .runbar-row:nth-child(1) { animation-delay: .02s; }
+.runbar.open .runbar-row:nth-child(2) { animation-delay: .05s; }
+.runbar.open .runbar-row:nth-child(3) { animation-delay: .08s; }
+.runbar.open .runbar-row:nth-child(4) { animation-delay: .11s; }
+.runbar.open .runbar-row:nth-child(5) { animation-delay: .14s; }
+.runbar.open .runbar-row:nth-child(n+6) { animation-delay: .16s; }
+@keyframes runbar-row-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+.runbar-row {
+  display: grid; gap: 8px; width: 100%; text-align: left;
+  background: none; color: inherit; cursor: pointer;
+  border: 0; border-bottom: 1px solid var(--line-soft);
+  padding: 15px 18px; min-height: 64px;
+}
+.runbar-row:last-child { border-bottom: none; }
+.runbar-row:hover { background: var(--ink-raise); }
+.runbar-row:focus-visible { outline: 2px solid var(--moon); outline-offset: -2px; }
+.runbar-row-head { display: flex; align-items: center; gap: 8px; }
+.runbar-row-title {
+  margin: 0; font-size: .88rem; line-height: 1.45; font-weight: 500;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.runbar-row-line {
+  font-size: .78rem; line-height: 1.4; color: var(--text-dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.runbar-row-line::before { content: "▸ "; color: var(--moon); }
+/* The strip is fixed, so its contents line up with the page's own column. */
+.runbar-strip, .runbar-row { max-width: min(760px, 100%); margin-inline: auto; }
+
+@media (min-width: 1080px) {
+  /* A true split: the page keeps its centred column inside what is left, rather
+     than the rail floating over content that has no idea it is there. */
+  body.has-runbar { padding-right: 320px; }
+  body.has-runbar main { padding-bottom: 72px; }
+
+  .runbar {
+    top: 0; bottom: 0; left: auto; right: 0; width: 320px;
+    border-top: none; border-left: 1px solid var(--line);
+    padding-bottom: 0;
+    /* The strip is last in the DOM so that a bottom drawer opens *upward* over
+       the page.  Stood on its side that order is backwards -- it put the header
+       at the foot of the rail -- so the axis is reversed rather than the markup,
+       which would break the phone shape to fix the desktop one. */
+    flex-direction: column-reverse;
+  }
+  /* Header, not a control: in rail mode there is nothing to open. */
+  .runbar-strip {
+    min-height: 0; padding: 14px 16px; cursor: default;
+    border-bottom: 1px solid var(--line); max-width: none;
+  }
+  .runbar-strip:hover { background: none; }
+  .runbar-caret { display: none; }
+  /* `.runbar.open .runbar-panel` above is two classes; a media query adds no
+     specificity of its own, so matching it here is what stops the drawer's
+     380px cap from being applied to a full-height rail. */
+  .runbar-panel,
+  .runbar.open .runbar-panel {
+    max-height: none; flex: 1; border-bottom: none; max-width: none;
+    overflow-y: auto; visibility: visible; transition: none;
+  }
+  /* The rail is not opened, so its rows have nothing to arrive from. */
+  .runbar.open .runbar-row { animation: none; }
+  .runbar-row { max-width: none; padding: 15px 16px; }
 }

@@ -216,6 +216,12 @@ class Handler(BaseHTTPRequestHandler):
             for run_dir in runs_module.run_dirs(Path(project["path"])):
                 if run_dir.name == run_id:
                     return project, run_dir
+            # Archived runs have no worktree to walk.  Checked last, so a
+            # re-used run id always resolves to the live run rather than the
+            # archived copy of whatever held the name before it.
+            target = runs_module.archive_target(project_id, run_id)
+            if target.is_dir():
+                return project, target
         return None, None
 
     # -- GET --------------------------------------------------------------
@@ -248,8 +254,17 @@ class Handler(BaseHTTPRequestHandler):
                 )
             except Exception as error:  # noqa: BLE001
                 return self.json({"error": f"OIDC callback failed: {error}"}, 400)
+            # `Lax`, not `Strict`, and the difference is a whole extra click.
+            # This response 302s to `/`, but that request is the tail of a
+            # navigation chain that started at the identity provider, so the
+            # browser still counts it as cross-site and withholds a `Strict`
+            # cookie.  `/` then saw no session, bounced to `/login`, and the
+            # sign-in button had to be pressed a second time to land anywhere.
+            # `Lax` is sent on exactly this case -- a top-level GET navigation
+            # -- and still withheld from cross-site POSTs and subresources;
+            # state-changing calls are guarded by the CSRF token regardless.
             return self.redirect("/", [
-                f"lmloop_session={cookie}; Path=/; Max-Age={self.auth.session_seconds}; HttpOnly; Secure; SameSite=Strict",
+                f"lmloop_session={cookie}; Path=/; Max-Age={self.auth.session_seconds}; HttpOnly; Secure; SameSite=Lax",
                 "lmloop_oidc=; Path=/oauth/callback; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
             ])
         if path == "/logout":
@@ -259,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
                     {"post_logout_redirect_uri": self.auth.public_url, "client_id": self.auth.client_id}
                 )
             return self.redirect(location, [
-                "lmloop_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"
+                "lmloop_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
             ])
         if path in ("/sw.js", "/manifest.json"):
             return self.static(path.lstrip("/"))
@@ -473,9 +488,149 @@ class Handler(BaseHTTPRequestHandler):
                     )
             except subprocess.TimeoutExpired:
                 pass  # still running after a second and a half: it started
+        elif action == "archive":
+            return self.archive_run(project, run_dir)
+        elif action == "delete":
+            return self.delete_run(project, run_dir, payload)
+        elif action == "pr":
+            return self.open_pr(project, run_dir, payload)
         else:
             return self.json({"error": f"unknown action {action}"}, 400)
         return self.json(runs_module.summarise(project, run_dir))
+
+    # -- archive, delete, PR ----------------------------------------------
+    #
+    # CLAUDE.md's first invariant is that nothing is ever discarded, and these
+    # three are the only code in the project that removes anything.  They are
+    # built so that no single action destroys evidence:
+    #
+    #   archive  copies the run out, *verifies the copy*, then removes only the
+    #            worktree -- the checkout, which git can recreate -- and leaves
+    #            the branch alone.  The run stays readable in the dashboard.
+    #   delete   refuses to run on anything that has not been archived first,
+    #            so the destructive step is always the second one.
+
+    def archive_run(self, project, run_dir):
+        """Copy the run's record out of its worktree, then drop the worktree."""
+        import shutil
+
+        if runs_module.is_archived(run_dir):
+            return self.json({"error": "already archived"}, 400)
+        holder = runs_module._holder(run_dir)
+        if holder:
+            return self.json(
+                {"error": f"this run has a live loop (pid {holder}); stop it first"}, 409
+            )
+
+        worktree = run_dir.parents[2]
+        target = runs_module.archive_target(project["id"], run_dir.name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copytree(run_dir, target, dirs_exist_ok=True)
+        except OSError as error:
+            return self.json({"error": f"archive copy failed: {error}"}, 500)
+
+        # Counted, not assumed.  The worktree removal below is the irreversible
+        # half, and it does not happen unless the copy that replaces it is
+        # provably complete.
+        before = sum(1 for path in run_dir.rglob("*") if path.is_file())
+        after = sum(1 for path in target.rglob("*") if path.is_file())
+        if after < before:
+            return self.json(
+                {"error": f"archive incomplete ({after}/{before} files); worktree left alone"},
+                500,
+            )
+
+        result = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(worktree)],
+            cwd=project["path"], capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            return self.json(
+                {"error": f"archived to {target}, but worktree removal failed: "
+                          f"{(result.stderr or result.stdout).strip()[-300:]}"}, 500,
+            )
+        return self.json(runs_module.summarise(project, target))
+
+    def delete_run(self, project, run_dir, payload):
+        """Permanently remove an archived run.  Refuses anything else."""
+        import shutil
+
+        if not runs_module.is_archived(run_dir):
+            return self.json(
+                {"error": "archive this run before deleting it, so the removal "
+                          "of its worktree and the loss of its record are two "
+                          "separate decisions"}, 400,
+            )
+        branch = f"lmloop/{run_dir.name}"
+        dropped = None
+        if payload.get("branch"):
+            # -D, not -d: the branch is usually unmerged, which is exactly the
+            # case the caller is saying they do not want kept.
+            result = subprocess.run(
+                ["git", "branch", "-D", branch],
+                cwd=project["path"], capture_output=True, text=True, timeout=30,
+            )
+            dropped = branch if result.returncode == 0 else None
+        try:
+            shutil.rmtree(run_dir)
+        except OSError as error:
+            return self.json({"error": f"delete failed: {error}"}, 500)
+        return self.json({"deleted": run_dir.name, "branch_deleted": dropped})
+
+    def open_pr(self, project, run_dir, payload):
+        """Push the run's branch and open a pull request for it."""
+        branch = f"lmloop/{run_dir.name}"
+        repo = project["path"]
+
+        def git(args, **kwargs):
+            return subprocess.run(
+                ["git", *args], cwd=repo, capture_output=True, text=True,
+                timeout=kwargs.pop("timeout", 120),
+            )
+
+        if git(["rev-parse", "--verify", branch]).returncode != 0:
+            return self.json({"error": f"no branch {branch}"}, 404)
+        base = (git(["symbolic-ref", "--short", "HEAD"]).stdout or "main").strip() or "main"
+        ahead = git(["rev-list", "--count", f"{base}..{branch}"]).stdout.strip()
+        if ahead in ("", "0"):
+            return self.json({"error": f"{branch} has no commits beyond {base}"}, 400)
+
+        pushed = git(["push", "-u", "origin", branch], timeout=180)
+        if pushed.returncode != 0:
+            return self.json(
+                {"error": f"push failed: {(pushed.stderr or pushed.stdout).strip()[-300:]}"}, 500
+            )
+
+        objective = runs_module._read_text(run_dir / "prompt.md", 4000).strip()
+        title = payload.get("title") or (
+            objective.splitlines()[0][:100] if objective else branch
+        )
+        done, total = runs_module._plan_progress(runs_module._read_text(run_dir / "plan.md"))
+        body = payload.get("body") or (
+            objective
+            + "\n\n---\n\n"
+            + f"Plan: {done}/{total} steps. Branch `{branch}`, {ahead} commits.\n\n"
+            + "Produced by lmloop. The run's plan, handoff and per-iteration "
+            + f"record are in `.lmloop/runs/{run_dir.name}/`.\n"
+        )
+        made = subprocess.run(
+            ["gh", "pr", "create", "--head", branch, "--base", base,
+             "--title", title, "--body", body],
+            cwd=repo, capture_output=True, text=True, timeout=120,
+        )
+        if made.returncode != 0:
+            message = (made.stderr or made.stdout).strip()
+            # An existing PR is not a failure -- it is the answer to "where is
+            # the PR for this run", so hand back the link rather than an error.
+            existing = subprocess.run(
+                ["gh", "pr", "view", branch, "--json", "url", "-q", ".url"],
+                cwd=repo, capture_output=True, text=True, timeout=60,
+            )
+            if existing.returncode == 0 and existing.stdout.strip():
+                return self.json({"url": existing.stdout.strip(), "existing": True})
+            return self.json({"error": f"gh pr create failed: {message[-400:]}"}, 500)
+        return self.json({"url": made.stdout.strip()})
 
 
 def serve(config: dict | None = None) -> int:

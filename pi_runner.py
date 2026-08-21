@@ -54,9 +54,23 @@ TERM_GRACE_SECONDS = 30
 # tick is a lock, a dict, and one small atomic file write.
 POLL_SECONDS = 2
 
-# How far back `_Stream.rate` looks.  Long enough to span a couple of messages
-# on a 2 tok/s model, short enough that a model that has slowed down says so.
+# How far back `_Stream.rate` falls back to looking, when the live stream has
+# gone quiet.  Long enough to span a couple of messages on a 2 tok/s model.
 RATE_WINDOW_SECONDS = 300
+
+# The live rate's window.  Short, because this one answers "how fast is it
+# generating *now*" and a minute-long average of that is a different question.
+LIVE_RATE_WINDOW_SECONDS = 30
+
+# How often the streaming counter records a mark.  Deltas arrive ~50/s; a mark
+# per delta would be 1500 tuples a window for no extra precision.
+STREAM_MARK_SECONDS = 0.5
+
+# Matched against raw bytes, deliberately.  `harness.interesting` filters the
+# stream before anything parses it because the deltas are most of tens of
+# megabytes; counting them must stay on that side of the filter.  The trailing
+# quote is what keeps this off `"thinking_delta_signature"` and friends.
+DELTA_MARKER = b'_delta"' 
 
 
 @dataclass
@@ -97,26 +111,62 @@ class _Stream:
         # which on a slow model is minutes apart -- so a rate needs the times
         # those lumps landed, not a difference against a fixed start.
         self.token_marks: list[tuple[float, int]] = []
+        # (monotonic, cumulative streamed deltas).  The live counterpart to
+        # token_marks: a delta is one token off the model *now*, where a
+        # message end is a lump that only lands when the whole message is done.
+        self.stream_marks: list[tuple[float, int]] = []
+        self.streamed = 0
+        self.last_rate = 0.0
 
     def rate(self) -> float:
-        """Output tokens per second, over the recent past.
+        """Output tokens per second: the speed of the thing generating now.
 
-        Windowed rather than cumulative because the two answer different
-        questions: cumulative includes every second spent running tools and
-        waiting on llama-swap, and so reports a number no model has ever
-        produced.  What a watcher wants is the speed of the thing generating
-        right now, which is the slope between message ends.
+        Measured from the delta stream rather than from message ends, and that
+        is the whole point.  Output tokens are only *credited* at a message end,
+        so a model part-way through a long reply has a frozen numerator and a
+        ticking denominator -- the displayed speed does not merely read low, it
+        visibly decays.  Raising thinking to high made that the normal case: one
+        message can reason for minutes, and the run looked like it was dying
+        when it was working hardest.  Worse, an iteration whose message never
+        ended was credited nothing at all, so the iterations that most needed
+        diagnosing reported the least.
 
-        Falls back to the cumulative average until two marks exist, because one
-        number that is roughly right beats a blank space.
+        A delta is one token, near enough -- measured at 0.85-0.98 of the
+        reported total across twenty-two real iterations, so this reads a few
+        percent low.  That is not calibrated out: a fudge factor fitted to one
+        model on one box would be a lie everywhere else, and a number that is
+        5% shy beats one that is 8x wrong.
+
+        Between messages, and while a tool runs, the last live figure is held
+        rather than recomputed.  Nothing is generating then, so there is no new
+        speed to report, and decaying toward zero would recreate the bug.
         """
-        marks = [m for m in self.token_marks if m[0] >= time.monotonic() - RATE_WINDOW_SECONDS]
+        now = time.monotonic()
+        live = [m for m in self.stream_marks if m[0] >= now - LIVE_RATE_WINDOW_SECONDS]
+        if len(live) >= 2:
+            span = live[-1][0] - live[0][0]
+            if span > 0:
+                self.last_rate = (live[-1][1] - live[0][1]) / span
+                return self.last_rate
+        if self.last_rate:
+            return self.last_rate
+        # Nothing has streamed yet this iteration -- the model is still on the
+        # prompt.  The message-end marks are all there is.
+        marks = [m for m in self.token_marks if m[0] >= now - RATE_WINDOW_SECONDS]
         if len(marks) >= 2:
             span = marks[-1][0] - marks[0][0]
             if span > 0:
                 return (marks[-1][1] - marks[0][1]) / span
-        span = time.monotonic() - self.first_event_at
+        span = now - self.first_event_at
         return self.output_tokens / span if self.first_event_at and span > 0 else 0.0
+
+    def note_stream(self, count: int) -> None:
+        """`count` deltas arrived: the model is producing tokens right now."""
+        self.streamed += count
+        now = time.monotonic()
+        if not self.stream_marks or now - self.stream_marks[-1][0] >= STREAM_MARK_SECONDS:
+            self.stream_marks.append((now, self.streamed))
+            del self.stream_marks[:-256]
 
     def note_output(self) -> None:
         """Any byte from pi. Keeps the stall clock fresh once it is running."""
@@ -179,7 +229,14 @@ def _read_stdout(pipe, raw_path: Path, state: _Stream, agent) -> None:
                 state.note_output()
             buffer += chunk
             *lines, buffer = buffer.split(b"\n")
+            # Counted on complete lines, never on the raw chunk: a 64KB read
+            # splits a marker across the boundary roughly every chunk, and a
+            # counter that silently drops one token per chunk is the kind of
+            # thing nobody notices until they are debugging something else.
+            deltas = 0
             for line in lines:
+                if DELTA_MARKER in line:
+                    deltas += 1
                 if any(marker in line for marker in agent.activity):
                     with state.lock:
                         state.note_activity()
@@ -191,6 +248,10 @@ def _read_stdout(pipe, raw_path: Path, state: _Stream, agent) -> None:
                     continue
                 with state.lock:
                     _handle(event, state, agent)
+            # One lock acquisition per chunk rather than per delta.
+            if deltas:
+                with state.lock:
+                    state.note_stream(deltas)
 
 
 def _read_stderr(pipe, state: _Stream) -> None:

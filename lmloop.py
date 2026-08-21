@@ -314,8 +314,12 @@ def cmd_models(args: argparse.Namespace) -> int:
             return 1
         models_module.save_cache(measured)
         for name, real in measured.items():
-            context = max(real - models_module.HEADROOM, 8192)
-            print(f"{name}: real {real}, declaring {context} + {min(models_module.HEADROOM, context // 4)} output")
+            # Asked for rather than recomputed.  This printed the default split
+            # while `declared_window` applied the per-model override, so the one
+            # command whose whole job is to report the budget reported a
+            # different one from the budget the run would use.
+            context, output = models_module.declared_window(f"llama-swap/{name}") or (0, 0)
+            print(f"{name}: real {real}, declaring {context} + {output} output")
         print(f"\nwritten to {models_module.CONTEXT_CACHE}")
         return 0
 

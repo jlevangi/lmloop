@@ -11,6 +11,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import models
+
 GLOBAL_CONFIG = Path.home() / ".config" / "lmloop" / "config.toml"
 PROJECT_CONFIG = ".lmloop.toml"
 
@@ -61,7 +63,12 @@ DEFAULTS: dict = {
         # llama-swap directly, not through a router.  A router reports model
         # metadata rather than how the weights were loaded, and declaring its
         # numbers killed runs on HTTP 400 mid-iteration.
-        "llama_swap_url": "http://127.0.0.1:8080",
+        #
+        # The address itself comes from ~/.config/lmloop/model-budgets.json,
+        # which the pi extension reads too -- one place to edit when the box
+        # moves, rather than one here and one in a JavaScript file nobody
+        # remembers is there.  A repo's own .lmloop.toml still overrides it.
+        "llama_swap_url": models.budgets()["llama_swap_url"],
     },
     "worktree": {
         "root": "{repo}/.worktrees/{run_id}",
@@ -209,7 +216,9 @@ planner_model    = ""      # e.g. "llama-swap/local-wide"
 planner_thinking = ""
 
 [models]
-llama_swap_url = "http://127.0.0.1:8080"
+# Defaults to whatever ~/.config/lmloop/model-budgets.json says, which is also
+# what the pi extension reads.  Set this only to point one repo somewhere else.
+# llama_swap_url = "http://127.0.0.1:8080"
 
 [worktree]
 root   = "{repo}/.worktrees/{run_id}"

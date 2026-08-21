@@ -28,18 +28,75 @@ the real window exactly, so overshooting is impossible.
 | Model | Real | Prompt | Output |
 |---|---|---|---|
 | local-fast | 65,536 | 49,152 | 16,384 |
-| local-wide | 98,304 | 73,728 | 24,576 |
+| local-wide | 196,608 | 172,032 | 24,576 |
+| local-wide-agent | 32,768 | 24,576 | 6,144 |
 | local-* | unmeasured | 24,576 | 6,144 |
+
+local-wide's row was 98,304 until 2026-08-21, when its `--ctx-size` was raised on the
+ROCm box; the figures here are whatever `models --detect` last wrote, so re-read
+them after changing llama-swap's config rather than trusting this table.
 
 The default split reserves `HEADROOM = 8192` for output. That assumes the
 *prompt* runs out first, which is wrong for a reasoning model — both models
 above have spent an entire iteration deliberating and hit the 8192 cap
-mid-sentence without emitting a tool call. `OUTPUT_OVERRIDE` in the extension
-rebalances per model; it replaces HEADROOM on both sides, so the sum still lands
-on the real window.
+mid-sentence without emitting a tool call. `OUTPUT_OVERRIDE` rebalances per
+model; it replaces HEADROOM on both sides, so the sum still lands on the real
+window.
+
+### One place to change it
+
+`~/.config/lmloop/model-budgets.json` holds the split policy and the llama-swap
+address. Both sides read it: `models.py` here, and the pi extension that
+actually configures the agent.
+
+```json
+{
+  "llama_swap_url": "http://127.0.0.1:8080",
+  "headroom": 8192,
+  "output_override": { "local-wide": 24576, "local-fast": 16384 },
+  "unmeasured_context": 24576
+}
+```
+
+This exists because those numbers used to be written down three times -- in
+`models.py`, in `lmloop models --detect`, and in the extension -- and had
+already drifted. `models.py` reserved the default 8192 for local-wide where the
+extension reserves 24,576, so lmloop spent a run believing in 16K of prompt room
+pi had never been given. That is not only a readout: `Run.window` is that value,
+and the thrash escalation in `loop.py` picks a rescue model by comparing it.
+
+Both sides keep their own defaults behind `??` and `_FALLBACK`, so deleting the
+file changes nothing. It is a place to edit, not a dependency.
+
+**One caveat that is easy to trip over.** In the extension the constants are
+`const`, so declaration order matters: anything reading `BUDGETS` has to come
+after it or the module dies on a temporal-dead-zone `ReferenceError` at load,
+and a dead extension takes the whole model catalogue with it. `node --check`
+does not catch this -- it is a runtime error, not a syntax one.
 
 An unmeasured model falls back to 24,576, which is small enough that no
 llama.cpp deployment rejects it.
+
+## Models lmloop does not measure
+
+`declared_window` only measures llama-swap, because only llama-swap will tell it
+how the weights were actually loaded. For every other provider it reads pi's own
+`~/.pi/agent/models.json` -- the same file pi reads when it builds the request,
+so the two agree by construction.
+
+Before that, `declared_window` returned `None` for anything non-llama-swap, and
+a `None` window is a zero window: `Run.window` fell to 0, the dashboard's gauge
+went blank, and the thrash escalation ranked every routed model below everything
+and so could never pick one. A 262K cloud model was invisible to the one piece
+of code most likely to want it.
+
+**This does not make 9router the sensible default for a local loop, and it is
+not meant to.** Those windows are *declared*, not measured, which is the whole
+distinction this file opens with -- the router advertised 1,000,000 context for
+a model running with `--ctx-size 65536`. A routed `agent-local` will report
+whatever `models.json` says regardless of how llama-swap actually loaded the
+model. Keep self-hosted work pointed at `llama-swap/<model>` directly; the
+9router path is there for when you deliberately want a cloud model.
 
 ## Measured behaviour
 

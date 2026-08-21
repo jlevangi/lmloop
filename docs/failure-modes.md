@@ -40,9 +40,13 @@ let me reconsider…" then `stopReason: length` at the same 8192.
 **Why it hid.** `stopReason: length` is not an error, so the loop called it
 `ok`. Nobody raises an output budget while the log says success.
 
-**Fixes.** Outcome `truncated`; per-model output overrides in the pi catalogue
-extension (local-wide 90112+8192 → 73728+24576, local-fast 57344+8192 → 49152+16384); and
-`[agent] thinking` to lower deliberation.
+**Fixes.** Outcome `truncated`; per-model output overrides (local-fast 57344+8192 →
+49152+16384; local-wide was 90112+8192 → 73728+24576 and is now 172032+24576 after its
+`--ctx-size` was raised); and `[agent] thinking` to lower deliberation.
+
+Those overrides now live in `~/.config/lmloop/model-budgets.json`, read by both
+the pi extension and `models.py`. They were written down separately in each and
+had drifted -- see *One place to change it* in `docs/models.md`.
 
 ## The worktree has no environment
 

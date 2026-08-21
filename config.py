@@ -16,6 +16,11 @@ PROJECT_CONFIG = ".lmloop.toml"
 
 DEFAULTS: dict = {
     "agent": {
+        # Which agent does the typing.  See harness.py -- the loop needs an
+        # argv and a JSON event stream, and nothing else, so swapping one is a
+        # config line rather than a rewrite.  "pi" also covers anything layered
+        # on pi, such as oh-my-pi, which is an extension pi auto-discovers.
+        "harness": "pi",
         "model": "llama-swap/local-fast",
         # Every extension in ~/.pi/agent/settings.json adds tool definitions,
         # and those escape whatever budget a harness compacts to.  On a 57344
@@ -26,6 +31,31 @@ DEFAULTS: dict = {
         # it into `bash` heredocs, which is worse in every way: no diff, no
         # partial-failure reporting, and nothing the event stream can count.
         "tools": "read,write,edit,replace,bash,grep,find,ls",
+        # Passed to `pi --thinking` when set; empty means pi's default.
+        #
+        # A reasoning model can deliberate its entire output budget away
+        # before it emits a single tool call.  local-fast produced 45k
+        # characters weighing up test cases -- "Actually, let me
+        # reconsider", twice -- hit the 8192-token cap mid-sentence, and
+        # ended the message with the write it was building never sent.
+        # local-wide did the same thing at the same cap.  On a local
+        # model the deliberation is not free thinking, it is the budget
+        # the work needed.
+        "thinking": "",
+        # Planning and editing are different jobs, and on local hardware they
+        # want different models.
+        #
+        # Deciding what the steps are is a whole-repository question: it wants
+        # the widest context available and can afford to be slow, because it
+        # happens once per run.  Carrying out a step is a two-file question that
+        # happens every iteration, where throughput is what matters and a large
+        # window is wasted.  local-wide has a 90112-token prompt budget against
+        # local-fast's 49152; local-fast produces real edits at several times the rate.
+        #
+        # Empty means "use the model above for both", which is the behaviour
+        # this had before and remains a perfectly reasonable setting.
+        "planner_model": "",
+        "planner_thinking": "",
     },
     "models": {
         # llama-swap directly, not through a router.  A router reports model
@@ -40,21 +70,93 @@ DEFAULTS: dict = {
         # of any run that produced no commits, taking the only record of why it
         # produced none with it.
         "keep": "always",
+        # Untracked paths to link from the repo into the worktree.
+        #
+        # `git worktree add` materialises tracked files and nothing else, so a
+        # fresh worktree has the source but not the environment that runs it.
+        # Watched live on one-project: the agent spent an hour and 24 tool calls
+        # hunting for a python3 that could import Flask, because flask lives in
+        # `~/git/one-project/.venv`, `.venv` is untracked, and the worktree
+        # therefore had no virtualenv at all.  It never wrote a line -- it was
+        # stuck trying to verify work it could not run.  The same iteration's
+        # gate had already failed `rc=127` for the same reason.
+        #
+        # Symlinked rather than copied: a virtualenv bakes absolute paths into
+        # its shebangs and pyvenv.cfg, so a copy either points back at the
+        # original anyway or breaks, and node_modules is too big to duplicate
+        # per run.  The trade is that a run shares one environment with the repo
+        # and with other runs -- an agent that installs a package changes it for
+        # everyone.  That is the right default for a loop whose whole job is to
+        # run the project's own code, but it is why this is a list you can empty.
+        #
+        # Paths that do not exist are skipped, and every name here is added to
+        # the git exclude list so `git add -A` cannot sweep the link into a
+        # commit.
+        "link": [".venv", "venv", "node_modules"],
     },
     "iteration": {
         # local-fast's best measured iteration was 87 minutes; local-wide did
         # not finish one in 100.  Any timeout here is a backstop, not a budget.
+        #
+        # Treat that local-wide figure as unproven rather than settled.  It rests on
+        # "9-10K output tokens, did not finish", and one-project has since shown
+        # local-fast producing 10184 output tokens in 69 minutes while thrashing on
+        # context overflow -- the same signature.  Nobody was counting
+        # compactions when local-wide was measured, so a slow model and a model out of
+        # room look identical in that number.  ``max_compactions`` below is what
+        # tells them apart.
         "timeout_seconds": 14400,
         "stall_seconds": 1200,
+        # Give up on an iteration that has overflowed its context this many times
+        # without writing anything.  Observed on one-project: six overflows in 69
+        # minutes, 81 tool calls, all reads.  Each overflow discards everything
+        # the agent had read, so the third one is not a slow start, it is a loop.
+        # 0 disables the check.
+        "max_compactions": 3,
+    },
+    "notify": {
+        # A run is unattended for hours by design, so the moment it ends is the
+        # moment nobody is watching.  One push when it stops, never per
+        # iteration: a notification every twenty minutes for ten hours is a
+        # channel you learn to ignore, which costs more than it gives.
+        "url": "",            # e.g. "https://ntfy.example.com"
+        "topic": "lmloop",
+        "token": "",          # bearer, if the server requires one
+        # Makes the notification tap through to the run in the dashboard.
+        "dashboard_url": "",  # e.g. "https://lmloop.example.com"
+    },
+    "prune": {
+        # Sweep when a run ends, rather than on a timer.  A run is exactly when
+        # the disk usage happens and exactly when someone is around to see the
+        # result, and a cron job that quietly rewrites run directories at 3am is
+        # harder to trust than one line at the end of a run that says what it
+        # did.  Nothing is deleted but regenerable bytecode; see prune.py.
+        "after_run": True,
+        # 0 sweeps every finished run in the repository, including the one that
+        # has just ended -- which is the one holding the space.
+        "older_than_days": 0.0,
     },
     "gate": {
         "command": "",
         "blocks_commit": False,
     },
     "stop": {
-        "max_iterations": 3,
+        # The point of the project is a big objective worked down over many
+        # short iterations, so the iteration cap is not the safety rail -- it
+        # was 3, which cannot decompose anything.  `no_diff_iterations` and
+        # `max_wall_hours` are the guards that actually stop a run going
+        # nowhere, and both watch evidence rather than counting.
+        "max_iterations": 20,
         "max_wall_hours": 10,
         "no_diff_iterations": 3,
+        # A fixed iteration count is the wrong shape for a plan whose length is
+        # not known when the run starts.  With this on, the budget is recomputed
+        # from the plan every iteration -- one per step, plus `retry_allowance`
+        # spare -- so a step that needs two attempts does not cost the run its
+        # last step, and a plan the agent grows mid-run grows the budget with
+        # it.  `max_iterations` stops being the target and becomes the ceiling.
+        "budget_follows_plan": True,
+        "retry_allowance": 5,
     },
 }
 
@@ -93,8 +195,18 @@ def sample() -> str:
 # defaults, or to <repo>/.lmloop.toml to override them for one project.
 
 [agent]
-model = "llama-swap/local-fast"
+harness = "pi"           # pi (incl. oh-my-pi) | opencode
+model = "llama-swap/local-wide-agent"
 tools = "read,write,edit,bash,grep,find,ls"
+# off | minimal | low | medium | high | xhigh | max.  Empty uses pi's
+# default.  Lower it when a model deliberates its whole output budget away
+# before calling a tool -- both local models here have done exactly that.
+thinking = ""
+# Writing the plan is a different job from carrying it out: it reads the whole
+# repository once per run, so it wants the widest window you have, while editing
+# happens every iteration and wants throughput.  Empty uses `model` for both.
+planner_model    = ""      # e.g. "llama-swap/local-wide"
+planner_thinking = ""
 
 [models]
 llama_swap_url = "http://127.0.0.1:8080"
@@ -103,17 +215,38 @@ llama_swap_url = "http://127.0.0.1:8080"
 root   = "{repo}/.worktrees/{run_id}"
 branch = "lmloop/{run_id}"
 keep   = "always"
+# Untracked paths symlinked from the repo into the worktree, so the agent has
+# the environment and not just the source.  Missing ones are skipped.  Add
+# ".env" here if the project needs it to run -- it is not a default, because it
+# would hand the model your secrets without you having asked.
+link   = [".venv", "venv", "node_modules"]
 
 [iteration]
 timeout_seconds = 14400   # 4h backstop
 stall_seconds   = 1200    # 20m of silence from the agent
+max_compactions = 3       # give up after N context overflows with no writes
+
+[notify]
+url           = ""        # e.g. "https://ntfy.example.com"; empty disables
+topic         = "lmloop"
+token         = ""        # bearer, if the server requires one
+dashboard_url = ""        # so the notification taps through to the run
+
+[prune]
+after_run       = true    # compress streams and drop bytecode when a run ends
+older_than_days = 0       # 0 = including the run that just finished
 
 [gate]
 command       = ""        # e.g. "python -m compileall -q backend"
 blocks_commit = false     # record the result; commit either way
 
 [stop]
-max_iterations     = 3
-max_wall_hours     = 10
-no_diff_iterations = 3
+# The budget follows the plan: one iteration per step plus retry_allowance
+# spare, recomputed as the plan changes.  max_iterations is then the ceiling
+# the plan cannot argue past, not the number of steps you expect.
+budget_follows_plan = true
+retry_allowance     = 5
+max_iterations      = 20     # the cap, not the plan; git is what stops a bad run
+max_wall_hours      = 10
+no_diff_iterations  = 3
 """

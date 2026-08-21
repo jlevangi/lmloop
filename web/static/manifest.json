@@ -1,0 +1,20 @@
+{
+  "name": "lmloop",
+  "short_name": "lmloop",
+  "description": "Long-running local-model agent runs: start, watch, pause and steer them.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c0c0f",
+  "theme_color": "#0c0c0f",
+  "categories": ["developer", "productivity"],
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "New run", "url": "/#new", "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

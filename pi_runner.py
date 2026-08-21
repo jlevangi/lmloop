@@ -1,7 +1,8 @@
 """Run one iteration of pi and reduce its event stream to an outcome.
 
-Three things about pi 0.84.2 shape this module, all verified against
-``~/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist``:
+Four things about pi 0.84.2 shape this module, the first three verified against
+``~/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist`` and the
+fourth observed live:
 
 1. **``--mode json`` always exits 0.**  In ``modes/print-mode.js`` the branch
    that sets ``exitCode = 1`` on ``stopReason === "error" | "aborted"`` sits
@@ -13,6 +14,14 @@ Three things about pi 0.84.2 shape this module, all verified against
 3. **The stream is enormous.**  One iteration produced a 9.9 MB JSONL, 25k lines
    of which were single-token deltas.  Lines are substring-filtered before they
    reach ``json.loads``; the raw stream is still teed to disk untouched.
+4. **pi compacts silently on overflow,** emitting ``compaction_start`` /
+   ``compaction_end`` with ``reason: "overflow"``, and the model carries on as if
+   nothing happened.  On a 57344-token window that is not a rare event, and an
+   agent can spend an entire iteration overflowing: read a dozen files, compact
+   to a plan, re-read the same dozen files, compact again.  So the count is
+   supervised like the stall clock is, and the summary pi wrote on the way out
+   is worth more than anything else the iteration produced -- see
+   ``rundir.last_compaction_summary``.
 """
 
 from __future__ import annotations
@@ -26,6 +35,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import harness
+
 # pi's built-in mutating tools, plus `replace` from pi-hashline-edit-pro and the
 # names other edit extensions use.  Which one is live depends on what is
 # installed in ~/.pi/agent/settings.json, so match them all.
@@ -35,28 +46,26 @@ from pathlib import Path
 # Progress is measured with git, never with this number.
 WRITE_TOOLS = {"write", "edit", "replace", "multiedit", "apply_patch"}
 
-# Only these three event types are ever parsed.  Everything else is teed to disk
-# and skipped -- see the volume note above.
-_INTERESTING = ('"tool_execution_start"', '"message_end"', '"agent_end"')
-
-# What counts as the model actually doing something, for the stall clock.
-# pi writes a session header to stdout the instant it starts, before it has
-# contacted a model at all -- so "we have seen output" is not the same as "the
-# model is alive", and treating them as the same would start the stall timer
-# while llama-swap is still loading weights.  That load legitimately takes
-# minutes and emits nothing.
-_ACTIVITY = (b'"message_', b'"tool_execution')
-
 TERM_GRACE_SECONDS = 30
-POLL_SECONDS = 5
+
+# How often the supervisor wakes to check the clocks and refresh the display.
+# This is the status line's frame rate as much as it is a timeout granularity:
+# at 5s the spinner crawled and the run read as frozen on a phone.  The work per
+# tick is a lock, a dict, and one small atomic file write.
+POLL_SECONDS = 2
+
+# How far back `_Stream.rate` looks.  Long enough to span a couple of messages
+# on a 2 tok/s model, short enough that a model that has slowed down says so.
+RATE_WINDOW_SECONDS = 300
 
 
 @dataclass
 class IterationResult:
-    outcome: str  # ok | agent-error | timeout | stalled
+    outcome: str  # ok | agent-error | timeout | stalled | thrashing
     detail: str = ""
     tool_calls: int = 0
     writes: int = 0
+    compactions: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     elapsed_seconds: float = 0.0
@@ -73,6 +82,7 @@ class _Stream:
         self.first_event_at = 0.0
         self.tool_calls = 0
         self.writes = 0
+        self.compactions = 0
         self.files: list[str] = []
         self.stop_reason = ""
         self.error_message = ""
@@ -81,6 +91,32 @@ class _Stream:
         self.output_tokens = 0
         self.stderr = ""
         self.last_tool = ""
+        self.last_target = ""
+        # (monotonic, cumulative output tokens) at each message end.  Output
+        # tokens only become known in lumps -- one lump per assistant message,
+        # which on a slow model is minutes apart -- so a rate needs the times
+        # those lumps landed, not a difference against a fixed start.
+        self.token_marks: list[tuple[float, int]] = []
+
+    def rate(self) -> float:
+        """Output tokens per second, over the recent past.
+
+        Windowed rather than cumulative because the two answer different
+        questions: cumulative includes every second spent running tools and
+        waiting on llama-swap, and so reports a number no model has ever
+        produced.  What a watcher wants is the speed of the thing generating
+        right now, which is the slope between message ends.
+
+        Falls back to the cumulative average until two marks exist, because one
+        number that is roughly right beats a blank space.
+        """
+        marks = [m for m in self.token_marks if m[0] >= time.monotonic() - RATE_WINDOW_SECONDS]
+        if len(marks) >= 2:
+            span = marks[-1][0] - marks[0][0]
+            if span > 0:
+                return (marks[-1][1] - marks[0][1]) / span
+        span = time.monotonic() - self.first_event_at
+        return self.output_tokens / span if self.first_event_at and span > 0 else 0.0
 
     def note_output(self) -> None:
         """Any byte from pi. Keeps the stall clock fresh once it is running."""
@@ -94,34 +130,47 @@ class _Stream:
         self.last_event_at = now
 
 
-def _handle(event: dict, state: _Stream) -> None:
-    kind = event.get("type")
-    if kind == "tool_execution_start":
+def _handle(event: dict, state: _Stream, agent) -> None:
+    """Fold one event into the run state, in the adapter's normalised terms.
+
+    Nothing below knows which agent produced the event -- see `harness.py`.
+    """
+    note = agent.classify(event)
+    if not note:
+        return
+    kind = note["kind"]
+    if kind == harness.TOOL:
         state.tool_calls += 1
-        name = event.get("toolName", "")
-        state.last_tool = name
-        if name in WRITE_TOOLS:
+        state.last_tool = note["name"]
+        state.last_target = note["target"]
+        if note["name"] in WRITE_TOOLS:
             state.writes += 1
-            path = (event.get("args") or {}).get("path")
+            path = note.get("path")
             if path and path not in state.files:
                 state.files.append(path)
-    elif kind == "message_end":
-        message = event.get("message") or {}
-        if message.get("role") != "assistant":
-            return
+    elif kind == harness.COMPACTION:
+        state.compactions += 1
+    elif kind == harness.MESSAGE_END:
         state.saw_message_end = True
-        state.stop_reason = message.get("stopReason") or ""
-        state.error_message = message.get("errorMessage") or ""
-        usage = message.get("usage") or {}
-        state.input_tokens = max(state.input_tokens, int(usage.get("input") or 0))
-        state.output_tokens += int(usage.get("output") or 0)
+        state.stop_reason = note["stop_reason"]
+        state.error_message = note["error"]
+        state.input_tokens = max(state.input_tokens, note["input"])
+        state.output_tokens += note["output"]
+        state.token_marks.append((time.monotonic(), state.output_tokens))
+        del state.token_marks[:-64]
 
 
-def _read_stdout(pipe, raw_path: Path, state: _Stream) -> None:
+def _read_stdout(pipe, raw_path: Path, state: _Stream, agent) -> None:
     buffer = b""
     with raw_path.open("wb") as sink:
         while True:
-            chunk = pipe.read(65536)
+            # read1, not read: `read` waits for the whole 65536 bytes before
+            # returning, so on a slow model the stall clock only ticks once a
+            # full buffer has accumulated -- roughly every two minutes at the
+            # ~570 B/s a 2 tok/s model produces.  The clock is supposed to mean
+            # "pi has said nothing at all", so it has to see bytes when they
+            # arrive, not when they amount to 64KB.
+            chunk = pipe.read1(65536)
             if not chunk:
                 break
             sink.write(chunk)
@@ -131,17 +180,17 @@ def _read_stdout(pipe, raw_path: Path, state: _Stream) -> None:
             buffer += chunk
             *lines, buffer = buffer.split(b"\n")
             for line in lines:
-                if any(marker in line for marker in _ACTIVITY):
+                if any(marker in line for marker in agent.activity):
                     with state.lock:
                         state.note_activity()
-                if not any(marker.encode() in line for marker in _INTERESTING):
+                if not any(marker.encode() in line for marker in agent.interesting):
                     continue
                 try:
                     event = json.loads(line)
                 except ValueError:
                     continue
                 with state.lock:
-                    _handle(event, state)
+                    _handle(event, state, agent)
 
 
 def _read_stderr(pipe, state: _Stream) -> None:
@@ -174,8 +223,10 @@ def _terminate(process: subprocess.Popen) -> None:
 
 def run(
     *,
+    agent_name: str = "pi",
     model: str,
     tools: str,
+    thinking: str,
     prompt: str,
     cwd: Path,
     session_dir: Path,
@@ -183,19 +234,16 @@ def run(
     raw_path: Path,
     timeout_seconds: int,
     stall_seconds: int,
+    max_compactions: int = 0,
     env: dict | None = None,
     should_stop=lambda: False,
     on_progress=None,
 ) -> IterationResult:
-    argv = [
-        "pi",
-        "--model", model,
-        "--mode", "json",
-        "--session-dir", str(session_dir),
-        "--session-id", session_id,
-    ]
-    if tools:
-        argv += ["--tools", tools]
+    agent = harness.get(agent_name)
+    argv = agent.argv(
+        model=model, tools=tools, thinking=thinking,
+        session_dir=session_dir, session_id=session_id,
+    )
 
     started = time.monotonic()
     state = _Stream()
@@ -220,7 +268,7 @@ def run(
 
     threads = [
         threading.Thread(target=feed, daemon=True),
-        threading.Thread(target=_read_stdout, args=(process.stdout, raw_path, state), daemon=True),
+        threading.Thread(target=_read_stdout, args=(process.stdout, raw_path, state, agent), daemon=True),
         threading.Thread(target=_read_stderr, args=(process.stderr, state), daemon=True),
     ]
     for thread in threads:
@@ -233,12 +281,21 @@ def run(
         with state.lock:
             first_event = state.first_event_at
             last_event = state.last_event_at
+            writes = state.writes
+            compactions = state.compactions
             snapshot = {
                 "elapsed": now - started,
                 "tool_calls": state.tool_calls,
                 "writes": state.writes,
+                "compactions": state.compactions,
                 "last_tool": state.last_tool,
+                "last_target": state.last_target,
                 "output_tokens": state.output_tokens,
+                # The prompt as the model actually counted it, which is the only
+                # honest measure of how close this iteration is to the window it
+                # will compact at.
+                "input_tokens": state.input_tokens,
+                "tokens_per_second": state.rate(),
                 # Before the first event this is time spent waiting on
                 # llama-swap to load, not the agent going quiet.
                 "quiet": (now - last_event) if first_event else 0.0,
@@ -254,6 +311,21 @@ def run(
             # that, llama-swap may legitimately be evicting one model and
             # loading another, which takes minutes and emits nothing.
             killed = "stalled"
+        elif max_compactions and compactions >= max_compactions and not writes:
+            # Compaction thrash.  Observed on one-project: the agent read 12-16
+            # files, overflowed, compacted to a plan, distrusted the plan, and
+            # re-read the same files -- six times in 69 minutes, all reads, no
+            # writes.  Each summary was larger than the last, so the usable
+            # window shrank and the cycle tightened instead of converging.
+            #
+            # Cutting this off is safe by construction: whatever the iteration
+            # left behind is committed either way, so an early cut cannot
+            # discard work.  The write counter undercounts -- an agent that
+            # appends with a bash heredoc never touches an edit tool -- so this
+            # can in principle fire on an agent that did write.  The cost when
+            # wrong is one iteration ended early, which the next one resumes
+            # from; the cost of not firing is a wasted hour.
+            killed = "thrashing"
         elif should_stop():
             killed = "stopped"
 
@@ -271,6 +343,9 @@ def run(
             outcome, detail = "timeout", f"no result after {elapsed / 60:.0f}m"
         elif killed == "stalled":
             outcome, detail = "stalled", f"no output for {stall_seconds // 60}m"
+        elif killed == "thrashing":
+            outcome = "thrashing"
+            detail = f"{state.compactions} context overflows with no writes"
         elif killed == "stopped":
             outcome, detail = "interrupted", "stop requested mid-iteration"
         elif state.stop_reason in ("error", "aborted"):
@@ -278,6 +353,27 @@ def run(
             detail = state.error_message or f"pi reported {state.stop_reason}"
         elif not state.saw_message_end:
             outcome, detail = "agent-error", "pi produced no assistant message"
+        elif state.stop_reason == "length" and not state.writes:
+            # The model talked until its output budget ran out and the message
+            # ended mid-sentence, so the tool call it was building never
+            # arrived.  Seen on both models here: local-wide at 8192 tokens
+            # with no tool call at all, and local-fast at 8192 after 45k
+            # characters of deliberating over test cases it never wrote.
+            # `ok` is the wrong word for it -- nothing was produced, and the
+            # fix is a bigger output budget or a lower thinking level, neither
+            # of which anyone reaches for while the log says success.
+            outcome = "truncated"
+            detail = f"ran out of output budget after {state.output_tokens} tokens"
+        elif not state.tool_calls:
+            # An iteration that ends cleanly having called no tool cannot have
+            # changed anything, so "ok" is a lie the run then repeats in the
+            # commit log and the notes.  Observed on local-wide: 19 minutes
+            # spent drafting the target file inside one reasoning block, the
+            # 8192-token output cap reached mid-thought, message over, worktree
+            # untouched, outcome recorded as ok.  A reasoning model can think
+            # its whole budget away, and that is worth naming.
+            outcome = "no-action"
+            detail = f"finished without calling a tool ({state.output_tokens} output tokens)"
         else:
             outcome, detail = "ok", state.stop_reason or "completed"
 
@@ -286,6 +382,7 @@ def run(
             detail=detail,
             tool_calls=state.tool_calls,
             writes=state.writes,
+            compactions=state.compactions,
             input_tokens=state.input_tokens,
             output_tokens=state.output_tokens,
             elapsed_seconds=elapsed,

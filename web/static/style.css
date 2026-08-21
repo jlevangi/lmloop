@@ -1,0 +1,368 @@
+/* lmloop — a night-shift instrument panel.
+ *
+ * The design brief was "not generic". So: no gradient buttons, no glass, no
+ * 16px pills. One accent, and it is the moon's own cream, because the emblem of
+ * a loop that works overnight should be the thing that colours it. Every number
+ * is monospaced -- run ids, shas, durations, token counts -- because they are
+ * read as data and compared down a column, not as prose.
+ *
+ * Surfaces are flat and separated by hairlines rather than shadow. Radii are
+ * small. Density is high: a phone screen should answer "which runs are alive
+ * and what have they written" without scrolling.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --ink:        #0c0c0f;   /* page */
+  --ink-raise:  #131317;   /* rows, panels */
+  --ink-sink:   #08080a;   /* inputs, wells */
+  --line:       #23232b;
+  --line-soft:  #1a1a20;
+
+  --text:       #e8e6e3;
+  --text-dim:   #8d8a83;
+  --text-faint: #5d5a54;
+
+  --moon:       #f0dfa8;   /* the one accent */
+  --moon-dim:   #6b6248;
+
+  --ok:   #7fb069;
+  --warn: #d9a441;
+  --bad:  #cf6a5a;
+
+  --r: 4px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+}
+
+* { box-sizing: border-box; }
+
+/* `hidden` is a presentation hint that any `display` rule silently outranks,
+   and several components here set one. Without this, hiding a progress bar or
+   a pip strip does nothing at all. */
+[hidden] { display: none !important; }
+
+/* The gesture-nav strip on Android is painted with the *root* element's
+   background, not the body's. With a colour only on body, an installed PWA got
+   a white bar across the bottom of the phone. */
+html { background: var(--ink); }
+
+body {
+  margin: 0; min-height: 100dvh;
+  background: var(--ink); color: var(--text);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Numbers are data. */
+.mono, .meta, .tally, code, pre, td, th, .runid, .bar-sub-mono { font-family: var(--mono); }
+
+/* ── Bar ────────────────────────────────────────────────────────────── */
+.bar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 11px;
+  padding: 12px 16px;
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  background: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+.bar-text { min-width: 0; flex: 1; }
+.bar h1 {
+  font-size: .95rem; margin: 0; font-weight: 600; letter-spacing: .01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#bar-sub {
+  margin: 2px 0 0; font-size: .73rem; color: var(--text-faint);
+  font-family: var(--mono);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#bar-sub.warn { color: var(--warn); }
+
+/* The emblem: a crescent cut by an offset disc, matching the sign-in screen.
+   It lights only when a run is actually working, so a dark moon is a quiet
+   machine rather than a stalled page. */
+.moon {
+  position: relative; width: 15px; height: 15px; flex: none;
+  border-radius: 50%; overflow: hidden;
+  background: #34323a;
+  transition: background .5s ease, box-shadow .5s ease;
+}
+.moon::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: var(--ink); transform: translate(4.5px, -2.5px);
+}
+.moon.live { background: var(--moon); box-shadow: 0 0 9px #f0dfa855; }
+.moon.stale { background: var(--bad); }
+
+.back {
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 1.15rem; line-height: 1; padding: 4px 8px; margin-left: -8px;
+  border-radius: var(--r); flex: none;
+}
+.back:hover { color: var(--text); background: var(--ink-raise); }
+
+/* ── Buttons ────────────────────────────────────────────────────────── */
+button, input, select, textarea { font: inherit; }
+.act, .quiet, .risk {
+  border: 1px solid var(--line); background: var(--ink-raise); color: var(--text);
+  border-radius: var(--r); padding: 8px 13px; cursor: pointer;
+  font-size: .84rem; font-weight: 500; flex: none;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.act { border-color: var(--moon-dim); color: var(--moon); }
+.act:hover { background: #1a1812; border-color: var(--moon); }
+.quiet:hover { border-color: var(--text-faint); }
+.risk { color: var(--bad); }
+.risk:hover { border-color: var(--bad); background: #1a1211; }
+.block { width: 100%; padding: 12px; margin-top: 6px; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--moon); outline-offset: 2px; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+main { width: min(760px, 100%); margin: auto; padding: 0 16px 72px; }
+h2 {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .16em;
+  color: var(--text-faint); font-weight: 600;
+  margin: 24px 0 9px; display: flex; align-items: center; gap: 8px;
+}
+.tally { color: var(--text-faint); font-size: .72rem; letter-spacing: 0; }
+.empty { color: var(--text-faint); text-align: center; padding: 60px 8px; line-height: 1.9; font-size: .88rem; }
+code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-size: .85em; }
+
+/* ── Filters ────────────────────────────────────────────────────────── */
+.filters { display: flex; gap: 6px; overflow-x: auto; padding: 14px 0 0; scrollbar-width: none; }
+.filters::-webkit-scrollbar { display: none; }
+.filters:empty { display: none; }
+.tab {
+  flex: none; border: 1px solid var(--line); background: none; color: var(--text-dim);
+  border-radius: var(--r); padding: 5px 11px; font-size: .78rem; cursor: pointer;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-pressed="true"] { color: var(--moon); border-color: var(--moon-dim); background: #16150f; }
+
+/* ── Run rows ───────────────────────────────────────────────────────── */
+.rows { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); }
+.row {
+  display: grid; gap: 8px; padding: 13px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: none; color: inherit; text-align: left; width: 100%;
+  border-left: 0; border-right: 0; border-top: 0; cursor: pointer;
+  transition: background .12s ease;
+}
+.row:last-child { border-bottom: none; }
+.row:hover { background: var(--ink-raise); }
+.row.broken { box-shadow: inset 3px 0 0 var(--bad); }
+.broken-panel { border-color: var(--bad); }
+.defect { font-family: var(--mono); font-size: .76rem; color: var(--bad); line-height: 1.6; word-break: break-all; }
+.row:focus-visible { outline: 2px solid var(--moon); outline-offset: -2px; }
+
+.row-head { display: flex; align-items: center; gap: 8px; }
+.where {
+  font-size: .74rem; color: var(--text-faint); font-family: var(--mono);
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.title {
+  margin: 0; font-size: .9rem; line-height: 1.45; font-weight: 500;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.meta {
+  font-size: .72rem; color: var(--text-faint);
+  display: flex; flex-wrap: wrap; gap: 2px 14px;
+}
+
+/* State reads as a label, not a pill: uppercase, letterspaced, no chrome. */
+.state {
+  font-size: .64rem; text-transform: uppercase; letter-spacing: .13em;
+  font-weight: 600; font-family: var(--mono); flex: none;
+  color: var(--text-faint);
+}
+.state.running  { color: var(--moon); }
+.state.paused, .state.stopping { color: var(--warn); }
+.state.stale    { color: var(--bad); }
+
+/* Progress is plan steps: what the run has done, not what it has spent. */
+.progress { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.track { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
+/* Width must start at zero: a block child with no width fills its parent, so
+   an un-set progress bar renders as a completed one -- the most misleading
+   possible default for this particular element. */
+.track span { display: block; width: 0; height: 100%; background: var(--moon); transition: width .5s ease; }
+.progress small { font-size: .7rem; color: var(--text-dim); font-family: var(--mono); }
+
+/* What it is doing right now: the plan step it is on, and the call in flight.
+   Both were previously only reachable by opening the run and reading the logs,
+   which is exactly the thing a status display exists to save you. */
+.now { display: grid; gap: 3px; font-size: .76rem; }
+.now-step {
+  color: var(--text-dim); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.now-step::before { content: "▸ "; color: var(--moon); }
+.now-act {
+  font-family: var(--mono); font-size: .72rem; color: var(--moon);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.now-act:empty { display: none; }
+
+/* A working run's bar carries a travelling highlight over whatever progress it
+   has made, so "alive" and "how far" are one glance rather than two. */
+.track.working { position: relative; overflow: hidden; }
+.track.working::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, #f0dfa855, transparent);
+  animation: sweep 2.2s linear infinite;
+}
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* One mark per finished iteration, never collapsed to pass/fail: thrashing,
+   truncated and stalled each imply a different fix. */
+.pips { display: flex; flex-wrap: wrap; gap: 3px; }
+.pip { width: 16px; height: 3px; border-radius: 1px; background: var(--line); }
+.pip.ok { background: var(--ok); }
+.pip.thrashing, .pip.truncated, .pip[class*="no-action"] { background: var(--warn); }
+.pip.stalled, .pip.timeout, .pip[class*="error"] { background: var(--bad); }
+
+/* ── Run view ───────────────────────────────────────────────────────── */
+#view-run { padding-top: 18px; display: grid; gap: 14px; }
+
+/* The head holds everything that moves and is never re-created; the body below
+   it is replaced on every poll.  See app.js -- a re-parented node restarts its
+   animation, which is why these are two boxes rather than one. */
+.live, .run-body { display: grid; gap: 14px; min-width: 0; }
+/* Grid items are floored at their min-content width unless told otherwise, and
+   that floor propagates up: one child that cannot shrink widens the column, and
+   every full-width sibling -- the progress bar most visibly -- is stretched past
+   the right edge of the phone with it. */
+.live > *, .run-body > * { min-width: 0; }
+
+/* ── Model card ─────────────────────────────────────────────────────────
+   A local run is a model working against a window it can fall out of.  Speed
+   says whether waiting is worth it; the gauge says how long until the next
+   compaction.  Neither was visible anywhere but the terminal. */
+.model {
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 12px 14px; display: grid; gap: 10px;
+}
+.model-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.model-id { font-family: var(--mono); font-size: .84rem; }
+.model-tag {
+  font-size: .64rem; text-transform: uppercase; letter-spacing: .12em;
+  color: var(--text-faint);
+}
+/* Pinned right and tabular: this is the number being watched, and digits that
+   shift the text sideways as they change cannot be read at a glance. */
+.model-rate {
+  margin-left: auto; font-family: var(--mono); font-size: .84rem;
+  color: var(--moon); font-variant-numeric: tabular-nums;
+}
+.gauge { display: grid; gap: 5px; }
+.gauge-label {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: .64rem; text-transform: uppercase; letter-spacing: .12em;
+  color: var(--text-faint);
+}
+.gauge-value { font-family: var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-dim); }
+.gauge-track { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.gauge-track span {
+  display: block; width: 0; height: 100%; background: var(--ok);
+  transition: width .5s ease, background .5s ease;
+}
+.gauge-track span.warn { background: var(--warn); }
+.gauge-track span.bad { background: var(--bad); }
+.model-meta {
+  display: flex; flex-wrap: wrap; gap: 3px 12px;
+  font-family: var(--mono); font-size: .7rem; color: var(--text-faint);
+}
+.step strong { font-weight: 600; color: var(--text); }
+.step code { background: var(--ink-sink); color: var(--moon); padding: 1px 5px; font-size: .82em; }
+.step.done strong, .step.done code { color: inherit; font-weight: 500; }
+/* The floor here has to be the real minimum width of a cell, not a smaller
+   number that looks tidier.  `auto-fit` picks how many columns to make by
+   dividing the available width by that floor -- but each track then grows to
+   fit its content, so a floor below the true minimum produces more columns than
+   actually fit and the row overflows.  At 88px a 390px phone got four 106px
+   cells and scrolled sideways by 71px.  `UPDATED` in tracked uppercase is 81px
+   wide, plus 24px of padding: 104. */
+.facts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  border: 1px solid var(--line); border-radius: var(--r);
+}
+.fact { min-width: 0; }
+.fact { padding: 10px 12px; border-right: 1px solid var(--line-soft); }
+.fact:last-child { border-right: none; }
+.fact dt { font-size: .62rem; text-transform: uppercase; letter-spacing: .12em; color: var(--text-faint); }
+.fact dd { margin: 3px 0 0; font-family: var(--mono); font-size: .84rem; }
+.fact dd.hot { color: var(--moon); }
+
+/* The run view's headline: step, then call, then clock. */
+.doing { border: 1px solid var(--moon-dim); border-radius: var(--r); padding: 13px 14px; display: grid; gap: 7px; }
+.doing .label { font-size: .62rem; text-transform: uppercase; letter-spacing: .14em; color: var(--moon); }
+.doing .step { font-size: .9rem; line-height: 1.5; color: var(--text); grid-template-columns: minmax(0, 1fr); }
+.doing .act { font-family: var(--mono); font-size: .78rem; color: var(--text-dim); }
+/* `anywhere`, not `break-word`: only `anywhere` lowers the min-content size,
+   and the min-content size is the number doing the damage. */
+.doing .step, .doing .act, .objective, .model-id { overflow-wrap: anywhere; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 7px; }
+.panel { border: 1px solid var(--line); border-radius: var(--r); padding: 13px 14px; }
+.objective { font-size: .85rem; line-height: 1.65; white-space: pre-wrap; color: var(--text-dim); }
+
+.plan { display: grid; gap: 7px; }
+.step { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 9px; font-size: .84rem; line-height: 1.5; }
+.step > span { overflow-wrap: anywhere; }
+.step .box { color: var(--text-faint); font-family: var(--mono); }
+.step.done { color: var(--text-faint); }
+.step.done .box { color: var(--ok); }
+.step.next { color: var(--text); }
+.step.next .box { color: var(--moon); }
+
+table { width: 100%; border-collapse: collapse; font-size: .76rem; }
+th {
+  text-align: left; color: var(--text-faint); font-weight: 500;
+  text-transform: uppercase; letter-spacing: .1em; font-size: .62rem;
+}
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+td.ok { color: var(--ok); }
+td.warn { color: var(--warn); }
+td.bad { color: var(--bad); }
+.scroll-x { overflow-x: auto; overscroll-behavior-x: contain; }
+
+details { border: 1px solid var(--line); border-radius: var(--r); padding: 11px 13px; }
+summary { cursor: pointer; font-size: .78rem; color: var(--text-dim); }
+summary:hover { color: var(--text); }
+pre {
+  margin: 11px 0 0; white-space: pre-wrap; word-break: break-word;
+  font-size: .73rem; line-height: 1.6; max-height: 60dvh; overflow: auto;
+  color: var(--text-dim);
+}
+
+/* ── Forms ──────────────────────────────────────────────────────────── */
+#view-new { padding-top: 18px; }
+#launch-form { display: grid; gap: 7px; }
+label { font-size: .68rem; text-transform: uppercase; letter-spacing: .12em; color: var(--text-faint); margin-top: 8px; }
+input, select, textarea {
+  width: 100%; padding: 10px 11px; border-radius: var(--r);
+  border: 1px solid var(--line); background: var(--ink-sink); color: var(--text);
+  font-size: .88rem;
+}
+textarea { resize: vertical; line-height: 1.6; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--moon-dim); }
+.grid3 { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 10px; }
+@media (max-width: 520px) { .grid3 { grid-template-columns: 1fr; } }
+.alert { color: var(--bad); font-size: .82rem; margin: 6px 0 0; }
+.note { margin: 6px 0 0; font-size: .74rem; color: var(--text-faint); line-height: 1.5; }
+#new-project-fields { display: grid; }
+
+/* Views cross-fade rather than jump; no sliding, which on a phone reads as a
+   page that has not decided whether it is an app. */
+main > section[hidden] { display: none; }
+main > section { animation: settle .18s ease both; }
+@keyframes settle { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

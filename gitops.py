@@ -47,6 +47,13 @@ def is_clean(cwd: Path) -> bool:
     return not git(["status", "--porcelain"], cwd)
 
 
+def branch_exists(repo: Path, branch: str) -> bool:
+    """Read-only.  Asked before naming a new run, never before removing one."""
+    return bool(
+        git(["for-each-ref", "--format=%(refname:short)", f"refs/heads/{branch}"], repo)
+    )
+
+
 def add_worktree(repo: Path, path: Path, branch: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     git(["worktree", "add", "-b", branch, str(path)], repo)
@@ -96,6 +103,62 @@ def log_oneline(cwd: Path, base: str, limit: int = 20) -> str:
 
 def diff_stat(cwd: Path, base: str) -> str:
     return git(["diff", "--stat", base], cwd, check=False)
+
+
+def _with_sizes(cwd: Path, paths: list[str]) -> list[str]:
+    """Annotate each path with its line count.
+
+    An agent budgeted to three files before its first write still has to choose
+    which three, and nothing in a bare list says that `chart-styles.css` is 585
+    lines while `button-styles.css` is 85.  Watched live on a CSS consolidation:
+    five stylesheets read in one pass, context overflowed, nothing written.  The
+    count is what turns "read the smallest file that answers this" into a choice
+    the agent can actually make, and it costs one stat and one read per file at
+    plan time instead of a whole window at work time.
+    """
+    annotated = []
+    for path in paths:
+        try:
+            with (cwd / path).open("rb") as handle:
+                lines = sum(1 for _ in handle)
+            annotated.append(f"{path} ({lines})")
+        except OSError:
+            # Unreadable or binary-ish; the path alone is still worth listing.
+            annotated.append(path)
+    return annotated
+
+
+def tracked_files(cwd: Path, limit: int = 160) -> str:
+    """An inventory of the repo, for an agent that has never seen it.
+
+    This is the cheapest orientation there is and the one the prompt was missing.
+    `git log` and `git diff` are both empty on the first iteration of a fresh
+    run, so the agent arrives knowing the objective and nothing about the shape
+    of the code, and buys the shape with tool calls: 18 `ls`/`read` pairs on
+    one-project before its context overflowed the first time.  one-project has
+    109 tracked files.  The whole answer fits in the prompt.
+
+    Beyond `limit` paths the listing collapses to directories with counts.  A
+    partial listing would be worse than a summary -- it reads as complete, and an
+    agent that trusts it looks for a file that was simply cut off.
+    """
+    paths = [line for line in git(["ls-files"], cwd, check=False).splitlines() if line]
+    if not paths:
+        return ""
+    if len(paths) <= limit:
+        return "\n".join(_with_sizes(cwd, paths))
+
+    counts: dict[str, int] = {}
+    for path in paths:
+        parent = str(Path(path).parent)
+        counts[parent] = counts.get(parent, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    lines = [f"{len(paths)} tracked files, too many to list.  Directories, by size:"]
+    lines += [
+        f"{'(repo root)' if parent == '.' else parent + '/'}  {count} files"
+        for parent, count in sorted(ranked, key=lambda item: item[0])
+    ]
+    return "\n".join(lines)
 
 
 def commit_shortstat(cwd: Path, sha: str) -> str:

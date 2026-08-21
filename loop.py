@@ -16,18 +16,20 @@ a time of the operator's choosing rather than the loop's.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
 import time
 from pathlib import Path
 
+import checks
 import display
 import gitops
 import models
 import prompts
 import pi_runner
-from rundir import RunDir, make_run_id
+from rundir import RunDir, make_run_id, previous_runs
 
 
 class Run:
@@ -42,35 +44,133 @@ class Run:
         self.repo = repo
         self.config = config
         self.objective = objective
-        self.run_id = run_id or make_run_id(objective)
-        self.max_iterations = max_iterations or config["stop"]["max_iterations"]
+        # Two numbers, not one.  The floor is what the operator asked for and is
+        # always honoured; the ceiling is what no plan can argue past.  An
+        # explicit `--max-iterations` raises the floor rather than pinning the
+        # run, because the request behind it is "at least this much", and a run
+        # that stops one step short of a finished plan is the thing being fixed.
+        self.iteration_floor = max_iterations or config["stop"]["max_iterations"]
+        self.iteration_ceiling = max(self.iteration_floor, config["stop"]["max_iterations"])
+        self.max_iterations = self.iteration_floor
         self.model = config["agent"]["model"]
+        self.thinking = config["agent"].get("thinking", "")
+        self.role = "editing"
+        self.window, self.max_output = models.declared_window(self.model) or (0, 0)
         self.interrupted = False
 
-        self.branch = config["worktree"]["branch"].format(repo=repo.name, run_id=self.run_id)
-        self.worktree = Path(
-            config["worktree"]["root"].format(repo=str(repo), run_id=self.run_id)
-        )
+        # An explicit run id is one somebody else already resolved -- `lmloop
+        # resume` naming the run it means, or `--detach`'s parent naming the lane
+        # it picked -- so it is taken literally.  A derived one is a new attempt,
+        # and gets a free lane if today already used that name.
+        derived = make_run_id(objective) if objective.strip() else ""
+        self.run_id = run_id if run_id else self._free_run_id(derived)
+        # Computed by comparison rather than remembered, so it is true however
+        # the id arrived: a detached run is told its id by its parent, and would
+        # otherwise never mention the run it stepped around.
+        self.collided_with = derived if derived and self.run_id != derived else ""
+
+        self.branch = self._branch_for(self.run_id)
+        self.worktree = self._worktree_for(self.run_id)
         self.rundir = RunDir(self.worktree, self.run_id)
 
         self.gate_result = ""
         self.gate_output = ""
+        self.gate_baseline = ""
+        self.last_outcome = ""
+        self.last_detail = ""
+        self.last_commit: str | None = None
+        # How many iterations each plan step has thrashed on, keyed by the step
+        # text.  A step that has defeated the window twice is a step to split,
+        # and the agent is the one who can split it.
+        self.thrashed_steps: dict[str, int] = {}
         self.no_diff_streak = 0
+        self.linked: list[str] = []
+        self.defects: list[str] = []
         self.screen = display.Screen()
+
+    def _branch_for(self, run_id: str) -> str:
+        return self.config["worktree"]["branch"].format(repo=self.repo.name, run_id=run_id)
+
+    def _worktree_for(self, run_id: str) -> Path:
+        return Path(
+            self.config["worktree"]["root"].format(repo=str(self.repo), run_id=run_id)
+        )
+
+    def _free_run_id(self, base: str) -> str:
+        """``base``, or ``base-2``, ``base-3`` ... if those names are taken.
+
+        The run id is date + slug + hash of the prompt, so the same objective on
+        the same day derives the same id -- and that is exactly the day it
+        happens, because the reason to re-run an objective is that the first
+        attempt went nowhere and the prompt or the config has been fixed since.
+        Failing there sent the operator to `git worktree remove` to get on with
+        the thing they had just decided to do again.
+
+        Nothing is discarded to make room: the earlier run keeps its worktree,
+        its branch and its handoff chain, and the new attempt simply takes the
+        next name.  The caller is told which run it stepped around, so that an
+        operator who meant `lmloop resume` finds out before the second worktree
+        is a surprise.
+        """
+        if not self._taken(base):
+            return base
+        for suffix in range(2, 100):
+            candidate = f"{base}-{suffix}"
+            if not self._taken(candidate):
+                return candidate
+        return base  # 99 attempts today; let prepare() say so plainly.
+
+    def _taken(self, run_id: str) -> bool:
+        """A name is taken if either half of it is: worktree or branch.
+
+        Checking only the directory would hand back a name whose branch still
+        exists from a worktree someone removed by hand, and `git worktree add`
+        would then fail on the branch instead -- the same dead end, one step
+        later and with a worse message.
+        """
+        return (
+            self._worktree_for(run_id).exists()
+            or gitops.branch_exists(self.repo, self._branch_for(run_id))
+        )
 
     # -- setup ------------------------------------------------------------
 
+    def _exclusions(self) -> list[str]:
+        """What git must never see, whichever worktree it is standing in.
+
+        `.lmloop.toml` is the operator's config at the repo root; the rest are
+        run artifacts and the linked environment.  A symlinked `.venv` is still
+        a file as far as `git add -A` is concerned, and committing it would put
+        an absolute path to somebody's home directory in the history.
+        """
+        linkable = list(self.config["worktree"].get("link") or [])
+        return [".worktrees/", ".lmloop/", ".lmloop.toml", ".pi/"] + linkable
+
     def prepare(self) -> None:
         if self.worktree.exists():
-            raise SystemExit(f"lmloop: {self.worktree} already exists")
+            # Only reachable when `_free_run_id` ran out of lanes, or when a run
+            # id was named explicitly.  Either way the two real options are
+            # continuing that run or clearing it out, so say both, with the
+            # commands: this used to be a dead end that the operator had to
+            # reverse-engineer from a path.
+            raise SystemExit(
+                f"lmloop: {self.worktree} already exists\n"
+                f"  continue it:  lmloop resume {self.run_id}\n"
+                f"  or clear it:  git worktree remove {self.worktree}"
+                f" && git branch -D {self.branch}"
+            )
 
         # `.lmloop.toml` is excluded too: it is the operator's config, it lives
         # at the repo root, and `git add -A` inside a worktree would otherwise
         # sweep it into the run's first commit.
-        gitops.exclude(self.repo, [".worktrees/", ".lmloop/", ".lmloop.toml"])
+        gitops.exclude(self.repo, self._exclusions())
         gitops.add_worktree(self.repo, self.worktree, self.branch)
         base = gitops.head_commit(self.worktree)
         self.rundir.create(self.objective, base)
+        self.rundir.claim()
+        self.publish_sessions()
+        self.linked = self.link_environment()
+        self.probe_gate(base)
         self.rundir.event(
             "run:start",
             runId=self.run_id,
@@ -96,12 +196,31 @@ class Run:
         """
         if not self.rundir.path.is_dir():
             raise SystemExit(f"lmloop: no run directory at {self.rundir.path}")
+        holder = self.rundir.holder()
+        if holder:
+            # Two loops in one worktree commit over each other and write the
+            # same status file.  A paused run still has a loop; resuming beside
+            # it is the mistake this catches.
+            raise SystemExit(
+                f"lmloop: run {self.run_id} already has a loop (pid {holder})\n"
+                f"  it may just be paused:  rm {self.rundir.pause_path}\n"
+                f"  or stop it first:       touch {self.rundir.stop_path}"
+            )
+        self.rundir.claim()
         done = max(
             (int(path.stem.split("-")[1]) for path in self.rundir.path.glob("iteration-*-prompt.md")),
             default=0,
         )
         self.objective = (self.rundir.path / "prompt.md").read_text().strip()
-        self.max_iterations = done + extra_iterations
+        self.iteration_floor = done + extra_iterations
+        self.iteration_ceiling = max(
+            self.iteration_floor, done + self.config["stop"]["max_iterations"]
+        )
+        self.max_iterations = self.iteration_floor
+        # Runs that predate this, and runs resumed after the exclude list grew.
+        gitops.exclude(self.repo, self._exclusions())
+        self.publish_sessions()
+        self.linked = self.link_environment()
         self.rundir.event(
             "run:start",
             runId=self.run_id,
@@ -118,12 +237,61 @@ class Run:
 
     # -- stop conditions --------------------------------------------------
 
+    def _budget(self, iteration: int) -> int:
+        """How many iterations this run may use, recomputed from the plan.
+
+        A fixed count is the wrong shape for a plan whose length is not known
+        when the run starts.  This run planned twelve steps, grew to thirteen,
+        then to fifteen, and spent five of its fourteen iterations on transport
+        failures and a server that was switched off -- so it stopped at 10/15
+        having never once been short of *work*, only of budget.
+
+        One iteration per step plus `retry_allowance` spare, so a step that
+        needs a second attempt does not cost the run its last step.
+
+        Two things keep this from being a number the agent writes for itself.
+        It never shrinks below the explicit figure the operator asked for, and
+        it is capped by `max_iterations`, which no amount of plan growth can
+        argue past.  Between them, growing the plan buys attempts up to a
+        ceiling, and never buys an unbounded run.
+        """
+        if not self.config["stop"].get("budget_follows_plan", False):
+            return self.iteration_floor
+        done, total = self.rundir.plan_progress()
+        if not total:
+            # No plan yet.  Deriving a budget from an empty plan would say
+            # "one", and stop the run at the planning iteration.
+            return max(self.iteration_floor, iteration + 1)
+        # Spent, plus what is left, plus slack.  A wasted iteration raises the
+        # first term without lowering the second, so the budget moves out by
+        # exactly the one that was wasted -- which is the whole request: a step
+        # that fails twice must not cost the run its last step.
+        spent, remaining = iteration - 1, max(total - done, 0)
+        wanted = spent + remaining + self.config["stop"].get("retry_allowance", 5)
+        return max(self.iteration_floor, min(wanted, self.iteration_ceiling))
+
     def _abort_reason(self, iteration: int, started: float) -> str | None:
         if self.interrupted:
             return "interrupted"
+        if self.rundir.stop_now_requested():
+            return "STOP-NOW sentinel present"
         if self.rundir.stop_requested():
             return "STOP sentinel present"
+        # Before the budget check: a run that has done everything it set out to
+        # do has finished, and reporting that as "ran out of iterations" tells
+        # the operator to add more of something it does not need.
+        #
+        # This one trusts a self-report, which nothing else here does.  It is
+        # the safe direction to trust: the failure is a run that stops early
+        # leaving its commits behind, which the operator sees as a checked plan
+        # and can continue.  The dangerous direction -- a self-report that keeps
+        # a run alive -- stays guarded by `no_diff_iterations`.
+        done, total = self.rundir.plan_progress()
+        if total and done >= total and iteration > 1:
+            return f"plan complete ({done}/{total})"
         if iteration > self.max_iterations:
+            if self.max_iterations >= self.iteration_ceiling:
+                return f"iteration ceiling reached ({self.iteration_ceiling})"
             return f"max iterations reached ({self.max_iterations})"
         hours = (time.monotonic() - started) / 3600
         if hours >= self.config["stop"]["max_wall_hours"]:
@@ -132,9 +300,95 @@ class Run:
         if self.no_diff_streak >= limit:
             # Iteration counts and self-reported summaries are not evidence of
             # work.  Git is the only honest witness, so this is the one guard
-            # that cannot be talked out of stopping.
-            return f"no git-visible change in {limit} consecutive iterations"
+            # that cannot be talked out of stopping -- plan progress deliberately
+            # does NOT reset the streak, because checking a box is a self-report
+            # and an agent that could reset this guard by doing so would be able
+            # to talk its way past the only check that never lies.
+            #
+            # But the operator needs to tell a stuck run from a clean stop, and
+            # those look identical in the streak alone: a plan can legitimately
+            # contain steps that change no files -- "verify the toggle still
+            # works" is real work with no diff.  So the plan movement is
+            # reported alongside, as context rather than as permission.
+            reason = f"no git-visible change in {limit} consecutive iterations"
+            done, total = self.rundir.plan_progress()
+            start = getattr(self, "_plan_at_start", None)
+            if total and start is not None and done > start:
+                reason += f" (plan advanced {start}/{total} -> {done}/{total}, so this may be steps that need no code)"
+            elif total:
+                reason += f" (plan still at {done}/{total})"
+            return reason
         return None
+
+    # -- the environment the worktree does not inherit ---------------------
+
+    def link_environment(self) -> list[str]:
+        """Symlink the repo's untracked environment into the worktree.
+
+        See `config.DEFAULTS["worktree"]["link"]` for why this exists and why it
+        links rather than copies.  Returns the names actually linked, which the
+        prompt then names for the agent -- knowing the interpreter is there is
+        worth as much as the interpreter being there, since an agent that cannot
+        find one goes looking instead of working.
+        """
+        linked: list[str] = []
+        for name in self.config["worktree"].get("link") or []:
+            source = self.repo / name
+            target = self.worktree / name
+            if not source.exists():
+                continue
+            if target.is_symlink() or target.exists():
+                # Already there, usually from an earlier iteration of this run.
+                # Still report it: what the prompt and the header describe is
+                # what the worktree HAS, not what this call happened to create.
+                linked.append(name)
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(source, target_is_directory=source.is_dir())
+            except OSError as error:
+                # Never fail a run over this: the agent may not need it, and a
+                # missing link is visible in the log either way.
+                self.rundir.event("worktree:link:failed", name=name, detail=str(error))
+                continue
+            linked.append(name)
+        if linked:
+            self.rundir.event("worktree:link", names=linked)
+        return linked
+
+    def interpreter(self) -> str:
+        """The project's own Python, if one was linked in.  Repo-relative."""
+        for name in self.config["worktree"].get("link") or []:
+            candidate = self.worktree / name / "bin" / "python"
+            if candidate.exists():
+                return f"{name}/bin/python"
+        return ""
+
+    # -- discoverability --------------------------------------------------
+
+    def publish_sessions(self) -> None:
+        """Point pi-aware tools at this run's transcripts.
+
+        lmloop keeps pi's session files inside the run directory so a run is one
+        self-contained artifact.  The cost is that anything looking for pi
+        sessions in the usual place finds nothing, and an lmloop run was
+        therefore invisible in paseo's import picker -- not because of how the
+        run was launched, but because paseo resolves one session directory per
+        cwd and walks only that.  Symlinking into the default location does not
+        help: its walker tests `isFile()`, which a symlink fails.
+
+        `<cwd>/.pi/settings.json` is the hook that ecosystem already reads for
+        exactly this.  One small file, transcripts stay where they are.
+
+        The matching is on the *worktree* path, since that is the cwd pi records
+        -- so the worktree is what has to be registered as a paseo workspace,
+        not the repo above it.
+        """
+        settings = self.worktree / ".pi" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            json.dumps({"sessionDir": str(self.rundir.sessions)}, indent=2) + "\n"
+        )
 
     # -- environment ------------------------------------------------------
 
@@ -152,6 +406,58 @@ class Run:
 
     # -- the gate ---------------------------------------------------------
 
+    def probe_gate(self, base: str) -> None:
+        """Run the gate once, on the untouched worktree, before any iteration.
+
+        A gate whose command cannot be found fails identically every iteration,
+        and reads as a broken project rather than a broken path -- the one-project
+        run recorded `fail (rc=127)` twelve times for a `.venv` that was simply
+        not in the worktree, and nothing surfaced it but the event log.  One run
+        against the base commit separates the two questions for good, and it is
+        cheap next to the hour that follows it.
+
+        It also answers a second question worth having: whether the gate was
+        already failing before the agent touched anything.  That failure belongs
+        to the repository, not to the run, and an iteration that inherits it
+        should not read as the iteration that caused it.
+
+        Only an unrunnable gate stops the run.  A gate that runs and fails is a
+        fact about the repository, and refusing to start on it would make lmloop
+        useless for the case it is most wanted in: a project that is broken.
+        """
+        command = self.config["gate"]["command"]
+        if not command:
+            return
+        self.run_gate(0)
+        self.gate_baseline = self.gate_result
+        self.rundir.event(
+            "gate:probe", command=command, result=self.gate_result, baseCommit=base
+        )
+        if self.gate_result.startswith("misconfigured") or self.gate_result == "fail (could not run)":
+            raise SystemExit(
+                f"lmloop: the gate cannot be run, so every iteration would record the"
+                f" same failure\n"
+                f"  gate:  {command}\n"
+                f"  cwd:   {self.worktree}\n"
+                f"  said:  {self.gate_output.strip()[-300:] or self.gate_result}\n"
+                f"\n"
+                f"  The gate runs inside the worktree, not the repo root, so a path"
+                f" that only exists\n"
+                f"  in the main checkout has to be absolute or listed under"
+                f" [worktree] link.\n"
+                f"\n"
+                f"  This worktree holds no work -- no iteration ran -- so fixing the"
+                f" gate and\n"
+                f"  re-running is enough; the next attempt takes its own name. To"
+                f" clear this one:\n"
+                f"    git worktree remove {self.worktree} && git branch -D {self.branch}"
+            )
+        if self.gate_result.startswith("fail"):
+            self.screen.log(
+                f"  gate already fails on the base commit ({self.gate_result});"
+                " that failure is the repository's, not this run's"
+            )
+
     def run_gate(self, number: int) -> None:
         command = self.config["gate"]["command"]
         if not command:
@@ -168,7 +474,17 @@ class Run:
                 env=self.env(),
             )
             output = (completed.stdout + completed.stderr).strip()
-            self.gate_result = "pass" if completed.returncode == 0 else f"fail (rc={completed.returncode})"
+            if completed.returncode == 0:
+                self.gate_result = "pass"
+            elif completed.returncode == 127:
+                # 127 is the shell saying it could not find the command, which is
+                # a broken gate, not broken code.  Kept out of the "fail" family
+                # deliberately: `blocks_commit` keys off that prefix, and a gate
+                # that cannot run must never be the reason an hour of work sits
+                # uncommitted.
+                self.gate_result = "misconfigured (rc=127: command not found)"
+            else:
+                self.gate_result = f"fail (rc={completed.returncode})"
         except subprocess.TimeoutExpired:
             output, self.gate_result = "gate timed out after 600s", "fail (timeout)"
         except OSError as error:
@@ -178,8 +494,80 @@ class Run:
 
     # -- one iteration ----------------------------------------------------
 
+    def roles(self) -> tuple[str, str, str]:
+        """Which model runs this iteration, and why.
+
+        The first iteration of a run has no plan, so its job is to read the
+        repository and decide the steps -- a whole-repository question that
+        happens once and wants the widest window available.  Every iteration
+        after it carries out one step, which is a two-file question that happens
+        constantly and wants throughput.  Those are different models on local
+        hardware, and `planner_model` is how a project says so.
+        """
+        agent = self.config["agent"]
+        planning = not self.rundir.read_plan().strip()
+        if planning and agent.get("planner_model"):
+            return (
+                agent["planner_model"],
+                agent.get("planner_thinking") or agent.get("thinking", ""),
+                "planning",
+            )
+        wider = self._wider_model() if self.last_outcome == "thrashing" else ""
+        if wider:
+            return (
+                wider,
+                agent.get("planner_thinking") or agent.get("thinking", ""),
+                "retry",
+            )
+        return agent["model"], agent.get("thinking", ""), "editing"
+
+    def _retry_step(self) -> str:
+        """The step in play, if it is one that has already thrashed.
+
+        Checked against the plan as it stands now rather than remembered: the
+        agent may have split the step itself, or checked it off, and in either
+        case the warning has done its job and should stop being shown.
+        """
+        step = self.rundir.current_step()
+        return step if step and step in self.thrashed_steps else ""
+
+    def _wider_model(self) -> str:
+        """The configured model with the most room, when the last one ran out.
+
+        Thrashing is the window losing to the codebase: the agent reads until it
+        overflows, compacts, distrusts the summary and reads again.  Retrying the
+        same step on the same model is retrying the thing that just failed for a
+        reason that has not changed, so the retry goes to whichever model this
+        project already names that measures widest -- on one-project that is
+        90112 tokens of prompt budget against 49152, which is the difference
+        between a file fitting and not.
+
+        Only models the project configured are considered.  Picking a model the
+        operator never named would be lmloop deciding what their hardware should
+        load, and a wider window it has to swap in for is not obviously a better
+        trade than a narrower one already resident.
+        """
+        agent = self.config["agent"]
+        current = agent["model"]
+        candidates = {name for name in (current, agent.get("planner_model")) if name}
+        best, best_room = "", models.declared_window(current)
+        if best_room is None:
+            return ""  # unmeasured: no basis to call anything wider
+        for name in candidates:
+            room = models.declared_window(name)
+            if room and room[0] > best_room[0]:
+                best, best_room = name, room
+        return best
+
     def iterate(self, number: int) -> None:
         base = self.rundir.base_commit
+        self.model, thinking, role = self.roles()
+        # Kept on the run so the status file can say which model is working and
+        # under what settings.  `roles` can hand back a different model than the
+        # one configured -- planning uses one, a thrash retry another -- and a
+        # dashboard that shows the configured model is showing the wrong one.
+        self.thinking, self.role = thinking, role
+        self.window, self.max_output = models.declared_window(self.model) or (0, 0)
         ok, detail = models.preflight(self.model, self.config["models"]["llama_swap_url"])
         self.rundir.event("preflight", iteration=number, ok=ok, detail=detail)
         if not ok:
@@ -195,9 +583,20 @@ class Run:
             diff=gitops.diff_stat(self.worktree, base),
             handoff=self.rundir.read_handoff(),
             handoff_path=str(self.rundir.handoff_path),
+            tree=gitops.tracked_files(self.worktree),
+            history=previous_runs(self.worktree.parent, self.run_id),
+            plan=self.rundir.read_plan(),
+            plan_path=str(self.rundir.plan_path),
+            plan_progress=self.rundir.plan_progress(),
+            linked=getattr(self, "linked", []),
+            interpreter=self.interpreter(),
             gate_command=self.config["gate"]["command"],
             gate_result=self.gate_result,
             gate_output=self.gate_output,
+            gate_baseline=self.gate_baseline,
+            defects=self.defects,
+            thrashed_step=self._retry_step(),
+            thrashed_times=self.thrashed_steps.get(self._retry_step(), 0),
         )
         self.rundir.iteration_prompt(number).write_text(prompt)
         self.rundir.event(
@@ -205,15 +604,24 @@ class Run:
             iteration=number,
             promptLength=len(prompt),
             preflight=detail,
+            model=self.model,
+            role=role,
             git={"head": gitops.head_commit(self.worktree), "commitCount": gitops.commit_count(self.worktree, base)},
         )
         self.screen.log(f"  iteration {number}: {detail}")
+        if role == "planning":
+            self.screen.log(f"    planning with {self.model}")
 
         self._loading = True
         handoff_before = self.rundir.handoff_mtime()
+        self._plan_before = self.rundir.plan_progress()
+        self._plan_steps_before = self._plan_steps()
+        self._step_before = self.rundir.current_step()
         result = pi_runner.run(
             model=self.model,
+            agent_name=self.config["agent"].get("harness", "pi"),
             tools=self.config["agent"]["tools"],
+            thinking=thinking,
             prompt=prompt,
             cwd=self.worktree,
             session_dir=self.rundir.sessions,
@@ -221,21 +629,117 @@ class Run:
             raw_path=self.rundir.iteration_jsonl(number),
             timeout_seconds=self.config["iteration"]["timeout_seconds"],
             stall_seconds=self.config["iteration"]["stall_seconds"],
+            max_compactions=self.config["iteration"]["max_compactions"],
             env=self.env(),
-            should_stop=lambda: self.interrupted or self.rundir.stop_requested(),
+            # Only the *hard* stop reaches in here.  A plain STOP means "end the
+            # run", and the boundary -- where the gate runs, the handoff is
+            # written and the tree is committed -- is where ending it is worth
+            # something; killing pi at minute 55 to save five minutes throws
+            # away the handoff that made the hour reusable.  STOP-NOW, and a
+            # SIGINT, say the iteration itself is the thing to end.
+            should_stop=lambda: self.interrupted or self.rundir.stop_now_requested(),
             on_progress=lambda snap: self._show(number, snap),
         )
 
+        # Which step defeated the window, and how often.  Recorded from the step
+        # that was in play when the iteration started, not the one in play now:
+        # a thrashing iteration writes nothing, so the plan has not moved, but
+        # reading it after the fact would still be reading a file the agent was
+        # free to edit mid-iteration.
+        self.last_outcome = result.outcome
+        if result.outcome == "thrashing" and self._step_before:
+            self.thrashed_steps[self._step_before] = (
+                self.thrashed_steps.get(self._step_before, 0) + 1
+            )
+            self.rundir.event(
+                "step:thrashed",
+                iteration=number,
+                step=self._step_before[:160],
+                times=self.thrashed_steps[self._step_before],
+            )
+
         self.run_gate(number)
+        # Structural checks run whatever the project configured, because the
+        # damage an edit does is not project-specific -- see checks.py.
+        # The plan is checked too, separately: it lives under `.lmloop/`, which
+        # git excludes, so `checks.run` -- which works from the git diff -- can
+        # never see the file that decides what every future iteration does.
+        self.defects = checks.run(self.worktree, base) + self.rundir.plan_problems()
+        if self.defects:
+            self.rundir.event("checks:failed", iteration=number, problems=self.defects[:20])
 
         handoff_written = self.rundir.handoff_mtime() > handoff_before
         if not handoff_written:
-            self.rundir.write_synthetic_handoff(number, gitops.diff_shortstat(self.worktree, base))
-        summary = self.rundir.read_handoff().splitlines()[0].strip() if self.rundir.read_handoff() else ""
-        summary = summary or f"iteration {number} ({result.outcome})"
+            # An iteration that overflowed its context did write a handoff -- into
+            # pi's event stream rather than to disk.  Prefer it over a git diff
+            # that, for the iterations this happens to, is empty.
+            self.rundir.write_synthetic_handoff(
+                number,
+                gitops.diff_shortstat(self.worktree, base),
+                carried=self.rundir.last_compaction_summary(
+                number, self.config["agent"].get("harness", "pi")
+            ),
+            )
+        summary = self._subject(number, result, handoff_written)
 
         commit = self.commit(number, summary, result, handoff_written, base)
         self.record(number, summary, result, handoff_written, commit, base)
+        self.last_detail = result.detail or ""
+        self.last_commit = commit
+
+    def _subject(self, number: int, result, handoff_written: bool) -> str:
+        """One line describing what this iteration did, for the commit subject.
+
+        Line 1 of the handoff is the right answer when the agent wrote one.  It
+        is the wrong answer when it did not: the loop then synthesises a handoff
+        whose first line says "iteration N ended without writing a handoff", and
+        that became the subject of four of nine commits on one-project --
+        iterations that wrote real, working test files and described none of it
+        in `git log`.  Overflowing the context is exactly when the agent fails to
+        write a handoff, so the commits most in need of a subject were the ones
+        guaranteed not to get one.
+
+        So a synthesised handoff is not trusted for the subject.  Fall back, in
+        order, to the plan step that got checked off this iteration, then to the
+        files that changed, then to the outcome.  All three are observations, not
+        self-reports.
+        """
+        if handoff_written:
+            first = self.rundir.read_handoff().splitlines()
+            if first and first[0].strip():
+                return first[0].strip()
+
+        step = self._completed_step()
+        if step:
+            return step
+
+        changed = self._relative_files(result.files_touched)
+        if changed:
+            listed = ", ".join(changed[:3])
+            more = f" (+{len(changed) - 3} more)" if len(changed) > 3 else ""
+            return f"{listed}{more}"
+
+        return f"iteration {number} ({result.outcome})"
+
+    def _completed_step(self) -> str:
+        """The plan step checked off during this iteration, if exactly one was.
+
+        Ambiguity is not worth guessing at: if the agent checked off two steps,
+        neither is "the" subject, and the file list describes the commit better.
+        """
+        before = getattr(self, "_plan_steps_before", set())
+        after = self._plan_steps()
+        gained = [text for text in after - before]
+        return gained[0][:68] if len(gained) == 1 else ""
+
+    def _plan_steps(self) -> set[str]:
+        """The text of every checked-off plan step, right now."""
+        done = set()
+        for line in self.rundir.read_plan().splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("- [", "* [")) and stripped[3:4].lower() == "x":
+                done.add(stripped[5:].strip().strip("`"))
+        return done
 
     def _show(self, number: int, snap: dict) -> None:
         """One line that keeps moving, so an attached terminal never looks dead."""
@@ -245,13 +749,24 @@ class Run:
             self._loading = False
             self.screen.log(f"    model ready in {display.elapsed(snap['elapsed'])}")
 
-        if snap["loading"]:
-            detail = "loading model"
-        elif snap["quiet"] > 60:
-            detail = f"quiet {display.elapsed(snap['quiet'])}"
-        else:
-            detail = snap["last_tool"] or "thinking"
+        paint = self.screen.paint
+        # The spinner advances only while pi is emitting.  A model that has gone
+        # quiet freezes it, so "moving" means the agent is alive rather than
+        # merely that the loop redrew.
+        alive = snap["loading"] or snap["quiet"] <= 30
+        spinner = self.screen.spin(advance=alive)
 
+        if snap["loading"]:
+            detail = paint.yellow("loading model")
+        elif snap["quiet"] > 60:
+            detail = paint.yellow(f"quiet {display.elapsed(snap['quiet'])}")
+        elif snap["last_tool"]:
+            target = snap.get("last_target", "")
+            detail = paint.cyan(snap["last_tool"] + (f" {target}" if target else ""))
+        else:
+            detail = paint.dim("thinking")
+
+        plan_done, plan_total = self.rundir.plan_progress()
         flags = "".join(
             flag
             for flag, on in (("PAUSE", self.rundir.paused()), ("STOP", self.rundir.stop_requested()))
@@ -261,24 +776,48 @@ class Run:
         # On a phone the useful answer is "which iteration, doing what, and is it
         # stopping" -- counters and even elapsed time go before those do.
         self.screen.status([
-            (6, f"  {number}/{self.max_iterations}"),
+            # The spinner rides with the iteration counter rather than as its own
+            # segment: it must never be the thing `compose` drops, because on the
+            # narrowest terminal it is the only proof the run is alive.
+            (6, f"{paint.cyan(spinner)} {paint.bold(f'{number}/{self.max_iterations}')}"),
             (4, display.elapsed(snap["elapsed"])),
             (5, detail),
-            (2, f"{snap['tool_calls']} tools"),
-            (1, f"{snap['output_tokens']} out"),
-            (7, f"[{flags}]" if flags else ""),
+            # Only shown once it has happened, and then it outranks the counters:
+            # a climbing overflow count against zero writes is the difference
+            # between an iteration that is working and one that is going in
+            # circles, and it is not visible anywhere else while the run is live.
+            (3, paint.red(f"{snap['compactions']} overflow") if snap["compactions"] else ""),
+            # What a long run actually looks like from outside: not tool calls,
+            # but how much of the plan is behind it.
+            (4, paint.green(f"{plan_done}/{plan_total} steps") if plan_total else ""),
+            (2, paint.dim(f"{snap['tool_calls']} tools")),
+            (2, paint.dim(f"{snap['tokens_per_second']:.1f} tok/s") if snap["tokens_per_second"] else ""),
+            (1, paint.dim(f"{snap['output_tokens']} out")),
+            (7, paint.red(f"[{flags}]") if flags else ""),
         ])
         self.rundir.write_status({
             "run_id": self.run_id,
             "iteration": number,
             "max_iterations": self.max_iterations,
             "model": self.model,
+            "thinking": self.thinking,
+            "role": self.role,
+            # Zero for a model nobody has measured; the display says "unmeasured"
+            # rather than inventing a denominator.
+            "context_window": self.window,
+            "max_output_tokens": self.max_output,
             "phase": "loading" if snap["loading"] else "working",
             "elapsed_seconds": round(snap["elapsed"]),
             "last_tool": snap["last_tool"],
+            "last_target": snap.get("last_target", ""),
             "tool_calls": snap["tool_calls"],
             "writes": snap["writes"],
+            "compactions": snap["compactions"],
+            "plan_done": plan_done,
+            "plan_total": plan_total,
             "output_tokens": snap["output_tokens"],
+            "input_tokens": snap["input_tokens"],
+            "tokens_per_second": round(snap["tokens_per_second"], 2),
             "quiet_seconds": round(snap["quiet"]),
             "paused": self.rundir.paused(),
             "stopping": self.rundir.stop_requested(),
@@ -348,7 +887,27 @@ class Run:
         learnings = []
         if self.gate_result:
             learnings.append(f"gate `{self.config['gate']['command']}` -> {self.gate_result}")
-        if not handoff_written:
+        done, total = self.rundir.plan_progress()
+        if total:
+            gained = done - getattr(self, '_plan_before', (0, 0))[0]
+            learnings.append(
+                f"plan: {done}/{total} steps done"
+                + (f" (+{gained} this iteration)" if gained > 0 else " (no step completed)")
+            )
+        elif self.rundir.read_plan():
+            learnings.append("plan exists but has no checkboxes")
+        else:
+            learnings.append("no plan written; the objective was never broken down")
+        for defect in self.defects[:6]:
+            learnings.append(f"structural check: {defect}")
+        if result.compactions:
+            learnings.append(
+                f"context overflowed {result.compactions}x; every overflow costs the"
+                " agent everything it had read"
+            )
+        if not handoff_written and result.compactions:
+            learnings.append("agent wrote no handoff; the loop carried its last context summary forward")
+        elif not handoff_written:
             learnings.append("agent wrote no handoff; the loop synthesised one from git")
         if result.detail and result.outcome != "ok":
             learnings.append(result.detail)
@@ -368,7 +927,10 @@ class Run:
             summary=summary,
             toolCalls=result.tool_calls,
             writes=result.writes,
+            compactions=result.compactions,
             handoffWritten=handoff_written,
+            planDone=done,
+            planTotal=total,
             commit=commit,
             gate=self.gate_result,
             totalInputTokens=result.input_tokens,
@@ -384,9 +946,19 @@ class Run:
             verdict = f"committed {commit[:8]}: {changed}"
         else:
             verdict = "nothing to commit"
+        # The overflow count earns its place on this line whenever it is not
+        # zero: it is the difference between an iteration that ran out of time
+        # and one that ran out of room, and those want opposite responses.
+        paint = self.screen.paint
+        overflows = paint.red(f" | {result.compactions} overflows") if result.compactions else ""
+        if self.defects:
+            self.screen.log(paint.red(f"    {len(self.defects)} structural problem(s) in changed files:"))
+            for defect in self.defects[:4]:
+                self.screen.log(f"      {defect}")
+        outcome = (paint.green if result.outcome == "ok" else paint.yellow)(result.outcome)
         self.screen.log(
-            f"    {result.outcome} in {display.elapsed(result.elapsed_seconds)}"
-            f" | {result.tool_calls} tool calls | {verdict}"
+            f"    {outcome} in {display.elapsed(result.elapsed_seconds)}"
+            f" | {result.tool_calls} tool calls{overflows} | {verdict}"
         )
 
     # -- driver -----------------------------------------------------------
@@ -403,9 +975,16 @@ class Run:
 
         iteration = from_iteration
         reason = None
+        self._plan_at_start = self.rundir.plan_progress()[0]
         while True:
             iteration += 1
             display.wait_while_paused(self.rundir, self.screen, lambda: self.interrupted)
+            # Recomputed here rather than fixed at the start: the plan is the
+            # agent's, it changes while the run is going, and the budget is
+            # supposed to follow it.  Everything downstream -- the status line,
+            # status.json, the prompt -- reads `max_iterations`, so setting it
+            # here is enough to make all of them agree.
+            self.max_iterations = self._budget(iteration)
             reason = self._abort_reason(iteration, started)
             if reason:
                 break
@@ -416,6 +995,16 @@ class Run:
                     reason = f"preflight failed: {error}"
                     break
                 iteration -= 1
+                continue
+            transport = self._transport_failure()
+            if transport:
+                # The server, not the work.  Same backoff as a failed preflight,
+                # and the iteration number is reused, so a restart of llama-swap
+                # does not quietly cost one of twelve iterations.
+                if not self._backoff(iteration, transport):
+                    reason = f"model server unreachable: {transport}"
+                    break
+                iteration -= 1
 
         self.rundir.event(
             "run:complete",
@@ -424,15 +1013,145 @@ class Run:
             commitCount=gitops.commit_count(self.worktree, self.rundir.base_commit),
             worktreePath=str(self.worktree),
         )
+        self.rundir.release()
         self.screen.close()
         self._summarise(reason, started)
+        self._sweep()
+        self._announce(reason, started, iteration - 1)
         return 0
+
+    def _announce(self, reason: str | None, started: float, iterations: int) -> None:
+        """Push one notification saying the run has stopped.
+
+        Last, after the sweep, so the figures quoted are the ones that survive.
+        Like the sweep it can never fail a run: a dead server, a typo in a URL
+        and a network outage all end the same way, with an event in the log.
+        """
+        settings = self.config.get("notify", {})
+        if not settings.get("url"):
+            return
+
+        failures: dict[str, int] = {}
+        for event in self.rundir.read_events():
+            if event.get("event") == "iteration:end":
+                outcome = event.get("outcome", "")
+                if outcome and outcome != "ok":
+                    failures[outcome] = failures.get(outcome, 0) + 1
+
+        try:
+            import notify
+
+            problem = notify.send(settings, {
+                "repo": self.repo.name,
+                "project": self.repo.name,
+                "run_id": self.run_id,
+                "objective": self.objective,
+                "iterations": iterations,
+                "commits": gitops.commit_count(self.worktree, self.rundir.base_commit),
+                "hours": (time.monotonic() - started) / 3600,
+                "plan": self.rundir.plan_progress(),
+                "reason": reason or "complete",
+                "failures": failures,
+                "defects": self.defects,
+            })
+        except Exception as error:  # noqa: BLE001 - never fails a run
+            problem = str(error)
+
+        if problem:
+            self.rundir.event("notify:failed", detail=problem)
+            self.screen.log(f"  could not notify: {problem}")
+        else:
+            self.rundir.event("notify", topic=settings.get("topic", ""))
+
+    def _sweep(self) -> None:
+        """Reclaim the disk this run cost, now that it has stopped.
+
+        At the end rather than on a timer: this is the moment the space appears
+        and the moment somebody is watching, and one honest line about what was
+        freed is easier to trust than a cron job quietly rewriting run
+        directories overnight.  Nothing is lost -- streams are compressed and
+        stay readable; only regenerable bytecode is removed.
+        """
+        settings = self.config.get("prune", {})
+        if not settings.get("after_run", True):
+            return
+        try:
+            import prune
+
+            result = prune.prune(
+                [self.repo],
+                older_than_days=settings.get("older_than_days", 0.0),
+                finished={self.run_id},
+            )
+        except Exception as error:  # noqa: BLE001 - housekeeping never fails a run
+            self.rundir.event("prune:failed", detail=str(error))
+            return
+        freed = result["saved"] + result["bytecode"]
+        if freed:
+            self.rundir.event(
+                "prune", files=len(result["files"]), saved=result["saved"],
+                bytecode=result["bytecode"],
+            )
+            self.screen.log(f"  reclaimed {freed / 1e6:.0f} MB "
+                            f"({len(result['files'])} streams compressed, bytecode dropped)")
 
     def _on_interrupt(self, *_args) -> None:
         if self.interrupted:
             raise KeyboardInterrupt
         self.interrupted = True
-        self.screen.log("  stop requested; finishing the current iteration")
+        # A signal is the operator asking for the terminal back, not for another
+        # forty minutes of generation, so it cuts the iteration short rather than
+        # waiting it out -- and says so, because the previous wording promised the
+        # opposite of what the code did.  Nothing is lost either way: whatever the
+        # iteration wrote is gated, checked and committed on the way out.
+        self.screen.log("  stop requested; ending this iteration now and committing what it has")
+
+    # What the agent says when the model server went away underneath it, rather
+    # than when the model did something wrong.  pi retries these itself a few
+    # times; these are the ones that outlast its retries, which means the server
+    # was gone for minutes -- a restart, a reload, a swap -- not a blip.
+    TRANSPORT = (
+        "stream ended without finish_reason",
+        "connection refused",
+        "connection reset",
+        "connection error",
+        "remote end closed",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        # What pi actually reports when llama-swap stops answering mid-stream.
+        # Observed: the server was shut down 23 minutes into an iteration and
+        # the agent surfaced "Request timed out." -- which matched none of the
+        # phrases above, so the loop recorded a genuine agent-error and charged
+        # the run an iteration for a machine that was switched off.
+        #
+        # Safe as a bare phrase because of what it is tested against: lmloop's
+        # own clocks produce the outcomes `timeout` and `stalled`, never
+        # `agent-error`, so a timeout reported *inside* an agent-error is the
+        # agent timing out on the model -- which is the transport, by
+        # definition.
+        "timed out",
+        "no route to host",
+        "name or service not known",
+    )
+
+    def _transport_failure(self) -> str:
+        """The detail, if this iteration died of the server rather than itself.
+
+        An iteration that ends this way has produced nothing and learned
+        nothing, and charging it against `max_iterations` spends one of a very
+        small number on an event that had nothing to do with the work.  Observed
+        here: fifty minutes of generation ended by a llama-server being swapped
+        for a faster build mid-stream.
+
+        Only when it left no commit.  If the agent got far enough to change
+        files, the iteration is worth keeping whatever killed it, and redoing it
+        would mean redoing work that is already in git.
+        """
+        if self.last_outcome != "agent-error" or self.last_commit:
+            return ""
+        detail = (self.last_detail or "").lower()
+        return self.last_detail if any(t in detail for t in self.TRANSPORT) else ""
 
     def _backoff(self, iteration: int, detail: str) -> bool:
         """1m, 2m, 4m, then give up.  Only for a llama-swap that is not there."""
@@ -466,8 +1185,16 @@ class Run:
         self.screen.log(f"  {gitops.commit_count(self.worktree, base)} commits on {self.branch}"
                         f" in {(time.monotonic() - started) / 3600:.1f}h")
         self.screen.log()
+        # The notes path relative to the *worktree*, not the repo: relative to the
+        # repo it repeats the run id twice and reaches 130 characters, which is
+        # four wrapped lines on a phone for one file name.  The worktree it hangs
+        # off is printed directly above it.
+        try:
+            notes = self.rundir.notes_path.relative_to(self.worktree)
+        except ValueError:
+            notes = self.rundir.notes_path
         self.screen.log(f"  worktree  {relative(self.worktree)}")
-        self.screen.log(f"  notes     {relative(self.rundir.notes_path)}")
+        self.screen.log(f"  notes     {notes}  (inside it)")
         self.screen.log()
         self.screen.log(f"  from {self.repo}:")
         self.screen.log(f"    git log --oneline {base[:8]}..{self.branch}")

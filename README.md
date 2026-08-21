@@ -11,6 +11,18 @@ It drives [`pi`](https://github.com/earendil-works) and nothing else. Tools,
 skills, models and prompts belong to the agent; the loop's only jobs are
 isolation, iteration, and never throwing work away.
 
+## Documentation
+
+| Document | For |
+|---|---|
+| [docs/design.md](docs/design.md) | the invariants and why each one exists |
+| [docs/failure-modes.md](docs/failure-modes.md) | how runs fail, with the evidence for each |
+| [docs/models.md](docs/models.md) | measured local-model behaviour and window budgets |
+| [docs/architecture.md](docs/architecture.md) | what each module does |
+| [docs/operations.md](docs/operations.md) | running, steering, reviewing, deploying |
+
+`AGENTS.md` is the short version for an agent working on this repo.
+
 ## Why this exists
 
 Existing loops are tuned for fast, reliable cloud agents, where a discarded
@@ -23,14 +35,18 @@ So `lmloop` makes three commitments:
 
 **Nothing is ever discarded.** There is no `git reset --hard` in this codebase.
 Every iteration that leaves a diff produces a commit, labelled with what
-happened — `ok`, `timeout`, `stalled`, `interrupted`, `agent-error`. Failed work
+happened — `ok`, `timeout`, `stalled`, `thrashing`, `no-action`, `interrupted`,
+`agent-error`. Failed work
 becomes a labelled commit you can revert on your own schedule, not a hole in the
 history.
 
 **The handoff is a file, not a parsed message.** The agent writes `handoff.md`
 with its own write tool. There is no envelope to fail to parse. If it never
 writes one, the loop synthesises one from `git diff` and marks the iteration
-degraded — never discarded.
+degraded — never discarded. If the iteration overflowed its context, the loop
+harvests the summary the agent wrote for itself on the way out and carries that
+forward instead: an agent that ran out of room did write a handoff, just into
+pi's event stream rather than to disk.
 
 **Git is the only witness.** Not iteration counts, not the agent's summary, not
 tool-call counts. An agent once reported twelve successful iterations across 479
@@ -61,14 +77,20 @@ lmloop models                              # what is loaded, measured, selectabl
 lmloop models --detect                     # measure the loaded model's real context
 ```
 
-Stop a run without killing it mid-write:
+Stop a run, at the boundary or right now:
 
 ```bash
-touch <worktree>/.lmloop/runs/<run-id>/STOP
+touch <worktree>/.lmloop/runs/<run-id>/STOP      # after this iteration
+touch <worktree>/.lmloop/runs/<run-id>/STOP-NOW  # cut this iteration short
 ```
 
-The run finishes the current iteration, commits it, and exits. `SIGINT` does the
-same thing; a second `SIGINT` is immediate.
+`STOP` lets the current iteration finish, so the boundary can do its work — gate,
+checks, handoff, commit — and only then does the run exit. That is worth waiting
+for: the handoff is what makes the hour reusable. `STOP-NOW` is for an iteration
+that is visibly wasting its hour; pi is killed where it stands, the partial tree
+is still committed, and the iteration is recorded as `interrupted`. Neither
+discards anything. `SIGINT` means `STOP-NOW`, because that is what asking for
+your terminal back means; a second `SIGINT` exits without committing.
 
 ## What a run leaves behind
 
@@ -96,6 +118,106 @@ git log --oneline <base>..lmloop/<run-id>
 git merge lmloop/<run-id>
 ```
 
+## The dashboard
+
+```bash
+lmloop web            # http://127.0.0.1:8082
+```
+
+Start a run, watch it, pause it, stop it, and continue a finished one, across
+every project under `LMLOOP_WEB_ROOTS` — without an ssh session or a tmux
+attach. It is phone-first, installable to a home screen, and shows plan progress
+rather than iteration counts, because "4 of 10 steps" is the honest measure of a
+long run and "iteration 7 of 20" is not.
+
+Two properties make it small. **Runs are controlled by files**, so pausing is
+`touch PAUSE` and the dashboard never owns a run's lifecycle: it can crash, be
+restarted, or be replaced mid-run and every control still works. And **the
+present is a file too** — `status.json` — so it reads state instead of replaying
+an append-only log to its end.
+
+A run that dies is reported as `stale`, never as running. A crashed loop leaves
+a `status.json` that still says `working`, so liveness comes from the age of that
+file and from whether the log records a completion.
+
+A live run also shows the model working it: which one (not always the configured
+one -- planning and thrash retries escalate), at what thinking level, how fast it
+is generating, and how much of its context window the current prompt is using.
+The last of those is the one that predicts trouble: past about three quarters of
+the window, the next tool result is what triggers a compaction, and a compaction
+is where a slow run starts thrashing.
+
+Without OIDC configured the server binds loopback only, and says so rather than
+quietly listening on every interface. A dashboard with a launch button does not
+belong on a network unauthenticated. To expose it, set the `LMLOOP_WEB_OIDC_*`
+variables in `~/.config/lmloop/web.env` (see `web/deploy/web.env.example`) and
+install its only two dependencies for the interpreter that runs it:
+
+```bash
+/usr/bin/python3 -m pip install "PyJWT[crypto]>=2.7,<3" "requests>=2.31,<3"
+```
+
+lmloop itself stays stdlib-only: those are imported in `web/auth.py` and nowhere
+else, and a missing one disables authentication rather than breaking the loop.
+
+`web/deploy/lmloop-web.service` runs it under systemd.
+
+## Checks
+
+Every iteration, whatever the project configured, the files git says changed are
+checked for damage an *edit* does rather than for whether the program is
+correct: a file that stops parsing (Python, JSON, TOML, CSS braces, JS), a
+conflict marker, or a block of lines pasted twice. When something fails, repair
+becomes the next iteration's job and the plan waits.
+
+It is deliberately not a linter — style is the agent's business, and a noisy
+check is one that gets ignored. Anything encoding what a *particular* repository
+considers correct belongs in that repository's own `[gate] command`.
+
+## Notifications
+
+A run is unattended for hours by design, so the moment it ends is the moment
+nobody is watching.
+
+```toml
+[notify]
+url           = "https://ntfy.example.com"
+topic         = "lmloop"
+dashboard_url = "https://lmloop.example.com"   # taps through to the run
+```
+
+One push when the run stops, never per iteration — a notification every twenty
+minutes for ten hours is a channel you learn to ignore. The title carries the
+verdict, because that is what a lock screen shows: *"one-project: 9 commits"*,
+or *"one-project: nothing committed"* at high priority, which is the case worth
+interrupting someone for.
+
+Empty `url` disables it, and it can never fail a run.
+
+## Disk
+
+A run costs about 86 MB, almost all of it pi's raw event stream, and a bytecode
+cache that reached 105 MB on one repository. Left alone this fills a disk.
+
+```bash
+lmloop prune --dry-run          # what it would do
+lmloop prune                    # this repo's finished runs
+lmloop prune --roots ~/git --older-than 7
+```
+
+It **deletes no record**. Event streams are gzipped, which saves about 97% on a
+file that is 88% single-token deltas, and everything reads either form. The only
+thing removed is the bytecode cache, which is derived from source that is still
+present and records nothing about what the agent did. A run still writing is
+skipped.
+
+On one-project: 313 MB → 8.6 MB, with every stream still readable.
+
+This also runs automatically when a run ends — `[prune] after_run`, on by
+default. A run is exactly when the space appears and when someone is watching,
+which is easier to trust than a cron job quietly rewriting run directories at
+3am. It prints one line saying what it freed.
+
 ## Configuration
 
 `~/.config/lmloop/config.toml`, overridden by `.lmloop.toml` in the repo. See
@@ -105,11 +227,60 @@ git merge lmloop/<run-id>
   protection is `stall_seconds`, which fires when the agent stops emitting
   anything. The stall clock does not start until the first event arrives,
   because llama-swap may legitimately spend minutes swapping models first.
-- `[gate] command` — run after every iteration. `blocks_commit = false` records
-  the result in the commit message and the next iteration's prompt but commits
-  regardless, which is usually what you want.
+- `[iteration] max_compactions` — give up on an iteration that has overflowed
+  its context this many times without writing anything. An agent whose window is
+  smaller than the codebase can spend the whole iteration reading a dozen files,
+  overflowing, and reading them again: observed on one-project at six overflows
+  in 69 minutes across 81 tool calls, none of them a write. Cutting it off is
+  free, because whatever the iteration left behind is committed either way.
+- `[worktree] link` — untracked paths symlinked from the repo into each new
+  worktree, so the agent gets the environment and not just the source.
+  `git worktree add` materialises tracked files only, which leaves a Python
+  project without its virtualenv and a Node project without `node_modules`.
+  Watched live: an agent spent an hour and 24 tool calls enumerating every
+  `python3` on the box looking for one that could import Flask, while the
+  project's own `.venv` sat unreachable in the repo above it. The linked names
+  are added to the git exclude list, and the prompt names the interpreter — an
+  agent that does not know the environment is there goes looking for it.
+  `.env` is deliberately not a default: add it per project if the code needs
+  it, rather than having the loop hand a model your secrets uninvited.
+- `[agent] planner_model` — a different model for the iteration that writes the
+  plan. Deciding the steps is a whole-repository question that happens once and
+  wants the widest window; carrying one out happens every iteration and wants
+  throughput. Empty uses `model` for both.
+- `[gate] command` — run after every iteration, **with the worktree as its
+  working directory**, so a path that only exists in the main checkout has to be
+  absolute or listed under `[worktree] link`. It is also run once before the
+  first iteration: a gate that cannot be executed at all (`rc=127`) stops the run
+  there rather than recording the same failure every hour, and a gate that
+  already fails on the base commit is reported as the repository's failure, in
+  the log and in the agent's prompt. `blocks_commit = false` records the result
+  in the commit message and the next iteration's prompt but commits regardless,
+  which is usually what you want; a gate that could not be run never blocks a
+  commit, whatever that setting says.
+- `[stop] budget_follows_plan` — the iteration budget is recomputed from the
+  plan every iteration: what has been spent, plus one per remaining step, plus
+  `retry_allowance` spare. A fixed count is the wrong shape for a plan whose
+  length is not known when the run starts. One run here planned twelve steps,
+  grew to thirteen, then fifteen, spent five of its fourteen iterations on
+  transport failures and a server that had been switched off, and stopped at
+  10/15 — never once short of work, only of budget. With the budget following
+  the plan, a step that fails twice costs the run two attempts rather than its
+  last step.
+- `[stop] max_iterations` — the **ceiling**, not the target. Growing the plan
+  buys attempts up to this number and never past it, so an agent cannot write
+  itself an unbounded run. An explicit `--max-iterations` raises the *floor*
+  instead: the request behind it is "at least this much".
+- A run also stops when every plan step is checked (`plan complete (15/15)`).
+  That is the one stop condition here that trusts a self-report, and it is the
+  safe direction to trust — the failure is a run that stops early leaving its
+  commits behind, which shows as a checked plan and can be continued. The
+  dangerous direction, a self-report that keeps a run *alive*, stays guarded by
+  the next line.
 - `[stop] no_diff_iterations` — stop after N iterations that git says changed
-  nothing. This is the guard that catches an agent confidently going nowhere.
+  nothing. This is the guard that catches an agent confidently going nowhere,
+  and the one the budget cannot outrun: plan progress deliberately does not
+  reset the streak.
 
 ## Notes on local models
 
@@ -133,7 +304,7 @@ A run is a foreground process with a live status line, not a background job:
 
 ```
   iteration 2: local-fast already loaded
-  iter 2/3  41m18s  17 tools  12043 out  read
+  iter 2/3  41m18s  17 tools  3.5 tok/s  12043 out  read
 ```
 
 The bottom line keeps moving so an attached terminal never looks dead. It shows
@@ -149,8 +320,8 @@ log. Segments are dropped by priority as the terminal narrows, so a phone
 terminal degrades to what matters:
 
 ```
- 60 |  2/3  41m18s  read  17 tools  12043 out|
- 44 |  2/3  41m18s  read  17 tools  [STOP]|
+ 60 |  2/3  41m18s  read  17 tools  3.5 tok/s  12043 out|
+ 44 |  2/3  41m18s  read  3.5 tok/s  [STOP]|
  32 |  2/3  41m18s  read  [STOP]|
  24 |  2/3  read  [STOP]|
 ```
@@ -172,10 +343,16 @@ another script, and survives the terminal going away:
 | `p` | `touch <run-dir>/PAUSE` | hold after the current iteration |
 | `r` | `rm <run-dir>/PAUSE` | carry on |
 | `q` | `touch <run-dir>/STOP` | finish the current iteration, commit, exit |
+| `Q` | `touch <run-dir>/STOP-NOW` | cut the current iteration short, commit, exit |
 
 Pausing mid-iteration is deliberately not offered: the model is mid-generation
 and there is nothing honest to freeze. The pause lands at the iteration
 boundary, where the tree is committed and the handoff is written.
+
+Stopping mid-iteration *is* offered, because the two stops answer different
+questions. `q` is "I am done with this run" and waits for the boundary, where an
+hour of work becomes a commit and a handoff. `Q` is "this iteration is wasting
+its hour" and does not wait. The keys are separate so that neither is a surprise.
 
 ### From Paseo
 

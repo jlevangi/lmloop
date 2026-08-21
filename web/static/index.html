@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c0c0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="lmloop">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/static/favicon.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<title>lmloop</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <button type="button" class="back" id="back" hidden aria-label="Back">←</button>
+  <span class="moon" id="moon" aria-hidden="true"></span>
+  <div class="bar-text">
+    <h1 id="bar-title">lmloop</h1>
+    <p id="bar-sub">connecting</p>
+  </div>
+  <button type="button" id="new-run" class="act">New run</button>
+</header>
+
+<main>
+  <!-- List ---------------------------------------------------------------->
+  <section id="view-list">
+    <nav class="filters" id="filters" aria-label="Filter by project"></nav>
+    <div id="active-group" hidden>
+      <h2>Active <span class="tally" id="active-count">0</span></h2>
+      <div id="active" class="rows"></div>
+    </div>
+    <div id="finished-group" hidden>
+      <h2>History <span class="tally" id="finished-count">0</span></h2>
+      <div id="finished" class="rows"></div>
+    </div>
+    <p id="empty" class="empty" hidden>
+      Nothing here yet.<br>
+      Start one above, or run <code>lmloop run "…"</code> in a repo.
+    </p>
+  </section>
+
+  <!-- Run ----------------------------------------------------------------->
+  <section id="view-run" hidden></section>
+
+  <!-- New ----------------------------------------------------------------->
+  <section id="view-new" hidden>
+    <form id="launch-form">
+      <label for="project">Project</label>
+      <select id="project" required></select>
+
+      <div id="new-project-fields" hidden>
+        <label for="project-name">New project name</label>
+        <input id="project-name" placeholder="my-idea" autocomplete="off"
+               pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" maxlength="64">
+        <p class="note">A fresh git repository, created and committed, then worked on from nothing.</p>
+      </div>
+
+      <label for="objective">Objective</label>
+      <textarea id="objective" rows="7" required
+        placeholder="Something big.&#10;&#10;The agent writes a plan first, then works one step per iteration. You do not need to break it down."></textarea>
+
+      <div class="grid3">
+        <div>
+          <label for="model">Model</label>
+          <select id="model"></select>
+        </div>
+        <div>
+          <label for="thinking">Thinking</label>
+          <select id="thinking">
+            <option value="">default</option>
+            <option value="off">off</option>
+            <option value="minimal">minimal</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+        <div>
+          <label for="iterations">Iterations</label>
+          <input type="number" id="iterations" min="1" max="200" value="20">
+        </div>
+      </div>
+
+      <p id="launch-error" class="alert" hidden></p>
+      <button type="submit" class="act block" id="launch-submit">Start run</button>
+    </form>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+<script>
+  if ("serviceWorker" in navigator) {
+    addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+  }
+</script>
+</body>
+</html>

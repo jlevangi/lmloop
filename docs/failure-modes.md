@@ -121,14 +121,29 @@ iteration on.
 
 A run whose iteration ends in `agent-error`, left no commit, and whose detail
 names a transport failure — `Stream ended without finish_reason`, a refused or
-reset connection, a 502/503/504 — is retried on the same backoff as a failed
-preflight (1m, 2m, 4m, then give up), reusing the iteration number. pi retries
-these itself first, so one that reaches lmloop means the server was gone for
-minutes: a restart, a reload, a model swap.
+reset connection, a timeout, an unresolvable host, a 502/503/504 — is retried on
+the same backoff as a failed preflight (1m, 2m, 4m, then give up), reusing the
+iteration number. pi retries these itself first, so one that reaches lmloop
+means the server was gone for minutes: a restart, a reload, a model swap.
 
 Observed here: fifty minutes of generation ended by a llama-server being
 swapped for a faster build mid-stream. That cost one of twelve iterations for a
 reason that had nothing to do with the work.
+
+Then observed again, and the list did not cover it. llama-swap was shut down
+deliberately, 23 minutes into an iteration, and what pi reported was
+`Request timed out.` — which matched none of the phrases above. The loop
+recorded a genuine `agent-error` and charged the run an iteration for a machine
+that had been switched off. The lesson is not "add one more string": it is that
+this list is a guess about another program's wording, and every phrase in it was
+added after watching it happen. Expect to add more.
+
+Matching a bare `timed out` is safe despite how broad it reads, and for a
+structural reason rather than a lucky one. lmloop's own clocks never produce
+`agent-error` — an iteration that outruns `timeout_seconds` is `timeout`, and
+one that goes quiet is `stalled`. So a timeout reported from inside an
+`agent-error` is the agent timing out on the model, which is the transport by
+definition.
 
 The commit check is the guard. If the agent got far enough to change files, the
 iteration is worth keeping whatever killed it, and redoing it would mean redoing

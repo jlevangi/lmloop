@@ -1055,6 +1055,20 @@ class Run:
         "bad gateway",
         "service unavailable",
         "gateway timeout",
+        # What pi actually reports when llama-swap stops answering mid-stream.
+        # Observed: the server was shut down 23 minutes into an iteration and
+        # the agent surfaced "Request timed out." -- which matched none of the
+        # phrases above, so the loop recorded a genuine agent-error and charged
+        # the run an iteration for a machine that was switched off.
+        #
+        # Safe as a bare phrase because of what it is tested against: lmloop's
+        # own clocks produce the outcomes `timeout` and `stalled`, never
+        # `agent-error`, so a timeout reported *inside* an agent-error is the
+        # agent timing out on the model -- which is the transport, by
+        # definition.
+        "timed out",
+        "no route to host",
+        "name or service not known",
     )
 
     def _transport_failure(self) -> str:

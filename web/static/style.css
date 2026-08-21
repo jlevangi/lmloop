@@ -231,7 +231,12 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 /* The head holds everything that moves and is never re-created; the body below
    it is replaced on every poll.  See app.js -- a re-parented node restarts its
    animation, which is why these are two boxes rather than one. */
-.live, .run-body { display: grid; gap: 14px; }
+.live, .run-body { display: grid; gap: 14px; min-width: 0; }
+/* Grid items are floored at their min-content width unless told otherwise, and
+   that floor propagates up: one child that cannot shrink widens the column, and
+   every full-width sibling -- the progress bar most visibly -- is stretched past
+   the right edge of the phone with it. */
+.live > *, .run-body > * { min-width: 0; }
 
 /* ── Model card ─────────────────────────────────────────────────────────
    A local run is a model working against a window it can fall out of.  Speed
@@ -274,10 +279,18 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 .step strong { font-weight: 600; color: var(--text); }
 .step code { background: var(--ink-sink); color: var(--moon); padding: 1px 5px; font-size: .82em; }
 .step.done strong, .step.done code { color: inherit; font-weight: 500; }
+/* The floor here has to be the real minimum width of a cell, not a smaller
+   number that looks tidier.  `auto-fit` picks how many columns to make by
+   dividing the available width by that floor -- but each track then grows to
+   fit its content, so a floor below the true minimum produces more columns than
+   actually fit and the row overflows.  At 88px a 390px phone got four 106px
+   cells and scrolled sideways by 71px.  `UPDATED` in tracked uppercase is 81px
+   wide, plus 24px of padding: 104. */
 .facts {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   border: 1px solid var(--line); border-radius: var(--r);
 }
+.fact { min-width: 0; }
 .fact { padding: 10px 12px; border-right: 1px solid var(--line-soft); }
 .fact:last-child { border-right: none; }
 .fact dt { font-size: .62rem; text-transform: uppercase; letter-spacing: .12em; color: var(--text-faint); }
@@ -287,15 +300,19 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 /* The run view's headline: step, then call, then clock. */
 .doing { border: 1px solid var(--moon-dim); border-radius: var(--r); padding: 13px 14px; display: grid; gap: 7px; }
 .doing .label { font-size: .62rem; text-transform: uppercase; letter-spacing: .14em; color: var(--moon); }
-.doing .step { font-size: .9rem; line-height: 1.5; color: var(--text); grid-template-columns: 1fr; }
+.doing .step { font-size: .9rem; line-height: 1.5; color: var(--text); grid-template-columns: minmax(0, 1fr); }
 .doing .act { font-family: var(--mono); font-size: .78rem; color: var(--text-dim); }
+/* `anywhere`, not `break-word`: only `anywhere` lowers the min-content size,
+   and the min-content size is the number doing the damage. */
+.doing .step, .doing .act, .objective, .model-id { overflow-wrap: anywhere; }
 
 .controls { display: flex; flex-wrap: wrap; gap: 7px; }
 .panel { border: 1px solid var(--line); border-radius: var(--r); padding: 13px 14px; }
 .objective { font-size: .85rem; line-height: 1.65; white-space: pre-wrap; color: var(--text-dim); }
 
 .plan { display: grid; gap: 7px; }
-.step { display: grid; grid-template-columns: 14px 1fr; gap: 9px; font-size: .84rem; line-height: 1.5; }
+.step { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 9px; font-size: .84rem; line-height: 1.5; }
+.step > span { overflow-wrap: anywhere; }
 .step .box { color: var(--text-faint); font-family: var(--mono); }
 .step.done { color: var(--text-faint); }
 .step.done .box { color: var(--ok); }

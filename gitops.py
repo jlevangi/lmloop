@@ -135,7 +135,7 @@ def tracked_files(cwd: Path, limit: int = 160) -> str:
     `git log` and `git diff` are both empty on the first iteration of a fresh
     run, so the agent arrives knowing the objective and nothing about the shape
     of the code, and buys the shape with tool calls: 18 `ls`/`read` pairs on
-    one-project before its context overflowed the first time.  one-project has
+    one project before its context overflowed the first time.  That project has
     109 tracked files.  The whole answer fits in the prompt.
 
     Beyond `limit` paths the listing collapses to directories with counts.  A

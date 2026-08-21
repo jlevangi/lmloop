@@ -2,7 +2,7 @@
 
 A fresh session every iteration bounds context against a hard 65,536-token
 window, but it also means the agent wakes up knowing nothing.  One observed
-the predecessor iteration spent 43 file reads just working out where it was -- at ~15
+iteration spent 43 file reads just working out where it was -- at ~15
 tok/s that is a large fraction of an iteration spent re-deriving facts the loop
 already has.  So the loop pays that cost once, in Python, and hands the answer
 over.
@@ -10,7 +10,7 @@ over.
 The first version of this prompt precomputed the git log and the diff, and that
 was not enough: **both are empty on iteration 1 of a fresh run**, so the warm
 prompt was coldest exactly when the agent was.  Nothing in it described the
-shape of the repository, and on one-project the agent bought that shape with 18
+shape of the repository, and on one project the agent bought that shape with 18
 `ls`/`read` calls, overflowed its 57344-token window, compacted, distrusted the
 compaction, and re-read the same twelve files -- six times in 69 minutes,
 finishing with 81 tool calls and an untouched worktree.  So the file inventory
@@ -23,7 +23,7 @@ on a window this size it was never reached.  What the agent has to be told is
 that finishing is not the point: the run is a chain of iterations, and a written
 file beats a better plan.
 
-The other job here is the handoff instruction.  the predecessor demands the final
+The other job here is the handoff instruction.  The predecessor demands the final
 assistant message validate against a JSON schema, so a model that does good work
 and then wraps its JSON in prose loses the work.  Asking for a *file* instead
 removes the envelope entirely: writing it is a tool call, the result is on disk,
@@ -421,8 +421,8 @@ def _environment(linked: list[str], interpreter: str) -> str:
 
     A worktree starts with tracked files only, so the loop links the project's
     untracked dependencies in.  Saying so is the other half of the fix: an agent
-    that does not know an interpreter exists goes looking for one, and on
-    one-project that cost an entire iteration -- 24 tool calls enumerating every
+    that does not know an interpreter exists goes looking for one, and on one
+    Flask project that cost an entire iteration -- 24 tool calls enumerating every
     python3 on the box, none of which had Flask, while the project's own
     virtualenv sat one symlink away.
     """

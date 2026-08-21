@@ -16,8 +16,9 @@ Layout, at ``<worktree>/.lmloop/runs/<run-id>/``::
     STOP-NOW                 sentinel; cut the current iteration short
 
 The event names in ``lmloop.log`` and the heading format in ``notes.md`` are
-the predecessor's, deliberately.  They are a wire format the predecessor-dashboard dashboard already
-parses, and copying a format costs nothing while inventing one costs a UI.
+inherited from the predecessor dashboard, deliberately.  They are a wire format
+it already parses, and copying a format costs nothing while inventing one costs
+a UI.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ class RunDir:
         """Append one JSONL event.
 
         ``pid`` is what lets a reader separate two runs that share a directory;
-        predecessor-dashboard's outcome parser keys on the last ``run:start`` pid and ignores
+        the predecessor dashboard's outcome parser keys on the last ``run:start`` pid and ignores
         every event that does not match it.
         """
         record = {
@@ -140,7 +141,7 @@ class RunDir:
 
         `.lmloop/` is excluded from git, so the structural checks -- which work
         from what git says changed -- never look at the one file that steers the
-        entire run.  Observed on one-project: an edit wrote a step twice, once in
+        entire run.  Observed on one project: an edit wrote a step twice, once in
         its original unchecked form and once checked, and because both the prompt
         and `_current_step` take the *first* unchecked line, the next iteration
         was sent to redo work that was already finished.
@@ -224,7 +225,7 @@ class RunDir:
         it just wrote it to pi's event stream instead of to disk.  pi compacts by
         asking the model to summarise its own state, and that summary is exactly
         what the next iteration needs: goal, constraints, what it read, what it
-        decided, what to do next.  One harvested from one-project ran to 15 KB
+        decided, what to do next.  One harvested from a real run ran to 15 KB
         and included a self-correction about whether ``create_app()`` calls
         ``db.create_all()`` -- a fact that cost the agent forty file reads.
 
@@ -269,7 +270,7 @@ class RunDir:
         used to overwrite the previous handoff with "(no changes)", which is how
         a 10 KB carried summary became nine lines of boilerplate and the next
         iteration went back to reading files from scratch.  Observed live on
-        one-project between iterations 2 and 4.  When there is nothing new to
+        one repository between iterations 2 and 4.  When there is nothing new to
         say, the previous handoff is still the truth and is kept.
         """
         previous = self.read_handoff() if not carried else ""

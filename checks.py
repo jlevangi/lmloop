@@ -2,7 +2,7 @@
 
 The project gate is whatever its owner thought to configure, which means a repo
 gets checked on the dimensions someone anticipated.  The damage an editing agent
-does is not project-specific: on one-project an agent under context pressure
+does is not project-specific: on one project an agent under context pressure
 wrote a fragment of CSS twice -- an orphaned declaration and an extra `}` that
 closed a media query early -- and six iterations committed it as a success,
 because that project's gate was `compileall -q backend` and a stylesheet is

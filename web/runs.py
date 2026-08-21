@@ -1,6 +1,6 @@
 """Finding and reading lmloop runs, for the web UI.
 
-predecessor-dashboard spent 732 lines here, most of it reconstructing the present by parsing
+The predecessor dashboard spent 732 lines here, most of it reconstructing the present by parsing
 an append-only log to its end -- `parse_activity`, `parse_outcome`,
 `parse_managed_log`, and a run-directory cache to make that affordable at all.
 None of that is needed against lmloop, which writes `status.json`: the present,
@@ -65,7 +65,7 @@ def projects(roots: list[Path]) -> list[dict]:
     """Git repositories one level below each root.
 
     Grouped by root and de-duplicated by name, earlier roots winning, which is
-    the rule predecessor-dashboard's project picker already used and users already expect.
+    the rule the predecessor dashboard's project picker already used and users already expect.
     """
     found: dict[str, dict] = {}
     for root in roots:

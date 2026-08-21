@@ -14,7 +14,7 @@ fix while the log said the run was fine.
 silently, the model distrusts the summary and re-reads the same dozen files.
 Repeat until the iteration dies.
 
-**Evidence.** one-project, local-fast: ten compactions across two iterations,
+**Evidence.** A frontend project, on the 8B workhorse: ten compactions across two iterations,
 every one `reason: "overflow"`; 137 tool calls, all `read`/`ls`; zero writes.
 The compaction summary grew 4.9K → 8.1K → 10.6K → 15.8K bytes, so the usable
 window *shrank* each cycle and the loop tightened rather than converging.
@@ -54,7 +54,7 @@ had drifted -- see *One place to change it* in `docs/models.md`.
 ecosystem keeps its dependencies untracked, so the agent gets the source and
 nothing that runs it.
 
-**Evidence.** one-project: 74 minutes and 24 tool calls enumerating every
+**Evidence.** A Flask project: 74 minutes and 24 tool calls enumerating every
 `python3` on the box looking for one that could import Flask, then a stall while
 building its own virtualenv with `uv`. Flask was in the repo's `.venv`, one
 symlink away. The same cause had already produced `rc=127` from the gate on
@@ -69,7 +69,7 @@ for it, which is half the cost.
 **Shape.** A project's gate checks the dimensions someone anticipated. A run
 working outside them commits broken output as a success.
 
-**Evidence.** one-project's gate was `compileall -q backend` while the run was
+**Evidence.** One project's gate was `compileall -q backend` while the run was
 doing pure CSS. Six iterations committed a duplicated fragment — an orphaned
 declaration and an extra `}` closing a media query early — written by the
 iteration with ten context overflows.
@@ -160,7 +160,7 @@ Two things, automatically, and neither of them edits the plan.
 **The retry goes to a wider model.** Thrashing is the window losing to the
 codebase, so retrying the same step on the same model retries what just failed
 for a reason that has not changed. The next iteration runs on whichever model
-the project already names that measures widest — on one-project, 90112 tokens of
+the project already names that measures widest — on one repository, 90112 tokens of
 prompt budget against 49152. Only configured models are considered: picking one
 the operator never named would be lmloop deciding what their hardware should
 load. If nothing configured is wider, or the models are unmeasured, nothing

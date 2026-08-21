@@ -1,6 +1,6 @@
 """Configuration: a global TOML file, overridden per repository.
 
-the predecessor reads one global config and nothing else, which is why its dashboard has to
+The predecessor reads one global config and nothing else, which is why its dashboard has to
 rewrite ``~/.predecessor/config.yml`` in place just to choose a model for a run.  A
 project-local file removes that whole class of hack: per-repo gate commands and
 worktree placement live with the repo they describe.
@@ -73,7 +73,7 @@ DEFAULTS: dict = {
     "worktree": {
         "root": "{repo}/.worktrees/{run_id}",
         "branch": "lmloop/{run_id}",
-        # Worktrees are never removed automatically.  the predecessor deletes the worktree
+        # Worktrees are never removed automatically.  The predecessor deletes the worktree
         # of any run that produced no commits, taking the only record of why it
         # produced none with it.
         "keep": "always",
@@ -81,9 +81,9 @@ DEFAULTS: dict = {
         #
         # `git worktree add` materialises tracked files and nothing else, so a
         # fresh worktree has the source but not the environment that runs it.
-        # Watched live on one-project: the agent spent an hour and 24 tool calls
+        # Watched live on one project: the agent spent an hour and 24 tool calls
         # hunting for a python3 that could import Flask, because flask lives in
-        # `~/git/one-project/.venv`, `.venv` is untracked, and the worktree
+        # `~/git/some-project/.venv`, `.venv` is untracked, and the worktree
         # therefore had no virtualenv at all.  It never wrote a line -- it was
         # stuck trying to verify work it could not run.  The same iteration's
         # gate had already failed `rc=127` for the same reason.
@@ -106,7 +106,7 @@ DEFAULTS: dict = {
         # not finish one in 100.  Any timeout here is a backstop, not a budget.
         #
         # Treat that local-wide figure as unproven rather than settled.  It rests on
-        # "9-10K output tokens, did not finish", and one-project has since shown
+        # "9-10K output tokens, did not finish", and that project has since shown
         # local-fast producing 10184 output tokens in 69 minutes while thrashing on
         # context overflow -- the same signature.  Nobody was counting
         # compactions when local-wide was measured, so a slow model and a model out of
@@ -115,7 +115,7 @@ DEFAULTS: dict = {
         "timeout_seconds": 14400,
         "stall_seconds": 1200,
         # Give up on an iteration that has overflowed its context this many times
-        # without writing anything.  Observed on one-project: six overflows in 69
+        # without writing anything.  Observed on one project: six overflows in 69
         # minutes, 81 tool calls, all reads.  Each overflow discards everything
         # the agent had read, so the third one is not a slow start, it is a loop.
         # 0 disables the check.

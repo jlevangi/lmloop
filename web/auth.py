@@ -1,4 +1,4 @@
-"""OIDC login for the web UI, ported from predecessor-dashboard unchanged in substance.
+"""OIDC login for the web UI, ported from the predecessor dashboard unchanged in substance.
 
 lmloop itself is stdlib-only and stays that way: PyJWT and requests are
 imported here and nowhere else, and a missing one disables authentication

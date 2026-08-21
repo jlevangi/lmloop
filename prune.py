@@ -87,7 +87,7 @@ def discard_bytecode(run_dir: Path) -> int:
     `loop.env()` points PYTHONPYCACHEPREFIX here so that compiling a module --
     by the gate, or by anything the agent runs -- does not leave `__pycache__`
     beside the source for `git add -A` to sweep into a commit.  It works, and it
-    accumulates: one one-project run had 97 MB of it, more than every event
+    accumulates: one run had 97 MB of it, more than every event
     stream in that run put together, because the test suite imports the whole
     virtualenv and every module it touches lands here.
 

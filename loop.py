@@ -1,6 +1,6 @@
 """The run lifecycle: create a worktree, iterate, commit, stop.
 
-The whole design fits in one sentence: **the loop never discards work.**  the predecessor
+The whole design fits in one sentence: **the loop never discards work.**  The predecessor
 calls ``git reset --hard HEAD && git clean -fd`` on any failed iteration, which
 is a sound trade when an iteration costs ninety seconds and an unreliable one is
 cheaper to redo than to reason about.  At ninety minutes it is not: one run
@@ -410,7 +410,7 @@ class Run:
         """Run the gate once, on the untouched worktree, before any iteration.
 
         A gate whose command cannot be found fails identically every iteration,
-        and reads as a broken project rather than a broken path -- the one-project
+        and reads as a broken project rather than a broken path -- the observed
         run recorded `fail (rc=127)` twelve times for a `.venv` that was simply
         not in the worktree, and nothing surfaced it but the event log.  One run
         against the base commit separates the two questions for good, and it is
@@ -538,7 +538,7 @@ class Run:
         overflows, compacts, distrusts the summary and reads again.  Retrying the
         same step on the same model is retrying the thing that just failed for a
         reason that has not changed, so the retry goes to whichever model this
-        project already names that measures widest -- on one-project that is
+        project already names that measures widest -- on one repository that is
         90112 tokens of prompt budget against 49152, which is the difference
         between a file fitting and not.
 
@@ -693,7 +693,7 @@ class Run:
         Line 1 of the handoff is the right answer when the agent wrote one.  It
         is the wrong answer when it did not: the loop then synthesises a handoff
         whose first line says "iteration N ended without writing a handoff", and
-        that became the subject of four of nine commits on one-project --
+        that became the subject of four of nine commits on one repository --
         iterations that wrote real, working test files and described none of it
         in `git log`.  Overflowing the context is exactly when the agent fails to
         write a handoff, so the commits most in need of a subject were the ones

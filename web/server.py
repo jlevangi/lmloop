@@ -1,9 +1,9 @@
 """The lmloop dashboard: start, watch, pause and stop runs from a browser.
 
-Two things make this much smaller than the predecessor-dashboard dashboard it replaces.
+Two things make this much smaller than the predecessor dashboard it replaces.
 
 **Runs are controlled by files, not by this process.**  Pausing is `touch PAUSE`
-and stopping is `touch STOP`, which the loop notices on its own poll.  predecessor-dashboard
+and stopping is `touch STOP`, which the loop notices on its own poll.  The predecessor dashboard
 had to own a supervisor: track pids, reconcile them against processes it did not
 start, signal process trees, and persist all of that so a restart did not orphan
 a run.  Here the web app can crash, be restarted, or be replaced mid-run and

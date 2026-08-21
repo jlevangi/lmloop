@@ -45,7 +45,7 @@ def summarise(run: dict) -> tuple[str, str, str, str]:
     """(title, body, tags, priority) for a finished run.
 
     The title has to carry the verdict on its own: it is what appears on a lock
-    screen, and "one-project: 9 commits" answers the question that made someone
+    screen, and "my-app: 9 commits" answers the question that made someone
     start the run, where "run complete" does not.
     """
     repo = run.get("repo", "lmloop")

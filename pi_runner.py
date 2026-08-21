@@ -373,7 +373,7 @@ def run(
             # loading another, which takes minutes and emits nothing.
             killed = "stalled"
         elif max_compactions and compactions >= max_compactions and not writes:
-            # Compaction thrash.  Observed on one-project: the agent read 12-16
+            # Compaction thrash.  Observed on one project: the agent read 12-16
             # files, overflowed, compacted to a plan, distrusted the plan, and
             # re-read the same files -- six times in 69 minutes, all reads, no
             # writes.  Each summary was larger than the last, so the usable

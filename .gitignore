@@ -6,3 +6,6 @@ __pycache__/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Local issue tracker: bd data, config and hooks stay on this machine.
+.beads/

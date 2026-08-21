@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy to ~/.config/lmloop/model-budgets.json. Read by lmloop AND by the pi model-catalogue extension, so the two agree on how a model's real window is split. Both keep built-in defaults, so this file is a place to edit rather than a dependency — deleting it changes nothing.",
+
+  "llama_swap_url": "http://127.0.0.1:8080",
+  "_llama_swap_url": "Where llama-swap serves. lmloop talks to it directly and never through a router: a router reports what a model advertises, not how the weights were loaded.",
+
+  "headroom": 8192,
+  "_headroom": "Reserved for output when a model has no override below. A system prompt and tool definitions escape whatever budget an agent compacts to, so the declared window sits below the real one.",
+
+  "output_override": {},
+  "_output_override": "Per-model output budgets, for models the default split is wrong for. `headroom` assumes the prompt runs out first; for a reasoning model it is the other way round — one spent a whole iteration deliberating and hit the 8192 cap mid-sentence without calling a tool. An override replaces headroom on BOTH sides, so contextWindow + maxTokens still lands exactly on the real window. Example: {\"my-27b-model\": 24576}",
+
+  "unmeasured_context": 24576,
+  "_unmeasured_context": "Declared for a model with no measurement, small enough that no llama.cpp deployment rejects it."
+}

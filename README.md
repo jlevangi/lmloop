@@ -62,9 +62,37 @@ git clone <this repo> ~/git/lmloop
 printf '#!/usr/bin/env bash\nexec python3 "$HOME/git/lmloop/lmloop.py" "$@"\n' > ~/.local/bin/lmloop
 chmod +x ~/.local/bin/lmloop
 lmloop init            # writes ~/.config/lmloop/config.toml
+
+cp model-budgets.example.json ~/.config/lmloop/model-budgets.json
+cp web/deploy/web.env.example ~/.config/lmloop/web.env      # only for the dashboard
 ```
 
+Nothing in the repo hardcodes an address for your machine: the defaults are
+loopback, and the three files above are where yours go. All three are optional —
+every one of them falls back to a working default.
+
 Python 3.11+ (for `tomllib`), stdlib only, no build step.
+
+### What else you need
+
+- **[`pi`](https://github.com/earendil-works) on `PATH`.** The loop drives it and
+  nothing else. Everything about tools, skills and prompts is pi's business.
+- **Somewhere to get a model.** Any provider pi can reach works, but the loop is
+  built for a local one — `lmloop models` lists what pi can see. If you serve
+  local models with [llama-swap](https://github.com/mostlygeek/llama-swap), point
+  `[models] llama_swap_url` at it.
+- **A model catalogue pi can read.** Local windows have to be *declared* to pi,
+  and declaring them wrong is the single most expensive mistake here: a router
+  that advertised 1,000,000 context for a model actually loaded with
+  `--ctx-size 65536` killed runs with HTTP 400 mid-iteration. `lmloop models
+  --detect` measures the real figure off the running llama-server command line
+  and caches it to `~/.config/lmloop/model-context.json`; how that window is
+  split between prompt and output lives in
+  `~/.config/lmloop/model-budgets.json` — copy
+  [`model-budgets.example.json`](model-budgets.example.json) and edit it. See
+  [docs/models.md](docs/models.md).
+- **Optional, for the dashboard on a network:** PyJWT and requests, and an OIDC
+  provider. Without them it binds loopback only.
 
 ## Use
 
@@ -140,6 +168,16 @@ A run that dies is reported as `stale`, never as running. A crashed loop leaves
 a `status.json` that still says `working`, so liveness comes from the age of that
 file and from whether the log records a completion.
 
+A finished run can be taken or put away from the same page. **Open pull
+request** pushes `lmloop/<run-id>` and runs `gh pr create`. **Archive & remove
+worktree** copies the run's record out to `~/lmloop-archive/`, *verifies the
+copy file by file*, and only then removes the checkout — the branch and every
+commit on it stay, and the run keeps its own group in the list, still readable.
+Permanent deletion refuses to run on anything that has not been archived first,
+so removing a worktree and losing a record are always two separate decisions.
+That is what lets the UI offer removal at all without breaking the first
+commitment above.
+
 A live run also shows the model working it: which one (not always the configured
 one -- planning and thrash retries escalate), at what thinking level, how fast it
 is generating, and how much of its context window the current prompt is using.
@@ -188,8 +226,8 @@ dashboard_url = "https://lmloop.example.com"   # taps through to the run
 
 One push when the run stops, never per iteration — a notification every twenty
 minutes for ten hours is a channel you learn to ignore. The title carries the
-verdict, because that is what a lock screen shows: *"one-project: 9 commits"*,
-or *"one-project: nothing committed"* at high priority, which is the case worth
+verdict, because that is what a lock screen shows: *"my-app: 9 commits"*,
+or *"my-app: nothing committed"* at high priority, which is the case worth
 interrupting someone for.
 
 Empty `url` disables it, and it can never fail a run.
@@ -211,7 +249,7 @@ thing removed is the bytecode cache, which is derived from source that is still
 present and records nothing about what the agent did. A run still writing is
 skipped.
 
-On one-project: 313 MB → 8.6 MB, with every stream still readable.
+On one repository: 313 MB → 8.6 MB, with every stream still readable.
 
 This also runs automatically when a run ends — `[prune] after_run`, on by
 default. A run is exactly when the space appears and when someone is watching,
@@ -230,7 +268,7 @@ which is easier to trust than a cron job quietly rewriting run directories at
 - `[iteration] max_compactions` — give up on an iteration that has overflowed
   its context this many times without writing anything. An agent whose window is
   smaller than the codebase can spend the whole iteration reading a dozen files,
-  overflowing, and reading them again: observed on one-project at six overflows
+  overflowing, and reading them again: observed on a frontend project at six overflows
   in 69 minutes across 81 tool calls, none of them a write. Cutting it off is
   free, because whatever the iteration left behind is committed either way.
 - `[worktree] link` — untracked paths symlinked from the repo into each new
@@ -359,7 +397,7 @@ its hour" and does not wait. The keys are separate so that neither is a surprise
 Paseo workspace terminals host this directly, with no workspace registration:
 
 ```bash
-paseo terminal create --cwd ~/git/one-project --name lmloop --json
+paseo terminal create --cwd ~/git/some-project --name lmloop --json
 paseo terminal send-keys <id> "lmloop run 'the objective' --max-iterations 3" Enter
 paseo terminal capture   <id> --json      # what it is doing now
 paseo terminal send-keys <id> p           # pause

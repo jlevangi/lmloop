@@ -25,6 +25,11 @@ llama-swap models get their real `n_ctx` from
 extension then splits it into a prompt budget and an output budget that sum to
 the real window exactly, so overshooting is impossible.
 
+The model names below are placeholders for one deployment's lineup — a fast
+model with a narrower window and a wider, slower one. Substitute your own; the
+numbers come from `models --detect` against whatever you actually run, and the
+point of the table is the *shape*, not the rows.
+
 | Model | Real | Prompt | Output |
 |---|---|---|---|
 | local-fast | 65,536 | 49,152 | 16,384 |
@@ -32,9 +37,9 @@ the real window exactly, so overshooting is impossible.
 | local-wide-agent | 32,768 | 24,576 | 6,144 |
 | local-* | unmeasured | 24,576 | 6,144 |
 
-local-wide's row was 98,304 until 2026-08-21, when its `--ctx-size` was raised on the
-ROCm box; the figures here are whatever `models --detect` last wrote, so re-read
-them after changing llama-swap's config rather than trusting this table.
+One row here changed from 98,304 the day its `--ctx-size` was raised on the
+box. The figures are whatever `models --detect` last wrote, so re-read them
+after changing llama-swap's config rather than trusting this table.
 
 The default split reserves `HEADROOM = 8192` for output. That assumes the
 *prompt* runs out first, which is wrong for a reasoning model — both models

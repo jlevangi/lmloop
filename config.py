@@ -188,7 +188,7 @@ def sample() -> str:
 
 [agent]
 harness = "pi"           # pi (incl. oh-my-pi) | opencode
-model = "llama-swap/local-fast"
+model = "llama-swap/local-wide-agent"
 tools = "read,write,edit,bash,grep,find,ls"
 # off | minimal | low | medium | high | xhigh | max.  Empty uses pi's
 # default.  Lower it when a model deliberates its whole output budget away

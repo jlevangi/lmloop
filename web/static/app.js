@@ -68,12 +68,36 @@ function compact(n) {
 
 const rate = (r) => (r ? `${r < 10 ? r.toFixed(1) : Math.round(r)} tok/s` : "");
 
+/* A run id is `<date>-<slug>-<hash>`, and the two ends are the identifying
+ * parts: the date says which attempt, the hash says which objective.  Letting
+ * CSS truncate it drops the hash -- the half that distinguishes two runs of the
+ * same objective on the same day -- so the middle goes instead. */
+function elideMiddle(text, head = 20, tail = 7) {
+  if (!text || text.length <= head + tail + 1) return text;
+  return `${text.slice(0, head)}…${text.slice(-tail)}`;
+}
+
 /* The poll is every few seconds; a clock that only moves when it lands looks
  * stuck. Elapsed is extrapolated from when the figure was fetched, so the page
  * keeps time on its own between updates. */
 function liveElapsed(run) {
   const drift = (Date.now() - (state.fetchedAt || Date.now())) / 1000;
   return duration(Math.round((run.elapsed_seconds || 0) + drift));
+}
+
+/* The same drawn chevron the back button and the strip use.  Built rather than
+ * written as a glyph so all three are one mark at one weight: `▾` renders at a
+ * different size in every font that has it, and at 10px it stopped reading as
+ * a control at all. */
+function chevron(d = "M5 9l7 7 7-7") {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", d);
+  svg.append(path);
+  return svg;
 }
 
 function el(tag, className, content) {
@@ -215,14 +239,21 @@ const ACTIVE = new Set(["running", "paused", "stopping"]);
 function renderList() {
   const runs = state.project ? state.runs.filter((r) => r.project === state.project) : state.runs;
   const active = runs.filter((r) => ACTIVE.has(r.state));
-  const rest = runs.filter((r) => !ACTIVE.has(r.state));
+  // Archived runs are history that has outlived its worktree, and mixing them
+  // into History would bury the runs that still have one.  Their own group,
+  // last, so the list still opens on what is alive.
+  const archived = runs.filter((r) => r.archived);
+  const rest = runs.filter((r) => !ACTIVE.has(r.state) && !r.archived);
 
   syncGroup($("active"), active);
   syncGroup($("finished"), rest);
+  syncGroup($("archived"), archived);
   $("active-count").textContent = active.length;
   $("finished-count").textContent = rest.length;
+  $("archived-count").textContent = archived.length;
   $("active-group").hidden = active.length === 0;
   $("finished-group").hidden = rest.length === 0;
+  $("archived-group").hidden = archived.length === 0;
   $("empty").hidden = runs.length > 0;
 
   const live = active.some((r) => r.state === "running");
@@ -264,15 +295,20 @@ function renderFilters() {
  * the body below it is replaced.
  */
 
-const FACTS = ["state", "plan", "commits", "iter", "updated"];
+// `state` used to lead this grid.  The sticky header carries it now, and two
+// copies of one word a centimetre apart is how a page starts looking unedited.
+// Four cells also divide more kindly across a phone than five did.
+const FACTS = ["plan", "commits", "iter", "updated"];
 
 function makeHead() {
   const node = el("div", "live");
   node.hidden = true;
 
-  const track = el("div", "track");
-  const fill = el("span");
-  track.append(fill);
+  // Where the progress bar used to be.  The header carries that bar now, and
+  // two of them a centimetre apart measuring the same plan was the duplication
+  // that made the page look unedited.  The name is what belongs at the top of a
+  // page about one run, and it had nowhere to be at all.
+  const name = el("h2", "run-name");
 
   const facts = el("div", "facts");
   const cells = {};
@@ -289,8 +325,8 @@ function makeHead() {
   const doingAct = el("div", "act");
   doing.append(doingLabel, doingStep, doingAct);
 
-  const parts = { node, track, fill, cells, doing, doingLabel, doingStep, doingAct };
-  node.append(track, facts, doing, makeModel(parts));
+  const parts = { node, name, cells, doing, doingLabel, doingStep, doingAct };
+  node.append(name, facts, doing, makeModel(parts));
   return parts;
 }
 
@@ -328,16 +364,9 @@ function makeModel(head) {
 function patchHead(head, run) {
   head.node.hidden = false;
 
-  const live = run.state === "running";
-  head.fill.style.width = run.plan_total
-    ? `${Math.round((run.plan_done / run.plan_total) * 100)}%`
-    : "0%";
-  // Toggled, never re-created: assigning the same class list back would be
-  // harmless, but removing and re-adding it would restart the sweep.
-  head.track.classList.toggle("working", live);
+  if (head.name.textContent !== run.title) head.name.textContent = run.title;
 
   const values = {
-    state: run.state,
     plan: run.plan_total ? `${run.plan_done}/${run.plan_total}` : "—",
     commits: String(run.commits),
     iter: `${run.iteration ?? "?"}/${run.max_iterations ?? "?"}`,
@@ -346,7 +375,8 @@ function patchHead(head, run) {
   for (const label of FACTS) {
     const dd = head.cells[label];
     if (dd.textContent !== values[label]) dd.textContent = values[label];
-    dd.className = label === "state" && ACTIVE.has(run.state) ? "hot" : "";
+    // Plan is the live figure here now that state has gone to the header.
+    dd.className = label === "plan" && ACTIVE.has(run.state) ? "hot" : "";
   }
 
   const doing = ACTIVE.has(run.state) && (run.current_step || run.last_tool);
@@ -423,8 +453,10 @@ function inlineMarkdown(text) {
   return holder;
 }
 
-function planNodes(plan) {
-  const holder = el("div", "plan");
+/* Parsed once into a list, because the plan is now rendered twice: in full, and
+ * as the three-step window a collapsed plan shows on a phone. */
+function planParse(plan) {
+  const steps = [];
   let seenNext = false;
   for (const line of plan.split("\n")) {
     const match = /^[-*]\s\[( |x|X)\]\s*(.*)$/.exec(line.trim());
@@ -432,12 +464,42 @@ function planNodes(plan) {
     const done = match[1].toLowerCase() === "x";
     const isNext = !done && !seenNext;
     if (isNext) seenNext = true;
-    const step = el("div", `step${done ? " done" : isNext ? " next" : ""}`);
-    const label = el("span");
-    label.append(inlineMarkdown(match[2]));
-    step.append(el("span", "box", done ? "✓" : isNext ? "▸" : "·"), label);
-    holder.append(step);
+    steps.push({ done, isNext, text: match[2] });
   }
+  return steps;
+}
+
+function stepNode(step) {
+  const node = el("div", `step${step.done ? " done" : step.isNext ? " next" : ""}`);
+  const label = el("span");
+  label.append(inlineMarkdown(step.text));
+  node.append(el("span", "box", step.done ? "✓" : step.isNext ? "▸" : "·"), label);
+  return node;
+}
+
+function planNodes(steps) {
+  const holder = el("div", "plan");
+  for (const step of steps) holder.append(stepNode(step));
+  return holder;
+}
+
+/* What a collapsed plan is worth keeping on screen: the step just finished, the
+ * one running, and the one after it.  Three lines answer "is it moving, and
+ * where next" -- the only question a plan gets asked at a glance -- for about a
+ * tenth of the scroll the full list costs on a phone. */
+function planWindow(steps) {
+  const holder = el("div", "plan plan-window");
+  const current = steps.findIndex((step) => step.isNext);
+  if (current === -1) {
+    // Nothing outstanding: the plan is done, and the last step is the news.
+    const last = steps[steps.length - 1];
+    if (last) holder.append(stepNode(last));
+    return holder;
+  }
+  const previous = steps.slice(0, current).filter((step) => step.done).pop();
+  if (previous) holder.append(stepNode(previous));
+  holder.append(stepNode(steps[current]));
+  if (steps[current + 1]) holder.append(stepNode(steps[current + 1]));
   return holder;
 }
 
@@ -474,17 +536,27 @@ function iterationTable(rows) {
   return wrap;
 }
 
-function control(label, action, run, { risk = false, body = {} } = {}) {
+function control(label, action, run, { risk = false, body = {}, confirm: ask = null,
+                                       done = null } = {}) {
   const button = el("button", risk ? "risk" : "quiet", label);
   button.type = "button";
   button.addEventListener("click", async () => {
+    // Anything that removes something asks first, and the question names what
+    // is about to go rather than saying "are you sure".
+    if (ask && !window.confirm(ask)) return;
     button.disabled = true;
+    const was = button.textContent;
+    button.textContent = "working…";
     try {
-      await api(`/api/runs/${run.project}/${run.run_id}/${action}`, { body });
+      const result = await api(`/api/runs/${run.project}/${run.run_id}/${action}`, { body });
+      if (done) done(result);
       state.detailKey = null;
+      // A run that was archived or deleted is no longer at this URL.
+      if (action === "delete") { go("#"); return; }
       await poll();
     } catch (error) {
       button.disabled = false;
+      button.textContent = was;
       alert(error.message);
     }
   });
@@ -510,7 +582,8 @@ async function renderRun(project, runId, { quiet = false } = {}) {
   if (quiet && key === state.detailKey) return;
 
   $("bar-title").textContent = project;
-  $("bar-sub").textContent = runId;
+  $("bar-sub").textContent = elideMiddle(runId);
+  $("bar-sub").title = runId;
 
   const { head, body } = runShell(runId);
   if (!quiet) body.replaceChildren(el("p", "empty", "Loading…"));
@@ -525,59 +598,122 @@ async function renderRun(project, runId, { quiet = false } = {}) {
 
   patchHead(head, run);
 
-  // Preserve what the reader was doing across a background refresh.
+  // Preserve what the reader was doing across a background refresh.  Keyed by
+  // section, never by index: the sections present depend on the run (a plan may
+  // not exist yet, broken files usually do not), so an index-keyed list reopened
+  // whichever section happened to land in that slot this time.
   const scroll = window.scrollY;
-  const open = [...body.querySelectorAll("details")].map((node) => node.open);
+  const open = new Map(
+    [...body.querySelectorAll("details[data-key]")].map((node) => [node.dataset.key, node.open])
+  );
 
   const parts = [];
 
+  /* Every block on this page is the same kind of thing -- a labelled section
+   * that can be folded away -- so they are all one component.  Folding is the
+   * point: the run page had grown past three screens of scroll on a phone, and
+   * the two longest blocks were the two nobody rereads. */
+  const section = (key, label, build, { start = true, extra = "" } = {}) => {
+    const box = document.createElement("details");
+    box.className = `sect ${extra}`.trim();
+    box.dataset.key = key;
+    box.open = open.has(key) ? open.get(key) : start;
+    const summary = el("summary");
+    // The label and the caret share a row of their own.  They used to be flex
+    // children of the summary itself, alongside the plan's three-step window --
+    // which is full width, so it wrapped, and pushed the caret onto a third
+    // line at the bottom of a 180px block, a long way from the thing it opens.
+    const head = el("div", "sect-head");
+    head.append(el("span", "sect-label", label));
+    const caret = el("span", "sect-caret");
+    caret.append(chevron());
+    head.append(caret);
+    summary.append(head);
+    box.append(summary);
+    const inner = el("div", "sect-body");
+    build(inner, summary);
+    box.append(inner);
+    parts.push(box);
+    return box;
+  };
+
   if (!state.config?.read_only) {
     const controls = el("div", "controls");
-    if (ACTIVE.has(run.state)) {
+    if (run.archived) {
+      // No worktree, so nothing to pause, continue or archive.  The only thing
+      // left to decide about an archived run is whether to keep it.
+      controls.append(control("Delete permanently", "delete", run, {
+        risk: true,
+        body: { branch: false },
+        confirm: `Permanently delete the archived record of ${run.run_id}?\n\n`
+               + `Its plan, handoff and every iteration log will be gone. The `
+               + `git branch lmloop/${run.run_id} is kept.`,
+      }));
+    } else if (ACTIVE.has(run.state)) {
       controls.append(run.paused ? control("Resume", "resume", run) : control("Pause", "pause", run));
       if (!run.stopping) controls.append(control("Stop after this iteration", "stop", run, { risk: true }));
       controls.append(control("Stop now", "stop-now", run, { risk: true }));
     } else {
       controls.append(control("Continue 3 iterations", "continue", run, { body: { iterations: 3 } }));
+      if (run.commits) {
+        controls.append(control("Open pull request", "pr", run, {
+          done: (result) => {
+            if (result?.url) window.open(result.url, "_blank", "noopener");
+          },
+        }));
+      }
+      controls.append(control("Archive & remove worktree", "archive", run, {
+        risk: true,
+        confirm: `Archive ${run.run_id}?\n\n`
+               + `Its record is copied out first, then the worktree is removed. `
+               + `The git branch and every commit on it are kept, and the run `
+               + `stays readable under Archived.`,
+      }));
     }
     parts.push(controls);
   }
 
   if (run.defects?.length) {
-    parts.push(el("h2", null, "Broken files"));
-    const panel = el("div", "panel broken-panel");
-    for (const defect of run.defects) panel.append(el("div", "defect", defect));
-    parts.push(panel);
+    section("defects", `Broken files — ${run.defects.length}`, (inner) => {
+      for (const defect of run.defects) inner.append(el("div", "defect", defect));
+    }, { extra: "broken-panel" });
   }
 
-  parts.push(el("h2", null, "Objective"));
-  const objective = el("div", "panel");
-  objective.append(el("div", "objective", run.objective));
-  parts.push(objective);
+  // Closed by default: the objective is what you already know -- you wrote it --
+  // and it was holding the first screen of every visit hostage.
+  section("objective", "Objective", (inner) => {
+    inner.append(el("div", "objective", run.objective));
+  }, { start: false });
+
+  // Above the plan, deliberately.  The plan says what is meant to happen; the
+  // iteration table says what actually has been, and which is the question being
+  // asked when someone opens a running job.
+  if (run.iterations?.length) {
+    section("iterations", "Iterations", (inner) => {
+      inner.append(iterationTable(run.iterations));
+    });
+  }
 
   if (run.plan) {
-    parts.push(el("h2", null, `Plan — ${run.plan_done} of ${run.plan_total}`));
-    const panel = el("div", "panel");
-    panel.append(planNodes(run.plan));
-    parts.push(panel);
+    const steps = planParse(run.plan);
+    // Folded to its three-step window on a phone, open on anything wider.  A
+    // fifteen-step plan is most of the page's scroll on a 390px screen, and the
+    // twelve steps already ticked off are not what the scrolling is for.
+    const narrow = window.matchMedia("(max-width: 640px)").matches;
+    section("plan", `Plan — ${run.plan_done} of ${run.plan_total}`, (inner, summary) => {
+      // Lives in the summary so it is what a folded plan shows; CSS drops it on
+      // wide screens, where folding away means folding away.
+      if (steps.length) summary.append(planWindow(steps));
+      inner.append(planNodes(steps));
+    }, { start: !narrow });
   }
 
-  if (run.iterations?.length) {
-    parts.push(el("h2", null, "Iterations"));
-    const panel = el("div", "panel");
-    panel.append(iterationTable(run.iterations));
-    parts.push(panel);
-  }
-
-  for (const [label, content] of [["Handoff", run.handoff], ["Notes", run.notes]]) {
+  for (const [key, label, content] of [["handoff", "Handoff", run.handoff], ["notes", "Notes", run.notes]]) {
     if (!content) continue;
-    const box = document.createElement("details");
-    box.append(el("summary", null, label), el("pre", null, content));
-    parts.push(box);
+    section(key, label, (inner) => inner.append(el("pre", null, content)), { start: false });
   }
 
   body.replaceChildren(...parts);
-  body.querySelectorAll("details").forEach((node, index) => { if (open[index]) node.open = true; });
   if (quiet) window.scrollTo(0, scroll);
   state.detailKey = key;
 }
@@ -663,6 +799,170 @@ $("launch-form").addEventListener("submit", async (event) => {
   }
 });
 
+/* ── Sticky run status ───────────────────────────────────────
+ *
+ * A run is watched over hours, from whatever page happens to be open, and until
+ * now "is anything still working" meant navigating back to the list to find
+ * out.  The strip answers it from anywhere and costs nothing when the answer is
+ * no: with no active runs it is not on the page at all, rather than sitting
+ * there saying zero.
+ *
+ * It is patched, never rebuilt, for the same reason the rows are -- it carries
+ * the sweep, and a rebuilt node restarts the animation that is the whole point.
+ */
+
+/* Two shapes, one component.  On a phone it is a strip across the bottom that
+ * opens upward; past 1080px -- where the 760px column leaves a third of the
+ * screen empty anyway -- it stops being a strip at all and becomes a rail down
+ * the side, permanently open.  A drawer you have to keep opening is a phone
+ * affordance; on a desktop there is room to just show the thing. */
+const RAIL = window.matchMedia("(min-width: 1080px)");
+const runbar = { rows: new Map(), openPanel: false };
+
+function runbarLine(run) {
+  return run.current_step
+    || [run.last_tool, run.last_target].filter(Boolean).join(" ")
+    || run.title;
+}
+
+function makeRunbarRow(run) {
+  const node = el("button", "runbar-row");
+  node.type = "button";
+
+  const head = el("div", "runbar-row-head");
+  const where = el("span", "where");
+  const stateLabel = el("span", "state");
+  head.append(where, stateLabel);
+
+  const title = el("h3", "runbar-row-title");
+  const line = el("div", "runbar-row-line");
+
+  const progress = el("div", "progress");
+  const track = el("div", "track");
+  const fill = el("span");
+  const steps = el("small");
+  track.append(fill);
+  progress.append(track, steps);
+
+  const meta = el("div", "meta");
+
+  node.append(head, title, line, progress, meta);
+  node.addEventListener("click", () => {
+    if (!RAIL.matches) toggleRunbar(false);
+    go(`#${run.project}/${run.run_id}`);
+  });
+  return { node, where, stateLabel, title, line, track, fill, steps, meta, last: null };
+}
+
+/* Expanded says more than the strip does, and different things: the strip
+ * answers "is it alive and what is it touching", which is one line.  Once
+ * someone has opened it they are asking the other question -- how far, how
+ * fast, how long, how much landed -- so that is what the row carries. */
+function patchRunbarRow(parts, run) {
+  const key = JSON.stringify([
+    run.state, run.project, run.title, run.plan_done, run.plan_total,
+    run.current_step, run.last_tool, run.last_target, run.iteration,
+    run.max_iterations, run.commits, run.tokens_per_second, run.elapsed_seconds,
+  ]);
+  if (key === parts.last) return;
+  parts.last = key;
+
+  parts.where.textContent = run.project;
+  parts.stateLabel.textContent = run.state;
+  parts.stateLabel.className = `state ${run.state}`;
+  parts.title.textContent = run.title;
+  parts.line.textContent = runbarLine(run);
+  parts.line.hidden = !runbarLine(run);
+
+  const live = run.state === "running";
+  parts.fill.style.width = run.plan_total
+    ? `${Math.round((run.plan_done / run.plan_total) * 100)}%`
+    : "0%";
+  parts.steps.textContent = run.plan_total
+    ? `${run.plan_done}/${run.plan_total}`
+    : (live ? "planning" : "");
+  parts.track.classList.toggle("working", live);
+
+  const bits = [];
+  if (run.iteration) bits.push(`iter ${run.iteration}/${run.max_iterations ?? "?"}`);
+  if (run.commits) bits.push(plural(run.commits, "commit"));
+  if (live && run.elapsed_seconds != null) bits.push(liveElapsed(run));
+  if (live && run.tokens_per_second) bits.push(rate(run.tokens_per_second));
+  if (run.compactions) bits.push(`${run.compactions} ovf`);
+  const clockAt = live && run.elapsed_seconds != null ? bits.indexOf(liveElapsed(run)) : -1;
+  parts.meta.replaceChildren(...bits.map((bit, index) => {
+    const span = el("span", index === clockAt ? "clock" : null, bit);
+    return span;
+  }));
+}
+
+function toggleRunbar(open) {
+  // In rail mode there is nothing to toggle: the panel is the rail.
+  runbar.openPanel = RAIL.matches ? true : (open ?? !runbar.openPanel);
+  // Deliberately not `hidden`: `display: none` cannot be transitioned, and the
+  // open needs to be an animation rather than an appearance.  The class is the
+  // only switch, and CSS does the rest.
+  $("runbar-strip").setAttribute("aria-expanded", String(runbar.openPanel));
+  $("runbar").classList.toggle("open", runbar.openPanel);
+}
+
+function renderRunbar() {
+  const active = state.runs.filter((run) => ACTIVE.has(run.state));
+  const bar = $("runbar");
+
+  // Nothing running: take the whole thing off the page, and take its reserved
+  // space with it -- a strip that says "0 runs" is furniture, not information.
+  if (!active.length) {
+    bar.hidden = true;
+    document.body.classList.remove("has-runbar");
+    if (runbar.openPanel) toggleRunbar(false);
+    return;
+  }
+  bar.hidden = false;
+  document.body.classList.add("has-runbar");
+  if (RAIL.matches && !runbar.openPanel) toggleRunbar(true);
+
+  const working = active.some((run) => run.state === "running");
+  // Lit only for a run that is actually generating.  Paused gets the dark moon,
+  // not the red one: red is this palette's word for "something is wrong", and a
+  // run someone deliberately paused is the one case where nothing is.
+  $("runbar-moon").className = `moon ${working ? "live" : ""}`.trim();
+
+  // The strip names the run; it does not narrate it.  The current step changes
+  // every few minutes and is a sentence long, so a collapsed strip showing it
+  // was a line of text that rewrote itself under the eye and still had to be
+  // truncated -- unreadable as either a label or a status.  The step is one tap
+  // away in the panel, and in full on the run page.
+  const single = active.length === 1 ? active[0] : null;
+  $("runbar-text").textContent = RAIL.matches
+    ? `${plural(active.length, "run")} active`
+    : (single ? single.title : `${plural(active.length, "run")} active`);
+  $("runbar-count").textContent = single && single.plan_total
+    ? `${single.plan_done}/${single.plan_total}`
+    : (active.length > 1 ? String(active.length) : "");
+
+  const panel = $("runbar-panel");
+  active.forEach((run, index) => {
+    let parts = runbar.rows.get(run.run_id);
+    if (!parts) {
+      parts = makeRunbarRow(run);
+      runbar.rows.set(run.run_id, parts);
+    }
+    patchRunbarRow(parts, run);
+    const atIndex = panel.children[index];
+    if (atIndex !== parts.node) panel.insertBefore(parts.node, atIndex || null);
+  });
+  while (panel.children.length > active.length) panel.lastChild.remove();
+  for (const [runId] of runbar.rows) {
+    if (!active.some((run) => run.run_id === runId)) runbar.rows.delete(runId);
+  }
+}
+
+$("runbar-strip").addEventListener("click", () => { if (!RAIL.matches) toggleRunbar(); });
+// Crossing the breakpoint changes which shape this is, and the strip's text
+// with it, so it has to re-render rather than wait for the next poll.
+RAIL.addEventListener("change", () => { if (state.runs.length) renderRunbar(); });
+
 /* ── Routing ───────────────────────────────────────────────────────────── */
 
 function go(hash) {
@@ -678,6 +978,37 @@ function parseHash() {
   return { name: "list" };
 }
 
+/* The sticky header carries the two things worth having while scrolled: what
+ * state the run is in, and how far through the plan it is.  Both used to live
+ * only in the facts grid, which is the first thing off the top of the screen. */
+function paintBar(run) {
+  const chip = $("bar-state");
+  const track = $("bar-track");
+  if (!run) {
+    chip.hidden = true;
+    track.hidden = true;
+    return;
+  }
+  chip.hidden = false;
+  chip.textContent = run.state;
+  // `bar-chip` carries the shared typography of this slot and has to survive
+  // the rewrite -- assigning className drops every class not named here.
+  chip.className = `state bar-chip ${run.state}`;
+
+  const live = run.state === "running";
+  track.hidden = !run.plan_total && !live;
+  track.firstChild.style.width = run.plan_total
+    ? `${Math.round((run.plan_done / run.plan_total) * 100)}%`
+    : "0%";
+  track.classList.toggle("working", live);
+}
+
+// Only once the page has actually moved: a flat surface at rest is the design,
+// and the shadow exists to say there is content underneath.
+addEventListener("scroll", () => {
+  $("bar").classList.toggle("scrolled", window.scrollY > 4);
+}, { passive: true });
+
 async function route({ quiet = false } = {}) {
   const next = parseHash();
   const changed = JSON.stringify(next) !== JSON.stringify(state.route);
@@ -687,8 +1018,16 @@ async function route({ quiet = false } = {}) {
   $("view-list").hidden = next.name !== "list";
   $("view-run").hidden = next.name !== "run";
   $("view-new").hidden = next.name !== "new";
+  // One or the other, never both: they share a grid cell, so leaving the moon
+  // up painted it straight over the chevron.  The back button takes the mark's
+  // place rather than pushing it aside, which is what keeps the title still.
   $("back").hidden = next.name === "list";
+  $("moon").hidden = next.name !== "list";
   $("new-run").hidden = next.name !== "list" || Boolean(state.config?.read_only);
+
+  paintBar(next.name === "run"
+    ? state.runs.find((run) => run.run_id === next.run_id)
+    : null);
 
   if (next.name === "list") {
     $("bar-title").textContent = "lmloop";
@@ -712,6 +1051,9 @@ async function poll() {
     state.runs = runs;
     state.fetchedAt = Date.now();
     renderFilters();
+    // Before the route: the strip is on every page, so it must not depend on
+    // which one is showing.
+    renderRunbar();
     await route({ quiet: true });
   } catch (error) {
     $("bar-sub").textContent = error.message;
@@ -741,6 +1083,13 @@ setInterval(() => {
   const panel = document.querySelector("#view-run .clock");
   const shown = state.runs.find((run) => run.run_id === state.route.run_id);
   if (panel && shown?.state === "running") panel.textContent = liveElapsed(shown);
+  // The strip carries the same clock, and it is on screen on every page.
+  for (const [runId, parts] of runbar.rows) {
+    const run = state.runs.find((item) => item.run_id === runId);
+    if (!run || run.state !== "running") continue;
+    const clock = parts.meta.querySelector(".clock");
+    if (clock) clock.textContent = liveElapsed(run);
+  }
 }, 1000);
 
 (async function start() {

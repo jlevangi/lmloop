@@ -105,12 +105,21 @@ overflowed and nothing got written.  So break it into steps small enough that
 each one touches one or two files and finishes inside a single iteration.
 
 Build the plan from the file list above.  Do NOT read files to plan; the list
-tells you what exists, and that is all planning needs.  Write it to `{path}` as
-markdown checkboxes, most useful first:
+tells you what exists, and that is all planning needs.  Write it to `{path}`,
+starting with a heading that names this run in two to five words, then the steps
+as markdown checkboxes, most useful first:
+
+    # Dark mode across every screen
 
     - [ ] one small step
     - [ ] the next one
     - [ ] ...
+
+The heading is the name this run is listed under, so make it the shortest thing
+that distinguishes it from the other work on this repository.  Name the work,
+not the activity: "Currency and date formatting" tells someone which run this is
+and "Improve the code" does not.  Do not write the word "Plan", the date, or the
+objective back verbatim -- it is a label, not a summary.
 
 Then do the FIRST step, check it off, and stop.  You are not expected to finish
 the objective this iteration, or in the next five.  There will be many more.

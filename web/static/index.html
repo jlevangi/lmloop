@@ -15,14 +15,25 @@
 </head>
 <body>
 
-<header class="bar">
-  <button type="button" class="back" id="back" hidden aria-label="Back">←</button>
-  <span class="moon" id="moon" aria-hidden="true"></span>
+<header class="bar" id="bar">
+  <!-- One slot, one width. The moon and the back button occupy the same 40px
+       cell rather than sitting beside each other, so the title does not slide
+       sideways every time you open or leave a run. -->
+  <div class="bar-lead">
+    <span class="moon" id="moon" aria-hidden="true"></span>
+    <button type="button" class="back" id="back" hidden aria-label="Back">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+  </div>
   <div class="bar-text">
     <h1 id="bar-title">lmloop</h1>
     <p id="bar-sub">connecting</p>
   </div>
-  <button type="button" id="new-run" class="act">New run</button>
+  <span class="state bar-chip" id="bar-state" hidden></span>
+  <button type="button" id="new-run" class="act bar-chip">New run</button>
+  <!-- The header's own bottom edge is the run's progress bar: the one number
+       worth having while scrolled past everything else. -->
+  <div class="bar-track track" id="bar-track" hidden><span></span></div>
 </header>
 
 <main>
@@ -36,6 +47,10 @@
     <div id="finished-group" hidden>
       <h2>History <span class="tally" id="finished-count">0</span></h2>
       <div id="finished" class="rows"></div>
+    </div>
+    <div id="archived-group" hidden>
+      <h2>Archived <span class="tally" id="archived-count">0</span></h2>
+      <div id="archived" class="rows"></div>
     </div>
     <p id="empty" class="empty" hidden>
       Nothing here yet.<br>
@@ -90,6 +105,23 @@
     </form>
   </section>
 </main>
+
+<!-- Sticky run status ------------------------------------------------------
+     Pinned to the bottom on every page, and absent entirely when nothing is
+     running: the question "is anything still working" was previously only
+     answerable by navigating back to the list. -->
+<div id="runbar" class="runbar" hidden>
+  <div class="runbar-panel" id="runbar-panel"></div>
+  <button type="button" class="runbar-strip" id="runbar-strip"
+          aria-expanded="false" aria-controls="runbar-panel">
+    <span class="moon live" id="runbar-moon" aria-hidden="true"></span>
+    <span class="runbar-text" id="runbar-text"></span>
+    <span class="runbar-count" id="runbar-count"></span>
+    <span class="runbar-caret" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M5 15l7-7 7 7"/></svg>
+    </span>
+  </button>
+</div>
 
 <script src="/static/app.js"></script>
 <script>

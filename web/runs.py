@@ -118,6 +118,47 @@ def run_dirs(project: Path) -> list[Path]:
     return sorted(found, key=lambda path: path.name, reverse=True)
 
 
+# -- the archive ------------------------------------------------------------
+#
+# A finished run's worktree is the expensive part of it -- a whole checkout,
+# tens of megabytes -- while the part worth keeping is the few megabytes of
+# `.lmloop/runs/<id>` inside it: the plan, the handoff, the event stream, every
+# prompt.  Archiving copies that out and removes only the checkout, so the run
+# stays readable in the dashboard after the tree it ran in is gone.
+#
+# This is what lets the UI offer removal at all without breaking the first
+# invariant in CLAUDE.md.  Nothing is discarded by archiving; a run that
+# produced nothing is still diagnosable afterwards, which is the whole point of
+# the rule.  Permanent deletion exists, but only as a second, separate step on a
+# run that has already been archived.
+
+import os
+
+ARCHIVE_ROOT = Path(
+    os.environ.get("LMLOOP_WEB_ARCHIVE", str(Path.home() / "lmloop-archive" / "runs"))
+).expanduser()
+
+
+def archived_dirs(project_id: str) -> list[Path]:
+    """Archived run directories for one project, newest run id first."""
+    try:
+        found = [path for path in (ARCHIVE_ROOT / project_id).iterdir() if path.is_dir()]
+    except OSError:
+        return []
+    return sorted(found, key=lambda path: path.name, reverse=True)
+
+
+def archive_target(project_id: str, run_id: str) -> Path:
+    return ARCHIVE_ROOT / project_id / run_id
+
+
+def is_archived(run_dir: Path) -> bool:
+    try:
+        return ARCHIVE_ROOT in run_dir.parents
+    except (OSError, ValueError):
+        return False
+
+
 def find(roots: list[Path], project_id: str, run_id: str) -> Path | None:
     for project in projects(roots):
         if project["id"] != project_id:
@@ -125,7 +166,11 @@ def find(roots: list[Path], project_id: str, run_id: str) -> Path | None:
         for run_dir in run_dirs(Path(project["path"])):
             if run_dir.name == run_id:
                 return run_dir
-    return None
+    # Archived runs have no project on disk to walk, so they are looked up
+    # directly -- and only after the live ones, so a re-run that reuses a name
+    # always wins over the archived copy of its predecessor.
+    target = archive_target(project_id, run_id)
+    return target if target.is_dir() else None
 
 
 # -- reading ----------------------------------------------------------------
@@ -234,6 +279,40 @@ def _current_step(text: str) -> str:
     return ""
 
 
+def _plan_name(text: str) -> str:
+    """The name the agent gave this run, from the plan's own heading.
+
+    Better than the first line of the objective, which is what this replaced: an
+    objective is a paragraph written to be acted on, so its first hundred
+    characters are a sentence cut in half, and every run of a similar objective
+    looks identical in a list.  The heading is the agent's own short label for
+    the work, written once it has read the repository and knows what the work
+    actually is.
+
+    Tolerant of what earlier runs wrote before the prompt asked for this, which
+    was usually `# Plan -- <name>`.
+    """
+    import re as _re
+
+    for line in text.splitlines()[:20]:
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        name = stripped.lstrip("#").strip()
+        # `Plan`, `Plan:`, `Plan -- `, `Plan — ` and the em-dash forms of each,
+        # at either end: agents put it in front as often as they append it, and
+        # "Test Suite Implementation Plan" is the same non-label as "Plan: test
+        # suite".  Only stripped when something is left over.
+        for pattern in (r"^plan\b[\s:\u2013\u2014-]*", r"[\s:\u2013\u2014-]*\bplan\.?$"):
+            trimmed = _re.sub(pattern, "", name, flags=_re.I).strip()
+            if trimmed:
+                name = trimmed
+        name = _re.sub(r"\*\*([^*]+)\*\*", r"\1", name).replace("`", "")
+        if name:
+            return name[:80]
+    return ""
+
+
 def _plan_progress(text: str) -> tuple[int, int]:
     done = total = 0
     for line in text.splitlines():
@@ -262,14 +341,26 @@ def summarise(project: dict, run_dir: Path) -> dict:
             commits = event.get("commitCount", commits)
 
     objective = _read_text(run_dir / "prompt.md", 4000).strip()
+    # The agent's name for the run when it has written one; the objective's
+    # first line only as a fallback, for runs that predate the plan heading.
+    name = _plan_name(plan)
+    # An archived run has no worktree and no loop, so none of the liveness
+    # reasoning above applies to it -- and every control that acts on a run acts
+    # on its worktree.  Naming the state outright is what keeps the UI from
+    # offering to pause something that is not there.
+    archived = is_archived(run_dir)
+    if archived:
+        state = "archived"
     return {
         "run_id": run_dir.name,
         "project": project["id"],
         "project_path": project["path"],
+        "archived": archived,
         "state": state,
         "age_seconds": round(age) if age is not None else None,
         "objective": objective,
-        "title": objective.splitlines()[0][:120] if objective else run_dir.name,
+        "title": name or (objective.splitlines()[0][:120] if objective else run_dir.name),
+        "named": bool(name),
         "model": status.get("model", ""),
         "thinking": status.get("thinking", ""),
         "role": status.get("role", ""),
@@ -308,7 +399,10 @@ def detail(project: dict, run_dir: Path) -> dict:
         "plan": _read_text(run_dir / "plan.md"),
         "handoff": _read_text(run_dir / "handoff.md"),
         "notes": _read_text(run_dir / "notes.md"),
-        "worktree": str(run_dir.parents[2]),
+        # `parents[2]` walks <worktree>/.lmloop/runs/<id> back to the worktree.
+        # An archived run is not nested that way and has no worktree at all, so
+        # the same arithmetic would name some unrelated directory.
+        "worktree": "" if record["archived"] else str(run_dir.parents[2]),
         "run_dir": str(run_dir),
         "iterations": _iterations(run_dir),
     })
@@ -359,8 +453,19 @@ def _iterations(run_dir: Path) -> list[dict]:
 def all_runs(roots: list[Path]) -> list[dict]:
     """Every run under every project, most recently updated first."""
     collected = []
+    live_names = set()
     for project in projects(roots):
         for run_dir in run_dirs(Path(project["path"])):
+            live_names.add((project["id"], run_dir.name))
+            collected.append(summarise(project, run_dir))
+    # Then the archive.  A run id can legitimately exist in both places -- the
+    # worktree was removed and the name later re-used -- and the live one is the
+    # one anybody means, so the archived copy is skipped rather than listed
+    # twice under the same id.
+    for project in projects(roots):
+        for run_dir in archived_dirs(project["id"]):
+            if (project["id"], run_dir.name) in live_names:
+                continue
             collected.append(summarise(project, run_dir))
     collected.sort(key=lambda run: (run["updated_at"] or ""), reverse=True)
     return collected

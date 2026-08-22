@@ -56,8 +56,8 @@ Cumulative diff against the base commit:
 
 {task_line} You are one iteration in a
 long chain: the objective is not yours to finish today, and there is no credit
-for getting further than the step. The run is measured in commits, so one small
-finished step beats three half-finished ones.
+for getting further than the step. The run is measured in commits, so a small
+finished step beats several half-finished ones.
 
 **Read at most {file_limit_words} files before your first write.** This is a hard budget, not
 advice. Your context window is smaller than this codebase: if you fill it with
@@ -131,16 +131,30 @@ This is the plan for the objective, as you left it.  {progress}
 {plan}
 ```
 
-Do up to {steps_per_iteration} unchecked {step_word}, in order. When each is done,
-edit `{path}` to check it off. Stop after that limit even if more work is ready.
+{instruction}
 
 Two things are always allowed and often right: splitting a step you have
 discovered is too big into smaller unchecked steps, and adding steps you have
-realised are necessary.  Do not rewrite the whole plan, do not re-order what is
-already done, and do not start a second step because the first was quick -- the
-next iteration will pick it up, and a small finished step beats two half-done
-ones.
+realised are necessary.  Do not rewrite the whole plan and do not re-order what
+is already done.
 """
+
+# One step is the default and gets the stronger sentence: "up to one step" is a
+# budget to interpret, "the first step and nothing else" is not, and a local
+# model reads the difference.  The two variants exist because the paragraph that
+# follows used to end "do not start a second step because the first was quick",
+# which flatly contradicts `steps_per_iteration = 3` -- an instruction the model
+# then has to guess its way past.
+ONE_STEP = """\
+Do the FIRST unchecked step and nothing else.  When it is done, edit `{path}` to
+check it off.  Do not start a second step because the first was quick -- the next
+iteration will pick it up, and a small finished step beats two half-done ones."""
+
+SEVERAL_STEPS = """\
+Do the first {count} unchecked steps, in order, and nothing else.  Check each one
+off in `{path}` as you finish it, before starting the next -- an iteration that
+ends early still leaves an honest plan behind.  Stop at {count} even if the next
+step looks quick -- {count} finished steps beat {more} half-done ones."""
 
 ENVIRONMENT_TEMPLATE = """\
 # The environment
@@ -194,6 +208,9 @@ say in your handoff what you repaired."""
 
 PLAN_TASK = """\
 Do the one step the plan names, and nothing else."""
+
+PLAN_TASK_MANY = """\
+Do the {count} steps the plan names, and nothing else."""
 
 SPLIT_TASK = """\
 **This iteration's job is to split one plan step, then do the first piece.**
@@ -314,7 +331,11 @@ def build(
     # because editing around a file that does not parse only makes it worse.
     # A step that will not fit outranks doing that step, for the same shape of
     # reason: attempting it again as written is attempting what just failed.
-    task_line = REPAIR_TASK if defects else SPLIT_TASK.format(times=thrashed_times) if thrash_section else PLAN_TASK
+    plan_task = (
+        PLAN_TASK if steps_per_iteration == 1
+        else PLAN_TASK_MANY.format(count=_number_word(steps_per_iteration))
+    )
+    task_line = REPAIR_TASK if defects else SPLIT_TASK.format(times=thrashed_times) if thrash_section else plan_task
 
     gate_section = ""
     if gate_command:
@@ -391,10 +412,16 @@ def _plan(plan: str, path: str, progress: tuple[int, int], steps_per_iteration: 
         )
     else:
         summary = "It has no checkboxes yet; add them as you go."
+    if steps_per_iteration == 1:
+        instruction = ONE_STEP.format(path=path)
+    else:
+        instruction = SEVERAL_STEPS.format(
+            count=_number_word(steps_per_iteration),
+            more=_number_word(steps_per_iteration + 1),
+            path=path,
+        )
     body = HAVE_PLAN.format(
-        plan=plan.strip(), path=path, progress=summary,
-        steps_per_iteration=steps_per_iteration,
-        step_word="step" if steps_per_iteration == 1 else "steps",
+        plan=plan.strip(), path=path, progress=summary, instruction=instruction
     ).strip()
     return PLAN_TEMPLATE.format(body=body) + "\n"
 

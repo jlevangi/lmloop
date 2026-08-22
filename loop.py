@@ -88,7 +88,12 @@ class Run:
         # and the agent is the one who can split it.
         self.thrashed_steps: dict[str, int] = {}
         self.no_diff_streak = 0
-        self.active_elapsed_seconds = 0.0
+        # Wall clock from earlier segments only.  This segment's own time is
+        # measured from `_segment_started` and added when it is read, never
+        # accumulated here -- adding both is how a 10h budget stopped a run
+        # at six real hours while reporting 11.4h.
+        self.elapsed_before = 0.0
+        self._segment_started: float | None = None
         self.linked: list[str] = []
         self.defects: list[str] = []
         self.screen = display.Screen()
@@ -223,7 +228,7 @@ class Run:
         self.iteration_floor = min(self.iteration_ceiling, done + extra_iterations)
         self.max_iterations = self.iteration_floor
         self.no_diff_streak = int(state.get("no_diff_streak", 0))
-        self.active_elapsed_seconds = float(state.get("active_elapsed_seconds", 0))
+        self.elapsed_before = float(state.get("active_elapsed_seconds", 0))
         self.thrashed_steps = {
             str(step): int(count)
             for step, count in (state.get("thrashed_steps") or {}).items()
@@ -304,7 +309,7 @@ class Run:
             if self.max_iterations >= self.iteration_ceiling:
                 return "turn ceiling hit"
             return f"max iterations reached ({self.max_iterations})"
-        hours = (self.active_elapsed_seconds + time.monotonic() - started) / 3600
+        hours = (self.elapsed_before + time.monotonic() - started) / 3600
         if hours >= self.config["stop"]["max_wall_hours"]:
             return f"max wall clock reached ({hours:.1f}h)"
         limit = self.config["stop"]["no_diff_iterations"]
@@ -925,12 +930,14 @@ class Run:
             learnings.append(result.detail)
         self.rundir.append_notes(number, prefix + summary, changes, learnings)
 
-        if self._counts_as_healthy_no_change(commit, gitops.has_uncommitted(self.worktree)):
+        uncommitted = gitops.has_uncommitted(self.worktree)
+        if self._counts_as_no_progress(commit, uncommitted):
             self.no_diff_streak += 1
-        elif commit is not None:
+        elif commit is not None or uncommitted:
+            # Any git-visible change clears it, whatever killed the iteration.
             self.no_diff_streak = 0
 
-        self._save_run_state(result.elapsed_seconds)
+        self._save_run_state()
         self.rundir.event(
             "iteration:end",
             iteration=number,
@@ -974,13 +981,34 @@ class Run:
             f" | {result.tool_calls} tool calls{overflows} | {verdict}"
         )
 
-    def _counts_as_healthy_no_change(self, commit: str | None, uncommitted: bool) -> bool:
-        return self.last_outcome == "ok" and commit is None and not uncommitted
+    # Outcomes where the agent ran to the end of its turn and produced nothing
+    # git-visible.  That is what the streak is for: three of these in a row is
+    # a run going nowhere, and `no-action` -- a clean turn that called no tool
+    # at all -- is the single clearest example of it.
+    #
+    # Everything else is excluded, because it is a failure the loop already
+    # answers somewhere else and counting it here stops a healthy run for
+    # something that was never about the work: `agent-error` on a broken
+    # stream backs off, `thrashing` splits the step, `timeout` and `stalled`
+    # killed the iteration, `interrupted` was the operator.  One run here
+    # stopped on "no git-visible change in 3 consecutive iterations" whose
+    # three iterations were agent-error, interrupted, agent-error -- not one
+    # completed attempt among them.
+    NO_PROGRESS_OUTCOMES = frozenset({"ok", "no-action", "truncated"})
 
-    def _save_run_state(self, elapsed_seconds: float = 0.0) -> None:
-        self.active_elapsed_seconds += elapsed_seconds
+    def _counts_as_no_progress(self, commit: str | None, uncommitted: bool) -> bool:
+        return (
+            self.last_outcome in self.NO_PROGRESS_OUTCOMES
+            and commit is None
+            and not uncommitted
+        )
+
+    def _save_run_state(self) -> None:
+        elapsed = self.elapsed_before
+        if self._segment_started is not None:
+            elapsed += time.monotonic() - self._segment_started
         self.rundir.write_run_state({
-            "active_elapsed_seconds": self.active_elapsed_seconds,
+            "active_elapsed_seconds": elapsed,
             "no_diff_streak": self.no_diff_streak,
             "thrashed_steps": self.thrashed_steps,
             "hard_turn_ceiling": self.iteration_ceiling,
@@ -989,7 +1017,7 @@ class Run:
     # -- driver -----------------------------------------------------------
 
     def start(self, from_iteration: int = 0) -> int:
-        started = time.monotonic()
+        started = self._segment_started = time.monotonic()
         signal.signal(signal.SIGINT, self._on_interrupt)
         signal.signal(signal.SIGTERM, self._on_interrupt)
 

@@ -305,7 +305,15 @@ which is easier to trust than a cron job quietly rewriting run directories at
 - `[stop] initial_turns` is the starting budget; `hard_turn_ceiling` is the
   absolute limit. `max_iterations` remains a legacy alias for both. `resume
   --iterations N` explicitly extends the saved ceiling by N turns; it no longer
-  gains an implicit fresh config-sized allowance.
+  gains an implicit fresh config-sized allowance. Note that these two have to
+  *differ* for `budget_follows_plan` to buy anything: set equal — which is what
+  the legacy alias does, and what the shipped defaults do — the budget is
+  pinned and a growing plan cannot reach past it. That is the shape of the run
+  that finished 54 of 62 steps.
+- `[stop] max_wall_hours` is now a whole-run budget, carried across resumes in
+  `run-state.json` rather than restarting with each segment. A long-lived run
+  can therefore exceed a limit that no single segment came near: one here spent
+  16.5 hours of model time across six segments, none of them longer than seven.
 - Terminal `status.json` uses `phase = "completed"` only for a completed plan.
   Other exits use `phase = "stopped"` and carry `stop_reason`; a ceiling exit is
   reported as `turn ceiling hit`.
@@ -318,7 +326,11 @@ which is easier to trust than a cron job quietly rewriting run directories at
 - `[stop] no_diff_iterations` — stop after N iterations that git says changed
   nothing. This is the guard that catches an agent confidently going nowhere,
   and the one the budget cannot outrun: plan progress deliberately does not
-  reset the streak.
+  reset the streak. Only iterations the agent actually ran to the end of count
+  — `ok`, `no-action`, `truncated`. A broken stream, a stall, a thrash or an
+  operator interrupt is a failure the loop answers elsewhere, and counting it
+  here stopped a healthy run once on three iterations that were agent-error,
+  interrupted, agent-error: not one completed attempt among them.
 
 ## Notes on local models
 

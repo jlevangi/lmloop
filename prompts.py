@@ -59,19 +59,18 @@ long chain: the objective is not yours to finish today, and there is no credit
 for getting further than the step. The run is measured in commits, so one small
 finished step beats three half-finished ones.
 
-**Read at most three files before your first write.** This is a hard budget, not
+**Read at most {file_limit_words} files before your first write.** This is a hard budget, not
 advice. Your context window is smaller than this codebase: if you fill it with
 file contents before writing anything, it overflows, you lose everything you
 read, and you start over from a summary -- three times in a row on one observed
 iteration, forty file reads, not one line written. Surveying everything you
 might need is the single most reliable way to finish an iteration with nothing.
 
-So: read the two or three files the next change actually requires, write the
-change, and only then read more. A rough file you improve next iteration is
-worth more than a perfect plan you never got to type, because the rough file is
-committed and the plan dies with your context. If the objective is bigger than
-three files, it is too big to be one step: split it in the plan and do the first
-piece.
+So: read only the files the next change actually requires, write the change,
+and only then read more. A rough file you improve next iteration is worth more
+than a perfect plan you never got to type, because the rough file is committed
+and the plan dies with your context. If the objective is bigger than
+{file_limit_words} files, split it in the plan and do the first piece.
 
 Rules:
 
@@ -132,8 +131,8 @@ This is the plan for the objective, as you left it.  {progress}
 {plan}
 ```
 
-Do the FIRST unchecked step and nothing else.  When it is done, edit `{path}` to
-check it off.
+Do up to {steps_per_iteration} unchecked {step_word}, in order. When each is done,
+edit `{path}` to check it off. Stop after that limit even if more work is ready.
 
 Two things are always allowed and often right: splitting a step you have
 discovered is too big into smaller unchecked steps, and adding steps you have
@@ -286,11 +285,15 @@ def build(
     gate_baseline: str = "",
     thrashed_step: str = "",
     thrashed_times: int = 0,
+    planning: dict | None = None,
 ) -> str:
     tree_section = TREE_TEMPLATE.format(tree=tree.strip()) + "\n" if tree.strip() else ""
     environment_section = _environment(linked or [], interpreter)
     history_section = _history(history or [])
-    plan_section = _plan(plan, plan_path, plan_progress)
+    planning = planning or {}
+    file_limit = max(1, int(planning.get("pre_write_file_limit", 3)))
+    steps_per_iteration = max(1, int(planning.get("steps_per_iteration", 1)))
+    plan_section = _plan(plan, plan_path, plan_progress, steps_per_iteration)
     defects_section = (
         DEFECTS_TEMPLATE.format(problems="\n".join(defects[:15])) + "\n" if defects else ""
     )
@@ -355,10 +358,11 @@ def build(
         gate_section=gate_section,
         handoff=handoff.strip() or FIRST_HANDOFF,
         handoff_path=handoff_path,
+        file_limit_words=_number_word(file_limit),
     )
 
 
-def _plan(plan: str, path: str, progress: tuple[int, int]) -> str:
+def _plan(plan: str, path: str, progress: tuple[int, int], steps_per_iteration: int = 1) -> str:
     """The objective, decomposed, carried between iterations as a file.
 
     This is the answer to the thing that actually broke every run: a big
@@ -387,8 +391,17 @@ def _plan(plan: str, path: str, progress: tuple[int, int]) -> str:
         )
     else:
         summary = "It has no checkboxes yet; add them as you go."
-    body = HAVE_PLAN.format(plan=plan.strip(), path=path, progress=summary).strip()
+    body = HAVE_PLAN.format(
+        plan=plan.strip(), path=path, progress=summary,
+        steps_per_iteration=steps_per_iteration,
+        step_word="step" if steps_per_iteration == 1 else "steps",
+    ).strip()
     return PLAN_TEMPLATE.format(body=body) + "\n"
+
+
+def _number_word(value: int) -> str:
+    return {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+            7: "seven", 8: "eight", 9: "nine", 10: "ten"}.get(value, str(value))
 
 
 def _history(runs: list[dict]) -> str:

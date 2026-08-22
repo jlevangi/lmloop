@@ -7,7 +7,7 @@ cd ~/git/some-project
 lmloop run "a broad objective"           # decomposed by the agent, not by you
 lmloop run "..." --model llama-swap/local-wide --thinking low
 lmloop run "..." --detach                # background; prints the run id
-lmloop resume <run-id> --iterations 12   # continue, same worktree and plan
+lmloop resume <run-id> --iterations 12   # extend its saved ceiling by 12 turns
 lmloop list                              # runs for this repo
 lmloop status                            # what the newest run is doing now
 ```

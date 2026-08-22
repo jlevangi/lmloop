@@ -57,6 +57,7 @@ class RunDir:
         self.handoff_path = self.path / "handoff.md"
         self.plan_path = self.path / "plan.md"
         self.status_path = self.path / "status.json"
+        self.run_state_path = self.path / "run-state.json"
         self.pid_path = self.path / "loop.pid"
         self.stop_path = self.path / "STOP"
         self.stop_now_path = self.path / "STOP-NOW"
@@ -433,6 +434,34 @@ class RunDir:
             temporary.replace(self.status_path)
         except OSError:
             pass  # a status file is never worth failing a run over
+
+    def read_run_state(self) -> dict:
+        try:
+            value = json.loads(self.run_state_path.read_text())
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def write_run_state(self, state: dict) -> None:
+        temporary = self.run_state_path.with_suffix(".json.tmp")
+        try:
+            temporary.write_text(json.dumps(state, indent=2) + "\n")
+            temporary.replace(self.run_state_path)
+        except OSError:
+            pass
+
+    def write_terminal_status(self, reason: str, iteration: int, done: int, total: int) -> None:
+        completed = reason.startswith("plan complete")
+        try:
+            previous = json.loads(self.status_path.read_text())
+        except (OSError, ValueError):
+            previous = {}
+        self.write_status({
+            **previous, "iteration": iteration,
+            "phase": "completed" if completed else "stopped",
+            "stop_reason": reason, "plan_done": done, "plan_total": total,
+            "stopping": False,
+        })
 
     # -- control ----------------------------------------------------------
 

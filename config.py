@@ -121,6 +121,10 @@ DEFAULTS: dict = {
         # 0 disables the check.
         "max_compactions": 3,
     },
+    "planning": {
+        "pre_write_file_limit": 3,
+        "steps_per_iteration": 1,
+    },
     "notify": {
         # A run is unattended for hours by design, so the moment it ends is the
         # moment nobody is watching.  One push when it stops, never per
@@ -153,7 +157,9 @@ DEFAULTS: dict = {
         # was 3, which cannot decompose anything.  `no_diff_iterations` and
         # `max_wall_hours` are the guards that actually stop a run going
         # nowhere, and both watch evidence rather than counting.
-        "max_iterations": 20,
+        "max_iterations": 20,  # legacy alias; new configs use the two keys below
+        "initial_turns": 20,
+        "hard_turn_ceiling": 20,
         "max_wall_hours": 10,
         "no_diff_iterations": 3,
         # A fixed iteration count is the wrong shape for a plan whose length is
@@ -190,9 +196,18 @@ def _read(path: Path) -> dict:
 
 
 def load(repo_root: Path) -> dict:
-    """Defaults, then the global file, then the repo's own ``.lmloop.toml``."""
-    config = _merge(DEFAULTS, _read(GLOBAL_CONFIG))
-    return _merge(config, _read(repo_root / PROJECT_CONFIG))
+    """Defaults, then global, then project; translate the legacy turn limit."""
+    global_config = _read(GLOBAL_CONFIG)
+    project_config = _read(repo_root / PROJECT_CONFIG)
+    config = _merge(_merge(DEFAULTS, global_config), project_config)
+    explicit_stop = {**global_config.get("stop", {}), **project_config.get("stop", {})}
+    if "max_iterations" in explicit_stop:
+        legacy = explicit_stop["max_iterations"]
+        if "initial_turns" not in explicit_stop:
+            config["stop"]["initial_turns"] = legacy
+        if "hard_turn_ceiling" not in explicit_stop:
+            config["stop"]["hard_turn_ceiling"] = legacy
+    return config
 
 
 def sample() -> str:
@@ -235,6 +250,10 @@ timeout_seconds = 14400   # 4h backstop
 stall_seconds   = 1200    # 20m of silence from the agent
 max_compactions = 3       # give up after N context overflows with no writes
 
+[planning]
+pre_write_file_limit = 3  # files allowed before the first write
+steps_per_iteration  = 1  # plan steps allowed in one turn
+
 [notify]
 url           = ""        # e.g. "https://ntfy.example.com"; empty disables
 topic         = "lmloop"
@@ -255,7 +274,9 @@ blocks_commit = false     # record the result; commit either way
 # the plan cannot argue past, not the number of steps you expect.
 budget_follows_plan = true
 retry_allowance     = 5
-max_iterations      = 20     # the cap, not the plan; git is what stops a bad run
-max_wall_hours      = 10
+initial_turns        = 20     # minimum budget before plan-derived growth
+hard_turn_ceiling    = 20     # absolute stop; resume --iterations extends it
+# max_iterations = 20         # legacy alias for both values above
+max_wall_hours       = 10
 no_diff_iterations  = 3
 """

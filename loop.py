@@ -49,8 +49,12 @@ class Run:
         # explicit `--max-iterations` raises the floor rather than pinning the
         # run, because the request behind it is "at least this much", and a run
         # that stops one step short of a finished plan is the thing being fixed.
-        self.iteration_floor = max_iterations or config["stop"]["max_iterations"]
-        self.iteration_ceiling = max(self.iteration_floor, config["stop"]["max_iterations"])
+        stop = config["stop"]
+        legacy = stop.get("max_iterations", 20)
+        self.iteration_floor = max_iterations or stop.get("initial_turns", legacy)
+        self.iteration_ceiling = max(
+            self.iteration_floor, stop.get("hard_turn_ceiling", legacy)
+        )
         self.max_iterations = self.iteration_floor
         self.model = config["agent"]["model"]
         self.thinking = config["agent"].get("thinking", "")
@@ -84,6 +88,7 @@ class Run:
         # and the agent is the one who can split it.
         self.thrashed_steps: dict[str, int] = {}
         self.no_diff_streak = 0
+        self.active_elapsed_seconds = 0.0
         self.linked: list[str] = []
         self.defects: list[str] = []
         self.screen = display.Screen()
@@ -212,11 +217,17 @@ class Run:
             default=0,
         )
         self.objective = (self.rundir.path / "prompt.md").read_text().strip()
-        self.iteration_floor = done + extra_iterations
-        self.iteration_ceiling = max(
-            self.iteration_floor, done + self.config["stop"]["max_iterations"]
-        )
+        state = self.rundir.read_run_state()
+        prior_ceiling = int(state.get("hard_turn_ceiling", done))
+        self.iteration_ceiling = max(done, prior_ceiling) + extra_iterations
+        self.iteration_floor = min(self.iteration_ceiling, done + extra_iterations)
         self.max_iterations = self.iteration_floor
+        self.no_diff_streak = int(state.get("no_diff_streak", 0))
+        self.active_elapsed_seconds = float(state.get("active_elapsed_seconds", 0))
+        self.thrashed_steps = {
+            str(step): int(count)
+            for step, count in (state.get("thrashed_steps") or {}).items()
+        }
         # Runs that predate this, and runs resumed after the exclude list grew.
         gitops.exclude(self.repo, self._exclusions())
         self.publish_sessions()
@@ -291,9 +302,9 @@ class Run:
             return f"plan complete ({done}/{total})"
         if iteration > self.max_iterations:
             if self.max_iterations >= self.iteration_ceiling:
-                return f"iteration ceiling reached ({self.iteration_ceiling})"
+                return "turn ceiling hit"
             return f"max iterations reached ({self.max_iterations})"
-        hours = (time.monotonic() - started) / 3600
+        hours = (self.active_elapsed_seconds + time.monotonic() - started) / 3600
         if hours >= self.config["stop"]["max_wall_hours"]:
             return f"max wall clock reached ({hours:.1f}h)"
         limit = self.config["stop"]["no_diff_iterations"]
@@ -597,6 +608,7 @@ class Run:
             defects=self.defects,
             thrashed_step=self._retry_step(),
             thrashed_times=self.thrashed_steps.get(self._retry_step(), 0),
+            planning=self.config.get("planning", {}),
         )
         self.rundir.iteration_prompt(number).write_text(prompt)
         self.rundir.event(
@@ -913,11 +925,12 @@ class Run:
             learnings.append(result.detail)
         self.rundir.append_notes(number, prefix + summary, changes, learnings)
 
-        if commit is None and not gitops.has_uncommitted(self.worktree):
+        if self._counts_as_healthy_no_change(commit, gitops.has_uncommitted(self.worktree)):
             self.no_diff_streak += 1
-        else:
+        elif commit is not None:
             self.no_diff_streak = 0
 
+        self._save_run_state(result.elapsed_seconds)
         self.rundir.event(
             "iteration:end",
             iteration=number,
@@ -960,6 +973,18 @@ class Run:
             f"    {outcome} in {display.elapsed(result.elapsed_seconds)}"
             f" | {result.tool_calls} tool calls{overflows} | {verdict}"
         )
+
+    def _counts_as_healthy_no_change(self, commit: str | None, uncommitted: bool) -> bool:
+        return self.last_outcome == "ok" and commit is None and not uncommitted
+
+    def _save_run_state(self, elapsed_seconds: float = 0.0) -> None:
+        self.active_elapsed_seconds += elapsed_seconds
+        self.rundir.write_run_state({
+            "active_elapsed_seconds": self.active_elapsed_seconds,
+            "no_diff_streak": self.no_diff_streak,
+            "thrashed_steps": self.thrashed_steps,
+            "hard_turn_ceiling": self.iteration_ceiling,
+        })
 
     # -- driver -----------------------------------------------------------
 
@@ -1013,6 +1038,9 @@ class Run:
             commitCount=gitops.commit_count(self.worktree, self.rundir.base_commit),
             worktreePath=str(self.worktree),
         )
+        done, total = self.rundir.plan_progress()
+        self.rundir.write_terminal_status(reason or "complete", iteration - 1, done, total)
+        self._save_run_state()
         self.rundir.release()
         self.screen.close()
         self._summarise(reason, started)

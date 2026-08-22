@@ -49,7 +49,7 @@ preflight (is the model loadable?)
               └─ checks (built-in, always)
                   └─ handoff: written by the agent, harvested, or synthesised
                       └─ commit everything, labelled with the outcome
-                          └─ stop? (iterations, wall clock, no-diff streak)
+                          └─ persist run state and stop? (turn ceiling, cumulative wall clock, healthy no-diff streak)
 ```
 
 The order matters in one place: checks run *after* the gate so both results are

@@ -223,7 +223,8 @@ def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float 
         if name in ("run:start", "run:complete", "iteration:start", "iteration:end"):
             latest = name
     if latest == "run:complete" and not _holder(run_dir):
-        return "finished", age
+        phase = status.get("phase")
+        return (phase if phase in ("completed", "stopped") else "stopped"), age
     if age is None:
         return "unknown", None
     if age > STALE_AFTER_SECONDS and not _holder(run_dir):

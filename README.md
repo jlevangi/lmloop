@@ -296,19 +296,19 @@ which is easier to trust than a cron job quietly rewriting run directories at
   in the commit message and the next iteration's prompt but commits regardless,
   which is usually what you want; a gate that could not be run never blocks a
   commit, whatever that setting says.
-- `[stop] budget_follows_plan` — the iteration budget is recomputed from the
-  plan every iteration: what has been spent, plus one per remaining step, plus
-  `retry_allowance` spare. A fixed count is the wrong shape for a plan whose
-  length is not known when the run starts. One run here planned twelve steps,
-  grew to thirteen, then fifteen, spent five of its fourteen iterations on
-  transport failures and a server that had been switched off, and stopped at
-  10/15 — never once short of work, only of budget. With the budget following
-  the plan, a step that fails twice costs the run two attempts rather than its
-  last step.
-- `[stop] max_iterations` — the **ceiling**, not the target. Growing the plan
-  buys attempts up to this number and never past it, so an agent cannot write
-  itself an unbounded run. An explicit `--max-iterations` raises the *floor*
-  instead: the request behind it is "at least this much".
+- `[planning] pre_write_file_limit` and `steps_per_iteration` control work-unit
+  size. Defaults remain conservative (three files, one plan step), but a model
+  with a measured large context can be allowed broader coherent turns without
+  changing lmloop's safety limits.
+- `[stop] budget_follows_plan` recomputes the active budget from turns spent,
+  remaining steps, and `retry_allowance`.
+- `[stop] initial_turns` is the starting budget; `hard_turn_ceiling` is the
+  absolute limit. `max_iterations` remains a legacy alias for both. `resume
+  --iterations N` explicitly extends the saved ceiling by N turns; it no longer
+  gains an implicit fresh config-sized allowance.
+- Terminal `status.json` uses `phase = "completed"` only for a completed plan.
+  Other exits use `phase = "stopped"` and carry `stop_reason`; a ceiling exit is
+  reported as `turn ceiling hit`.
 - A run also stops when every plan step is checked (`plan complete (15/15)`).
   That is the one stop condition here that trusts a self-report, and it is the
   safe direction to trust — the failure is a run that stops early leaving its

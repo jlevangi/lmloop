@@ -100,6 +100,60 @@ fix, because decomposition is the loop's job.
 reading files*, then does the first unchecked step and nothing else. The same
 broad objective then produced 124 passing tests over 14 iterations.
 
+## Choosing omp and getting pi's vocabulary
+
+Three failures share one cause: omp is close enough to pi that a setting looks
+portable, and different enough that it is not. All three were reproduced against
+omp v17.4.0 rather than reasoned about.
+
+**The allowlist that stops the run before it starts.** pi's default `tools`
+names `replace` and `ls`. pi ignores what it does not recognise; omp checks the
+list and exits 1 — `CliUsageError: Unknown tools in --tools: replace, ls` —
+before it emits a single event. Under `--mode json` that is one of the very few
+ways omp does exit non-zero, and the loop would have seen an iteration with no
+message end and reported `agent-error` every time. `config.resolve_tools` now
+settles this while the config is being read: the shipped default is swapped for
+omp's, and anything else is validated with the offending names quoted.
+
+**The compaction summary that silently is not there.** pi emits
+`compaction_start` / `compaction_end`; omp emits `auto_compaction_start` /
+`auto_compaction_end`. The names are a prefix apart, so a marker for either
+matches neither. An omp iteration that overflowed would have looked exactly like
+one that never compacted: the thrash counter would not tick, and
+`last_compaction_summary` would find nothing and fall back to synthesising a
+handoff from a diff that, for the iterations this happens to, is empty. Both the
+byte marker and the event name now come from the adapter.
+
+**The editor with no path.** omp's `edit` takes one string — a line-anchored
+patch script whose file is named in a `[path#TAG]` section header — where pi's
+takes a `path`. Nothing crashes: `files_touched` just comes back empty for every
+edit an omp run makes, and the commit trailer that lists what changed lists
+nothing while the diff says otherwise. Git is still the witness, so no work is
+lost; what is lost is the ability to read the record. The adapter parses the
+header, and returns nothing rather than a guess when there is not one.
+
+## The browser that was never reachable
+
+omp is the first agent here with a browser of its own, and an unreachable one
+fails as a slow, expensive, plausible-looking dead end: the agent opens a tab,
+waits five seconds, gets nothing, tries something else, and the run log reads as
+a model that could not do the task.
+
+Two properties of omp's attach decide it, and neither is obvious from a URL that
+looks fine. It takes an HTTP CDP *discovery* endpoint and rejects `ws://` and
+`wss://` by name — which is exactly the form a hosted browser advertises. And it
+reaches that endpoint as `${cdpUrl}/json/version`, then hands the URL to
+puppeteer's `browserURL`, so a `?token=` credential is dropped both times.
+Against a token-authenticated endpoint the result is a five-second timeout with
+nothing said, and no amount of the agent retrying will change it.
+
+`browser.py` answers this once, when the run starts, and never opens a tab: a
+preflight that drives the browser is one that can disturb whatever else is using
+it. It is not fatal — the iteration still reads, edits, gates and commits. Every
+query value is redacted before the answer reaches the terminal or the event log,
+because a CDP endpoint is credentials: anything that can reach it can read every
+page that browser has open.
+
 ## Reporting failures honestly
 
 | Outcome | Means |

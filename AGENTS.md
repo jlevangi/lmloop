@@ -35,11 +35,23 @@ in this codebase is load-bearing and was paid for with a failed run.
   must be tracked, or it will not exist there.
 - **`[hidden]` loses to any `display` rule** in the dashboard's CSS, and a
   block-level progress fill with no width renders as 100%. Both shipped once.
+- **Two different projects answer to "oh-my-pi".** The npm package is a pi
+  extension and arrives through `PiHarness`. `omp` is
+  `github.com/can1357/oh-my-pi`, a fork with its own binary — that is the one
+  `OmpHarness` is for.
+- **omp is not pi with a different name.** It has no `--session-id` (exit 2),
+  its compaction events are `auto_compaction_*`, its `edit` takes a patch script
+  rather than a path, and it *rejects* `--tools` names it does not know instead
+  of ignoring them — which is one of the few ways `--mode json` exits non-zero.
+- **omp's browser cannot carry a query-string credential.** It takes an HTTP CDP
+  discovery endpoint, rejects `ws://`, and drops `?token=` on both the paths it
+  uses to reach one. `browser.py` says so before a run rather than after.
 
 ## Working on this
 
 ```bash
-python3 -m compileall -q . web/     # there is no test suite yet
+python3 -m compileall -q . web/
+python3 -m unittest test_lmloop     # policy, adapters, allowlists; no agent needed
 lmloop run "..." --max-iterations 1 # on a scratch repo, with a cloud model
 ```
 

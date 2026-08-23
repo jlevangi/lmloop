@@ -82,6 +82,20 @@ does not catch this -- it is a runtime error, not a syntax one.
 An unmeasured model falls back to 24,576, which is small enough that no
 llama.cpp deployment rejects it.
 
+## Where omp reads its models
+
+omp does not share pi's catalogue. Providers live in `~/.omp/agent/models.yml`;
+`--config` overlays carry settings and not providers, and `PI_CODING_AGENT_DIR`
+relocates the whole directory. `docs/operations.md` has the llama-swap block to
+append, and the one thing in it that must match exactly: the provider has to be
+named `llama-swap`, because everything below keys off that prefix.
+
+That file is YAML, and lmloop is standard library only, so nothing here reads
+it. The consequence is confined to one case: a **cloud** model under omp has no
+declared window, so `Run.window` is 0, the dashboard gauge is blank and thrash
+escalation cannot rank it. Local models are unaffected — their windows are
+measured from the llama-server command line, not declared by anyone.
+
 ## Models lmloop does not measure
 
 `declared_window` only measures llama-swap, because only llama-swap will tell it

@@ -17,6 +17,7 @@ loop.
 | `gitops.py` | Every git invocation. **No reset, no clean, no worktree removal** — grep it. |
 | `checks.py` | "Did the edit land intact", on the files git says changed, whatever the project configured. |
 | `models.py` | llama-swap preflight and context measurement. |
+| `browser.py` | Whether omp's browser tool can attach to the CDP endpoint it was given. Redacts before it reports. |
 | `harness.py` | What lmloop needs from an agent: an argv, and what its events mean. One small adapter per agent. |
 | `config.py` | Defaults → global TOML → the repo's `.lmloop.toml`. |
 | `display.py` | The status line and its width arithmetic. Load-bearing; see design.md. |
@@ -63,9 +64,25 @@ lives — an adapter answers what to exec, which lines are worth parsing, and wh
 each event means, then everything downstream speaks one normalised vocabulary
 and knows nothing about which agent produced it.
 
-`pi` and `opencode` are both implemented, each written against captured output
-rather than documentation. `oh-my-pi` needs no adapter: it is a pi *extension*
-that pi auto-discovers, so it arrives through the pi adapter unchanged.
+`pi`, `omp` and `opencode` are implemented, each written against captured output
+rather than documentation. Two of those names collide and it is worth being
+precise about which is which: the npm package **oh-my-pi** is a pi *extension*
+that pi auto-discovers, so it needs no adapter and arrives through `PiHarness`
+unchanged. **`omp`** is [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi),
+a fork of pi with its own binary — close enough to inherit most of the pi
+adapter, different enough to need one.
+
+What `OmpHarness` overrides is a useful list of what an adapter can be wrong
+about: an argv (there is no `--session-id`, and print mode is opt-in), an event
+name (`auto_compaction_start`, where pi says `compaction_start` — a prefix
+apart, so neither matches the other), and how a tool call names its file (omp's
+editor takes a patch script with the path in a `[path#TAG]` header, not a `path`
+argument).
+
+An adapter also answers two questions asked outside the stream: which `--tools`
+names the agent will accept, because omp exits 1 on one it does not know rather
+than ignoring it, and which byte marker finds a compaction summary in a raw
+iteration log.
 
 An agent that does not compact simply returns no summary, and the loop falls
 back to synthesising a handoff from git — worse, but never wrong.

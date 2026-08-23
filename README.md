@@ -282,6 +282,17 @@ which is easier to trust than a cron job quietly rewriting run directories at
   agent that does not know the environment is there goes looking for it.
   `.env` is deliberately not a default: add it per project if the code needs
   it, rather than having the loop hand a model your secrets uninvited.
+- `[agent] harness` — which agent does the typing: `pi` (the default, and
+  anything pi discovers as an extension, including the npm package called
+  oh-my-pi), `omp` ([can1357/oh-my-pi](https://github.com/can1357/oh-my-pi), a
+  fork of pi with its own browser, task and LSP tools), or `opencode`.
+  `--agent` overrides it for one run, and `lmloop resume --agent pi` rolls a run
+  back mid-flight — nothing about a worktree, a plan or a handoff is
+  agent-shaped. See `docs/operations.md` for installing omp beside pi, its tool
+  allowlists, and how it is pointed at llama-swap and at a browser.
+- `[agent] browser_cdp_url` — where omp's browser tool should attach, checked
+  once when the run starts so an unreachable tab is one line at the top rather
+  than an hour of the agent finding out. Only omp has a browser.
 - `[agent] planner_model` — a different model for the iteration that writes the
   plan. Deciding the steps is a whole-repository question that happens once and
   wants the widest window; carrying one out happens every iteration and wants

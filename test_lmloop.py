@@ -5,7 +5,14 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import os
+import signal
+import subprocess
+
+import browser
 import config
+import harness
+import pi_runner
 import prompts
 from loop import Run
 from rundir import RunDir
@@ -124,6 +131,251 @@ class RunPolicyTests(unittest.TestCase):
         self.assertIn("FIRST unchecked step and nothing else", narrow)
         self.assertIn("Do not start a second step", narrow)
         self.assertNotIn("Do not start a second step", wide)
+
+
+class OmpHarnessTests(unittest.TestCase):
+    """The omp adapter, against events captured from `omp -p --mode json`.
+
+    Every literal below is a line copied out of a real run of omp v17.4.0
+    against a stub OpenAI-compatible provider -- no llama-swap, no cloud model,
+    no hand-written approximation of what the stream might look like.  They are
+    inline rather than in a fixtures directory because four lines of JSON are
+    cheaper to read here than in a file nobody opens.
+    """
+
+    def setUp(self):
+        self.omp = harness.get("omp")
+
+    # -- argv -------------------------------------------------------------
+
+    def test_argv_omits_session_id(self):
+        """`omp --session-id <uuid>` exits 2: the flag does not exist."""
+        argv = self.omp.argv(model="p/m", tools="read", thinking="low",
+                             session_dir="/s", session_id="iter-3")
+        self.assertNotIn("--session-id", argv)
+        self.assertNotIn("iter-3", argv)
+        self.assertEqual(["omp", "-p", "--mode", "json", "--session-dir", "/s",
+                          "--approval-mode", "yolo", "--model", "p/m",
+                          "--tools", "read", "--thinking", "low"], argv)
+
+    def test_argv_states_approval_mode(self):
+        """Inherited, `always-ask` would hang every iteration until the stall
+        clock killed it -- silently, because nobody is there to be asked."""
+        argv = self.omp.argv(model="p/m", tools="", thinking="",
+                             session_dir="/s", session_id="")
+        self.assertEqual("yolo", argv[argv.index("--approval-mode") + 1])
+
+    def test_pi_argv_is_unchanged(self):
+        self.assertEqual(
+            ["pi", "--model", "p/m", "--mode", "json", "--session-dir", "/s",
+             "--session-id", "iter-3", "--tools", "read"],
+            harness.get("pi").argv(model="p/m", tools="read", thinking="",
+                                   session_dir="/s", session_id="iter-3"),
+        )
+
+    # -- events -----------------------------------------------------------
+
+    def test_tool_call_target_and_path(self):
+        event = json.loads(
+            '{"type": "tool_execution_start", "toolCallId": "call_stub_1",'
+            ' "toolName": "read", "args": {"path": "stub_target.txt"}}'
+        )
+        note = self.omp.classify(event)
+        self.assertEqual(harness.TOOL, note["kind"])
+        self.assertEqual("read", note["name"])
+        self.assertEqual("stub_target.txt", note["target"])
+        self.assertEqual("stub_target.txt", note["path"])
+
+    def test_edit_names_its_file_in_a_section_header(self):
+        """omp's editor is a patch language: one `input` string, path inside.
+
+        There is no `path` argument to read, so a `files_touched` that looked
+        for one would report an omp run editing nothing at all.
+        """
+        event = json.loads(
+            '{"type": "tool_execution_start", "toolCallId": "c1", "toolName": "edit",'
+            ' "args": {"input": "[src/app/main.py#AB12]\\nPUT 1.=1:\\n+goodbye\\n"}}'
+        )
+        note = self.omp.classify(event)
+        self.assertEqual("main.py", note["target"])
+        self.assertEqual("src/app/main.py", note["path"])
+
+    def test_edit_without_a_usable_header_claims_no_file(self):
+        """A wrong path is worse than none: checks would go looking for it."""
+        note = self.omp.classify(
+            {"type": "tool_execution_start", "toolName": "edit",
+             "args": {"input": "PUT 1.=1:\n+no header here"}}
+        )
+        self.assertIsNone(note["path"])
+
+    def test_browser_call_shows_the_page(self):
+        note = self.omp.classify(
+            {"type": "tool_execution_start", "toolName": "browser",
+             "args": {"action": "open", "url": "http://127.0.0.1:5173/login"}}
+        )
+        self.assertEqual("http://127.0.0.1:5173/login", note["target"])
+
+    def test_assistant_message_end_carries_usage_and_stop_reason(self):
+        event = json.loads(
+            '{"type": "message_end", "message": {"role": "assistant",'
+            ' "content": [{"type": "text", "text": "Done: the file is a stub."}],'
+            ' "api": "openai-completions", "provider": "stub", "model": "stub-tiny",'
+            ' "usage": {"input": 1234, "output": 42, "cacheRead": 0, "cacheWrite": 0,'
+            ' "totalTokens": 1276}, "stopReason": "stop", "timestamp": 1787515057544}}'
+        )
+        note = self.omp.classify(event)
+        self.assertEqual(harness.MESSAGE_END, note["kind"])
+        self.assertEqual("stop", note["stop_reason"])
+        self.assertEqual((1234, 42), (note["input"], note["output"]))
+
+    def test_non_assistant_message_ends_are_ignored(self):
+        """omp ends a message for the user turn and for every tool result too.
+
+        Counting those would credit the iteration a message end it never had
+        and, worse, reset the stop reason to nothing after a real error.
+        """
+        for role in ("user", "toolResult"):
+            self.assertIsNone(
+                self.omp.classify({"type": "message_end", "message": {"role": role}}),
+                role,
+            )
+
+    # -- compaction -------------------------------------------------------
+
+    def test_compaction_events_are_prefixed(self):
+        """`auto_compaction_*`, where pi says `compaction_*`.
+
+        pi's markers are a prefix short of omp's, so neither matches the other:
+        an overflowing omp iteration would have looked like one that never
+        compacted, and the summary -- the best thing such an iteration produces
+        -- would have been dropped in favour of a diff of nothing.
+        """
+        self.assertEqual(b'"auto_compaction_end"', self.omp.compaction_marker)
+        self.assertEqual(b'"compaction_end"', harness.get("pi").compaction_marker)
+        self.assertEqual(
+            harness.COMPACTION,
+            self.omp.classify({"type": "auto_compaction_start",
+                               "reason": "overflow", "action": "context-full"})["kind"],
+        )
+        self.assertIsNone(self.omp.classify({"type": "compaction_start"}))
+
+    def test_an_aborted_compaction_carries_nothing(self):
+        summary = {"type": "auto_compaction_end", "action": "context-full",
+                   "result": {"summary": "half a thought"}, "aborted": True,
+                   "willRetry": True}
+        self.assertEqual("", self.omp.compaction_summary(summary))
+        summary["aborted"] = False
+        self.assertEqual("half a thought", self.omp.compaction_summary(summary))
+
+    def test_an_agent_that_does_not_compact_declares_no_marker(self):
+        self.assertEqual(b"", harness.get("opencode").compaction_marker)
+
+
+class ToolAllowlistTests(unittest.TestCase):
+    """omp validates `--tools` and exits 1; pi ignores what it does not know."""
+
+    def test_pis_default_allowlist_is_invalid_for_omp(self):
+        self.assertEqual(
+            ["replace", "ls"],
+            harness.get("omp").unknown_tools(config.DEFAULTS["agent"]["tools"]),
+        )
+        self.assertEqual([], harness.get("pi").unknown_tools("read,replace,ls"))
+
+    def test_selecting_omp_swaps_in_omps_own_default(self):
+        default = config.DEFAULTS["agent"]["tools"]
+        self.assertEqual(harness.OMP_DEFAULT_TOOLS, config.resolve_tools("omp", default))
+        self.assertEqual(default, config.resolve_tools("pi", default))
+
+    def test_a_deliberate_allowlist_survives_the_swap(self):
+        self.assertEqual(
+            harness.OMP_UI_TOOLS, config.resolve_tools("omp", harness.OMP_UI_TOOLS)
+        )
+
+    def test_an_impossible_allowlist_fails_before_the_run(self):
+        with self.assertRaises(SystemExit) as caught:
+            config.resolve_tools("omp", "read,replace")
+        self.assertIn("replace", str(caught.exception))
+
+    def test_override_settles_the_allowlist_after_the_agent(self):
+        """`--agent omp` arrives holding pi's tool names; order decides."""
+        cfg = config._merge(config.DEFAULTS, {})
+        config.override_agent(cfg, "omp")
+        self.assertEqual(harness.OMP_DEFAULT_TOOLS, cfg["agent"]["tools"])
+        self.assertEqual("omp", cfg["agent"]["harness"])
+
+    def test_override_rejects_an_agent_that_does_not_exist(self):
+        with self.assertRaises(SystemExit):
+            config.override_agent(config._merge(config.DEFAULTS, {}), "ompp")
+
+
+class BrowserPreflightTests(unittest.TestCase):
+    """A CDP endpoint is credentials; the preflight must never widen them."""
+
+    def test_a_websocket_endpoint_is_not_attachable(self):
+        ok, detail = browser.preflight("wss://browser.example/devtools/browser/abc?token=s3cret")
+        self.assertFalse(ok)
+        self.assertIn("websocket", detail)
+        self.assertNotIn("s3cret", detail)
+
+    def test_nothing_configured_is_said_plainly(self):
+        ok, detail = browser.preflight("")
+        self.assertFalse(ok)
+        self.assertIn("no browser CDP endpoint", detail)
+
+    def test_redaction_keeps_the_shape_and_drops_every_value(self):
+        redacted = browser.redact("http://127.0.0.1:9222/x?token=s3cret&other=alsosecret")
+        self.assertNotIn("s3cret", redacted)
+        self.assertNotIn("alsosecret", redacted)
+        self.assertIn("127.0.0.1:9222", redacted)
+        self.assertIn("token=", redacted)
+
+    def test_an_unreachable_endpoint_is_not_fatal_and_is_redacted(self):
+        # Port 9 is discard: nothing listens, and the failure is immediate.
+        ok, detail = browser.preflight("http://127.0.0.1:9/?token=s3cret", timeout=2)
+        self.assertFalse(ok)
+        self.assertNotIn("s3cret", detail)
+
+
+class TerminationTests(unittest.TestCase):
+    """Killing an iteration has to take the agent's children with it.
+
+    pi and omp both spawn shells, and both reap only the children they tracked.
+    `_terminate` signals the whole process group instead, which is why the
+    runner starts every agent in a session of its own.  Verified here against a
+    real process tree rather than an agent, so it stays honest without a model:
+    the mechanism is the same one either agent gets.
+    """
+
+    def test_terminate_kills_the_whole_group(self):
+        parent = subprocess.Popen(
+            ["sh", "-c", "sleep 300 & echo $! ; wait"],
+            stdout=subprocess.PIPE, start_new_session=True,
+        )
+        try:
+            child = int(parent.stdout.readline())
+            os.kill(child, 0)  # alive, and not our child -- only the group links us
+            pi_runner._terminate(parent)
+            self.assertIsNotNone(parent.poll())
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"grandchild {child} outlived the group it was killed with")
+        finally:
+            parent.stdout.close()
+            if parent.poll() is None:  # the assertions failed; do not leak either
+                os.killpg(os.getpgid(parent.pid), signal.SIGKILL)
+                parent.wait(timeout=5)
+
+    def test_terminate_on_an_already_dead_process_is_quiet(self):
+        """A process that exited between the clock firing and the signal."""
+        done = subprocess.Popen(["true"], start_new_session=True)
+        done.wait()
+        pi_runner._terminate(done)  # must not raise
 
 
 if __name__ == "__main__":

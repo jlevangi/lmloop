@@ -220,7 +220,7 @@ class RunDir:
             return 0.0
 
     def last_compaction_summary(self, number: int, agent_name: str = "pi") -> str:
-        """The summary the agent wrote for itself the last time pi compacted.
+        """The summary the agent wrote for itself the last time it compacted.
 
         An iteration that overflows its context has already written a handoff --
         it just wrote it to pi's event stream instead of to disk.  pi compacts by
@@ -237,21 +237,31 @@ class RunDir:
         is a list of paths with no contents, and its only effect on the next
         iteration would be to invite the re-reading that caused the overflow.
         """
+        import harness
+
+        try:
+            agent = harness.get(agent_name)
+        except SystemExit:
+            return ""
+        # The marker comes from the adapter because the event name does: omp
+        # calls it `auto_compaction_end` where pi calls it `compaction_end`, and
+        # scanning for one name found nothing in the other's stream while
+        # looking exactly like an iteration that had never overflowed.  An agent
+        # that does not compact declares no marker, never matches, and the loop
+        # falls back to a git-synthesised handoff.
+        if not agent.compaction_marker:
+            return ""
         line = ""
         try:
             with self.open_iteration(number) as handle:
                 for raw in handle:
-                    # Agents that do not compact simply never match, and the
-                    # loop falls back to a git-synthesised handoff.
-                    if b'"compaction_end"' in raw:
+                    if agent.compaction_marker in raw:
                         line = raw.decode(errors="replace")
         except (OSError, EOFError):
             return ""
         try:
-            import harness
-
-            summary = harness.get(agent_name).compaction_summary(json.loads(line))
-        except (ValueError, SystemExit):
+            summary = agent.compaction_summary(json.loads(line))
+        except ValueError:
             return ""
 
         summary = summary.split("<read-files>")[0].strip()

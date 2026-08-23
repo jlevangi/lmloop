@@ -11,6 +11,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import harness
 import models
 
 GLOBAL_CONFIG = Path.home() / ".config" / "lmloop" / "config.toml"
@@ -20,8 +21,13 @@ DEFAULTS: dict = {
     "agent": {
         # Which agent does the typing.  See harness.py -- the loop needs an
         # argv and a JSON event stream, and nothing else, so swapping one is a
-        # config line rather than a rewrite.  "pi" also covers anything layered
-        # on pi, such as oh-my-pi, which is an extension pi auto-discovers.
+        # config line rather than a rewrite.
+        #
+        # "pi" also covers anything layered on pi, including the npm package
+        # called oh-my-pi, which is an extension pi auto-discovers.  "omp" is a
+        # different project of almost the same name -- github.com/can1357/oh-my-pi,
+        # a fork with its own binary and its own browser, task and LSP tools --
+        # and it is never selected implicitly.
         "harness": "pi",
         "model": "llama-swap/local-fast",
         # Every extension in ~/.pi/agent/settings.json adds tool definitions,
@@ -32,6 +38,11 @@ DEFAULTS: dict = {
         # leaving it out does not save an agent from editing -- it just pushes
         # it into `bash` heredocs, which is worse in every way: no diff, no
         # partial-failure reporting, and nothing the event stream can count.
+        #
+        # This list is pi's.  omp rejects `replace` and `ls` outright, so a
+        # project that selects omp and leaves this untouched gets omp's own
+        # default instead -- see `resolve_tools` below, and docs/operations.md
+        # for the allowlist to use when the work has a user interface in it.
         "tools": "read,write,edit,replace,bash,grep,find,ls",
         # Passed to `pi --thinking` when set; empty means pi's default.
         #
@@ -58,6 +69,18 @@ DEFAULTS: dict = {
         # this had before and remains a perfectly reasonable setting.
         "planner_model": "",
         "planner_thinking": "",
+        # Where omp's browser tool should attach, when the allowlist includes
+        # it.  Only omp has a browser; every other harness ignores this.
+        #
+        # It must be an HTTP CDP *discovery* endpoint -- omp rejects `ws://`
+        # and `wss://` by name -- and it must not need a credential in its
+        # query string, because omp's attach drops one.  See browser.py, which
+        # says which of those you have before a run starts rather than after.
+        #
+        # Left empty, the browser tool falls back to omp's own configuration:
+        # its `browser.cdpUrl` setting, its relay, or a headless Chromium it
+        # launches itself.  Setting it here only adds the preflight.
+        "browser_cdp_url": "",
     },
     "models": {
         # llama-swap directly, not through a router.  A router reports model
@@ -210,6 +233,40 @@ def _read(path: Path) -> dict:
         raise SystemExit(f"lmloop: cannot read {path}: {error}") from error
 
 
+def resolve_tools(harness_name: str, tools: str) -> str:
+    """The tool allowlist, reconciled with the agent that has to accept it.
+
+    Two agents, two vocabularies.  pi takes whatever it is handed and ignores
+    what it does not recognise; omp checks the list against its own built-ins
+    and exits 1 -- ``Unknown tools in --tools: replace, ls`` -- before it emits
+    a single event.  So the default above, which is pi's, is not a default omp
+    can be given.
+
+    An allowlist still identical to the shipped one is nobody's decision, so
+    selecting omp swaps in omp's.  Anything else is a decision, and gets
+    checked rather than replaced: naming a tool the agent does not have fails
+    here, where the operator is still reading config, instead of after a run
+    has built a worktree, written a prompt and started an iteration.
+
+    Testing the string rather than remembering whether it was written down
+    keeps this true wherever the value came from -- the defaults, either config
+    file, or `--agent` on the command line, which arrives long after the files
+    have been forgotten.
+    """
+    agent_name = (harness_name or "pi").strip().lower()
+    adapter = harness.get(agent_name)
+    if agent_name == "omp" and tools == DEFAULTS["agent"]["tools"]:
+        return harness.OMP_DEFAULT_TOOLS
+    unknown = adapter.unknown_tools(tools)
+    if unknown:
+        raise SystemExit(
+            f"lmloop: [agent] tools names {', '.join(unknown)}, which {agent_name} "
+            f"does not have; it would exit before the first iteration.  Known: "
+            f"{', '.join(sorted(adapter.known_tools))}"
+        )
+    return tools
+
+
 def load(repo_root: Path) -> dict:
     """Defaults, then global, then project; translate the legacy turn limit."""
     global_config = _read(GLOBAL_CONFIG)
@@ -222,7 +279,27 @@ def load(repo_root: Path) -> dict:
             config["stop"]["initial_turns"] = legacy
         if "hard_turn_ceiling" not in explicit_stop:
             config["stop"]["hard_turn_ceiling"] = legacy
+    config["agent"]["tools"] = resolve_tools(
+        config["agent"].get("harness", "pi"), config["agent"].get("tools", "")
+    )
     return config
+
+
+def override_agent(config: dict, harness_name: str = "", tools: str = "") -> None:
+    """Apply `--agent` / `--tools` from the command line, in place.
+
+    The allowlist has to be settled *after* both, not during either: `--agent
+    omp` against a config file that says pi arrives with pi's tool names still
+    in hand, and reconciling at load time would have already blessed them.
+    """
+    if harness_name:
+        harness.get(harness_name)  # fail here, not eight lines into a run
+        config["agent"]["harness"] = harness_name
+    if tools:
+        config["agent"]["tools"] = tools
+    config["agent"]["tools"] = resolve_tools(
+        config["agent"].get("harness", "pi"), config["agent"].get("tools", "")
+    )
 
 
 def sample() -> str:
@@ -232,8 +309,17 @@ def sample() -> str:
 # defaults, or to <repo>/.lmloop.toml to override them for one project.
 
 [agent]
-harness = "pi"           # pi (incl. oh-my-pi) | opencode
+# pi | omp | opencode.  "pi" covers the npm oh-my-pi extension too, because pi
+# discovers it and the stream is unchanged.  "omp" is github.com/can1357/oh-my-pi:
+# a separate binary with its own browser, task and LSP tools, never selected
+# implicitly.  See docs/operations.md for installing it beside pi.
+harness = "pi"
 model = "llama-swap/local-wide-agent"
+# This list is pi's.  omp has no `ls` and rejects names it does not have rather
+# than ignoring them, so under `harness = "omp"` either comment this line out --
+# which gets omp's own default, "read,write,edit,bash,grep,glob" -- or replace
+# it.  For work with a user interface in it, omp's native browser:
+#   tools = "read,edit,grep,glob,bash,browser"
 tools = "read,write,edit,bash,grep,find,ls"
 # off | minimal | low | medium | high | xhigh | max.  Empty uses pi's
 # default.  Lower it when a model deliberates its whole output budget away
@@ -244,6 +330,11 @@ thinking = ""
 # happens every iteration and wants throughput.  Empty uses `model` for both.
 planner_model    = ""      # e.g. "llama-swap/local-wide"
 planner_thinking = ""
+# Only omp has a browser.  An HTTP CDP discovery endpoint -- not a ws:// URL,
+# and not one whose credential rides in the query string; omp's attach drops
+# both.  Empty leaves the browser tool to omp's own configuration and skips the
+# preflight.
+# browser_cdp_url = "http://127.0.0.1:9222"
 
 [models]
 # Defaults to whatever ~/.config/lmloop/model-budgets.json says, which is also

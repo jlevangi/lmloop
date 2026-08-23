@@ -23,6 +23,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import browser
 import checks
 import display
 import gitops
@@ -58,6 +59,11 @@ class Run:
         self.max_iterations = self.iteration_floor
         self.model = config["agent"]["model"]
         self.thinking = config["agent"].get("thinking", "")
+        # Which agent does the typing, resolved once.  Read from the config in
+        # four places before this existed, and one of them -- the `run:start`
+        # event -- said "pi" whatever it was, so a run's own record could not be
+        # trusted to name the thing that produced it.
+        self.harness_name = config["agent"].get("harness", "pi")
         self.role = "editing"
         self.window, self.max_output = models.declared_window(self.model) or (0, 0)
         self.interrupted = False
@@ -181,11 +187,12 @@ class Run:
         self.publish_sessions()
         self.linked = self.link_environment()
         self.probe_gate(base)
+        self.probe_browser()
         self.rundir.event(
             "run:start",
             runId=self.run_id,
             runDir=str(self.rundir.path),
-            agent="pi",
+            agent=self.harness_name,
             model=self.model,
             worktree=True,
             worktreePath=str(self.worktree),
@@ -249,7 +256,7 @@ class Run:
             "run:start",
             runId=self.run_id,
             runDir=str(self.rundir.path),
-            agent="pi",
+            agent=self.harness_name,
             model=self.model,
             resumed=True,
             completedIterations=done,
@@ -427,6 +434,33 @@ class Run:
         commit to what the agent actually wrote.
         """
         return dict(os.environ, PYTHONPYCACHEPREFIX=str(self.rundir.path / "pycache"))
+
+    def probe_browser(self) -> None:
+        """Say once, at the start, whether the agent's browser can attach.
+
+        Only omp has one, and only when the allowlist lets it through, so this
+        is silent for every other configuration.  It is never fatal: an
+        iteration whose browser is unreachable still reads, edits, gates and
+        commits.  What it saves is the shape of failure where the agent spends
+        an hour discovering, one tool call at a time, that the tab it was asked
+        to look at was never reachable -- and where the run log blames the
+        model for it.
+        """
+        agent = self.config["agent"]
+        if self.harness_name != "omp":
+            return
+        # An empty allowlist is not "no tools" -- omp reads it as all of them,
+        # browser included -- so it is the one case where finding no `browser`
+        # in the list still means the browser is on.
+        enabled = [name.strip() for name in agent.get("tools", "").split(",") if name.strip()]
+        if enabled and "browser" not in enabled:
+            return
+        cdp_url = agent.get("browser_cdp_url", "")
+        ok, detail = browser.preflight(cdp_url)
+        # `detail` is redacted at the source; see browser.redact.
+        self.rundir.event("browser:preflight", ok=ok, detail=detail)
+        self.screen.log(f"  browser: {detail}" if ok else
+                        f"  browser: {detail} (the agent will run without it)")
 
     # -- the gate ---------------------------------------------------------
 
@@ -644,7 +678,7 @@ class Run:
         self._step_before = self.rundir.current_step()
         result = pi_runner.run(
             model=self.model,
-            agent_name=self.config["agent"].get("harness", "pi"),
+            agent_name=self.harness_name,
             tools=self.config["agent"]["tools"],
             thinking=thinking,
             prompt=prompt,
@@ -701,9 +735,7 @@ class Run:
             self.rundir.write_synthetic_handoff(
                 number,
                 gitops.diff_shortstat(self.worktree, base),
-                carried=self.rundir.last_compaction_summary(
-                number, self.config["agent"].get("harness", "pi")
-            ),
+                carried=self.rundir.last_compaction_summary(number, self.harness_name),
             )
         summary = self._subject(number, result, handoff_written)
 

@@ -87,8 +87,9 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
 
     argv = [sys.executable, str(Path(__file__).resolve()), "run", objective,
             "--run-id", run_id]
-    for flag, value in (("--model", args.model), ("--tools", args.tools),
-                        ("--gate", args.gate), ("--thinking", args.thinking)):
+    for flag, value in (("--agent", args.agent), ("--model", args.model),
+                        ("--tools", args.tools), ("--gate", args.gate),
+                        ("--thinking", args.thinking)):
         if value is not None:
             argv += [flag, value]
     if args.max_iterations:
@@ -115,12 +116,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     config = config_module.load(repo)
     if args.model:
         config["agent"]["model"] = args.model
-    if args.tools:
-        config["agent"]["tools"] = args.tools
     if args.thinking:
         config["agent"]["thinking"] = args.thinking
     if args.gate is not None:
         config["gate"]["command"] = args.gate
+    # Agent and allowlist together, and after everything else: which tool names
+    # are valid is a question only the selected agent can answer.
+    config_module.override_agent(config, args.agent or "", args.tools or "")
 
     objective = args.objective
     if objective == "-":
@@ -273,6 +275,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
         config["agent"]["model"] = args.model
     if args.thinking:
         config["agent"]["thinking"] = args.thinking
+    config_module.override_agent(config, args.agent or "")
 
     runs = _discover_runs(repo, config)
     if not runs:
@@ -413,9 +416,10 @@ def main() -> int:
 
     run = sub.add_parser("run", help="work on an objective until a stop condition hits")
     run.add_argument("objective", help="what to work on; '-' reads stdin")
+    run.add_argument("--agent", help="which agent does the typing: pi, omp, or opencode")
     run.add_argument("--model", help="override the configured model")
-    run.add_argument("--tools", help="override the pi tool allowlist")
-    run.add_argument("--thinking", help="pi thinking level: off, minimal, low, medium, high, xhigh, max")
+    run.add_argument("--tools", help="override the agent's tool allowlist")
+    run.add_argument("--thinking", help="thinking level: off, minimal, low, medium, high, xhigh, max")
     run.add_argument("--gate", help="override the commit gate command")
     run.add_argument("--max-iterations", type=int, help="override the iteration cap")
     run.add_argument("--detach", action="store_true", help="start in the background and print the run id")
@@ -428,8 +432,9 @@ def main() -> int:
     resume = sub.add_parser("resume", help="continue a run that stopped, in its existing worktree")
     resume.add_argument("run_id", nargs="?", help="which run; defaults to the most recent")
     resume.add_argument("--iterations", type=int, default=3, help="how many more iterations to run")
+    resume.add_argument("--agent", help="which agent does the typing: pi, omp, or opencode")
     resume.add_argument("--model", help="override the configured model")
-    resume.add_argument("--thinking", help="pi thinking level: off, minimal, low, medium, high, xhigh, max")
+    resume.add_argument("--thinking", help="thinking level: off, minimal, low, medium, high, xhigh, max")
     resume.set_defaults(func=cmd_resume)
 
     runs = sub.add_parser("list", help="runs for this repo, with iteration and commit counts")

@@ -136,6 +136,20 @@ def run_dirs(project: Path) -> list[Path]:
     return sorted(found, key=lambda path: path.name, reverse=True)
 
 
+def owner(project: Path, run_dir: Path) -> Path:
+    """Repository checkout whose worktree root contains ``run_dir``."""
+    for base in [project, *sorted((project / ".pilot-bases").glob("*"))]:
+        if base.is_dir() and _worktree_root(base) in run_dir.parents:
+            return base
+    return project
+
+
+def route_id(project: Path, run_dir: Path) -> str:
+    """Stable route component; disambiguates equal ids in separate pilot bases."""
+    owning = owner(project, run_dir)
+    return run_dir.name if owning == project else f"{owning.name}::{run_dir.name}"
+
+
 # -- the archive ------------------------------------------------------------
 #
 # A finished run's worktree is the expensive part of it -- a whole checkout,
@@ -365,7 +379,8 @@ def summarise(project: dict, run_dir: Path) -> dict:
     # extra I/O and works on runs that finished before anyone thought to show
     # it.  A run older than the field says nothing rather than guessing "pi".
     agent = next(
-        (event.get("agent", "") for event in events if event.get("event") == "run:start"),
+        (event.get("agent", "") for event in reversed(events)
+         if event.get("event") == "run:start"),
         "",
     )
 
@@ -382,6 +397,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         state = "archived"
     return {
         "run_id": run_dir.name,
+        "route_id": route_id(Path(project["path"]), run_dir),
         "project": project["id"],
         "project_path": project["path"],
         "archived": archived,

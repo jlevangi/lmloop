@@ -213,9 +213,11 @@ class Handler(BaseHTTPRequestHandler):
         for project in runs_module.projects(self.config["roots"]):
             if project["id"] != project_id:
                 continue
-            for run_dir in runs_module.run_dirs(Path(project["path"])):
-                if run_dir.name == run_id:
-                    return project, run_dir
+            project_path = Path(project["path"])
+            for run_dir in runs_module.run_dirs(project_path):
+                if runs_module.route_id(project_path, run_dir) == run_id:
+                    owning = runs_module.owner(project_path, run_dir)
+                    return dict(project, path=str(owning)), run_dir
             # Archived runs have no worktree to walk.  Checked last, so a
             # re-used run id always resolves to the live run rather than the
             # archived copy of whatever held the name before it.

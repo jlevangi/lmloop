@@ -13,10 +13,23 @@ from unittest import mock
 import browser
 import config
 import harness
+import lmloop
 import pi_runner
 import prompts
 from loop import Run
 from rundir import RunDir
+
+
+class ResumeStateTests(unittest.TestCase):
+    def test_run_start_restores_agent_before_first_completed_iteration(self):
+        run_dir = Path(tempfile.mkdtemp())
+        (run_dir / "lmloop.log").write_text(json.dumps({
+            "event": "run:start", "agent": "omp", "tools": "read,edit,bash",
+        }) + "\n")
+        self.assertEqual(
+            {"harness": "omp", "tools": "read,edit,bash"},
+            lmloop._read_run_state(run_dir),
+        )
 
 
 class RunPolicyTests(unittest.TestCase):

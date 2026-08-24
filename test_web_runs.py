@@ -35,6 +35,20 @@ class NestedPilotDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual("omp", summary["agent"])
 
+    def test_nested_run_has_owning_base_and_distinct_route(self):
+        base = self.project / ".pilot-bases" / "pinned"
+        run_dir = self.make_run(base, "same")
+        self.make_run(self.project, "same", agent="pi")
+        self.assertEqual(base, runs.owner(self.project, run_dir))
+        self.assertEqual("pinned::same", runs.route_id(self.project, run_dir))
+
+    def test_latest_start_event_controls_agent_label(self):
+        run_dir = self.make_run(self.project, "resumed", agent="pi")
+        with (run_dir / "lmloop.log").open("a") as log:
+            log.write(json.dumps({"event": "run:start", "agent": "omp"}) + "\n")
+        summary = runs.summarise({"id": "project", "path": str(self.project)}, run_dir)
+        self.assertEqual("omp", summary["agent"])
+
 
 if __name__ == "__main__":
     unittest.main()

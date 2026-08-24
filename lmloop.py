@@ -194,6 +194,14 @@ def _read_run_state(run_dir: Path) -> dict:
         value = json.loads((run_dir / "run-state.json").read_text())
         return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
+        pass
+    # A crash in the first iteration predates run-state.json.  run:start is
+    # written before the agent starts and is therefore the durable fallback.
+    try:
+        starts = [json.loads(line) for line in (run_dir / "lmloop.log").read_text().splitlines()]
+        start = next(item for item in reversed(starts) if item.get("event") == "run:start")
+        return {"harness": start.get("agent", ""), "tools": start.get("tools", "")}
+    except (OSError, ValueError, StopIteration):
         return {}
 
 

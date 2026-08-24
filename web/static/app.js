@@ -152,7 +152,7 @@ function makeRow(run) {
   const meta = el("div", "meta");
 
   node.append(head, title, progress, now, pips, meta);
-  node.addEventListener("click", () => go(`#${run.project}/${run.run_id}`));
+  node.addEventListener("click", () => go(`#${run.project}/${run.route_id || run.run_id}`));
 
   const parts = { node, where, stateLabel, title, progress, track, fill, steps,
                   now, nowStep, nowAct, pips, meta, last: null };
@@ -220,10 +220,11 @@ function patchRow(parts, run) {
 
 function syncGroup(container, runs) {
   runs.forEach((run, index) => {
-    let parts = state.rows.get(run.run_id);
+    const id = `${run.project}/${run.route_id || run.run_id}`;
+    let parts = state.rows.get(id);
     if (!parts) {
       parts = makeRow(run);
-      state.rows.set(run.run_id, parts);
+      state.rows.set(id, parts);
     } else {
       patchRow(parts, run);
     }
@@ -549,7 +550,7 @@ function control(label, action, run, { risk = false, body = {}, confirm: ask = n
     const was = button.textContent;
     button.textContent = "working…";
     try {
-      const result = await api(`/api/runs/${run.project}/${run.run_id}/${action}`, { body });
+      const result = await api(`/api/runs/${run.project}/${run.route_id || run.run_id}/${action}`, { body });
       if (done) done(result);
       state.detailKey = null;
       // A run that was archived or deleted is no longer at this URL.
@@ -578,7 +579,7 @@ function runShell(runId) {
 }
 
 async function renderRun(project, runId, { quiet = false } = {}) {
-  const summary = state.runs.find((r) => r.run_id === runId);
+  const summary = state.runs.find((r) => (r.route_id || r.run_id) === runId);
   const key = `${runId}:${summary?.updated_at || ""}:${summary?.state || ""}`;
   if (quiet && key === state.detailKey) return;
 
@@ -850,7 +851,7 @@ function makeRunbarRow(run) {
   node.append(head, title, line, progress, meta);
   node.addEventListener("click", () => {
     if (!RAIL.matches) toggleRunbar(false);
-    go(`#${run.project}/${run.run_id}`);
+    go(`#${run.project}/${run.route_id || run.run_id}`);
   });
   return { node, where, stateLabel, title, line, track, fill, steps, meta, last: null };
 }
@@ -944,10 +945,11 @@ function renderRunbar() {
 
   const panel = $("runbar-panel");
   active.forEach((run, index) => {
-    let parts = runbar.rows.get(run.run_id);
+    const id = `${run.project}/${run.route_id || run.run_id}`;
+    let parts = runbar.rows.get(id);
     if (!parts) {
       parts = makeRunbarRow(run);
-      runbar.rows.set(run.run_id, parts);
+      runbar.rows.set(id, parts);
     }
     patchRunbarRow(parts, run);
     const atIndex = panel.children[index];

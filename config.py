@@ -69,6 +69,21 @@ DEFAULTS: dict = {
         # moves, rather than one here and one in a JavaScript file nobody
         # remembers is there.  A repo's own .lmloop.toml still overrides it.
         "llama_swap_url": models.budgets()["llama_swap_url"],
+        # How long to hold when the model server is simply NOT THERE, as opposed
+        # to there and failing.  On a workstation whose GPU is also the machine
+        # its owner plays games on, llama-swap being stopped for an hour or two
+        # is routine, not an incident -- so the loop waits it out and picks the
+        # iteration back up rather than burning the run.  Observed before this
+        # existed: the server was stopped by hand, the loop retried 1m/2m/4m and
+        # then ended the run with "model server unreachable".
+        #
+        # Deliberately NOT the same policy as a server that answers and
+        # misbehaves: that still gets the short 1m/2m/4m backoff, because a
+        # server which is up and broken does not fix itself by being waited on.
+        # The two are told apart by whether `GET /running` answers at all.
+        #
+        # 0 restores the old behaviour (give up after the short backoff).
+        "server_wait_seconds": 21600,   # 6h
     },
     "worktree": {
         "root": "{repo}/.worktrees/{run_id}",

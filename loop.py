@@ -227,7 +227,15 @@ class Run:
         self.iteration_ceiling = max(done, prior_ceiling) + extra_iterations
         self.iteration_floor = min(self.iteration_ceiling, done + extra_iterations)
         self.max_iterations = self.iteration_floor
-        self.no_diff_streak = int(state.get("no_diff_streak", 0))
+        # Carried across resumes so a bare `resume` cannot launder the one guard
+        # that never lies -- but capped one below the limit, because a run that
+        # stopped ON this guard would otherwise reload a tripped streak and exit
+        # before iteration 1, having run nothing.  A resume is the operator
+        # saying "I changed something, try again"; it buys exactly one iteration
+        # to prove it, and if that one also moves nothing the guard fires again.
+        limit = self.config["stop"]["no_diff_iterations"]
+        carried = int(state.get("no_diff_streak", 0))
+        self.no_diff_streak = min(carried, max(limit - 1, 0)) if limit else carried
         self.elapsed_before = float(state.get("active_elapsed_seconds", 0))
         self.thrashed_steps = {
             str(step): int(count)
@@ -1209,8 +1217,79 @@ class Run:
         detail = (self.last_detail or "").lower()
         return self.last_detail if any(t in detail for t in self.TRANSPORT) else ""
 
+    def _server_is_up(self) -> bool:
+        """Does llama-swap answer at all?  Free, and never triggers a swap."""
+        try:
+            models.running(self.config["models"]["llama_swap_url"], timeout=5.0)
+            return True
+        except Exception:  # noqa: BLE001 - any failure to answer means "not there"
+            return False
+
+    def _sleep_interruptibly(self, seconds: int) -> bool:
+        """Sleep, but stay responsive to Ctrl-C, STOP and PAUSE.  False if asked to quit."""
+        for _ in range(seconds):
+            if self.interrupted or self.rundir.stop_requested():
+                return False
+            time.sleep(1)
+        return True
+
+    def _wait_for_server(self, iteration: int, detail: str) -> bool:
+        """Hold until llama-swap comes back.  True if it did, False if we gave up.
+
+        This is the case where the machine's owner needs the GPU: the server is
+        stopped deliberately, for as long as a game lasts.  Nothing is wrong and
+        nothing needs escalating -- the iteration simply cannot run yet, so the
+        loop parks on a cheap `GET /running` poll and resumes when the server is
+        back.  The iteration number is not consumed by the caller, so a two-hour
+        gap costs the run nothing but time.
+
+        Polling every 30s rather than every second: the recovery is a human
+        starting a service, so half a minute of extra latency is invisible, and
+        it keeps a six-hour wait to a few hundred requests against a port that
+        is not listening.
+        """
+        limit = int(self.config["models"].get("server_wait_seconds", 0))
+        if limit <= 0:
+            return False  # feature off: fall back to the short backoff
+
+        self.rundir.event("server:wait", iteration=iteration, detail=detail, limit=limit)
+        self.screen.log(f"    model server is not there; holding for it ({detail})")
+        waited, step = 0, 30
+        while waited < limit:
+            if not self._sleep_interruptibly(step):
+                return False
+            waited += step
+            if self._server_is_up():
+                self.rundir.event("server:back", iteration=iteration, waited=waited)
+                self.screen.log(f"    model server is back after {display.elapsed(waited)}; carrying on")
+                # A recovered server is a clean slate.  Without this, three
+                # separate gaming sessions across one run would exhaust the
+                # short backoff counter and kill it on the third.
+                self._errors = 0
+                return True
+            if waited % 600 == 0:
+                self.screen.log(f"    still waiting for the model server ({display.elapsed(waited)})")
+        self.rundir.event("server:gaveup", iteration=iteration, waited=waited)
+        return False
+
     def _backoff(self, iteration: int, detail: str) -> bool:
-        """1m, 2m, 4m, then give up.  Only for a llama-swap that is not there."""
+        """Hold after a server-side failure.  True to retry, False to end the run.
+
+        Two different failures wear the same coat here, and they need opposite
+        treatment:
+
+          * The server is NOT THERE -- stopped by hand, rebooting, GPU wanted for
+            something else.  Waiting is exactly right, and the wait may be hours.
+            Handled by `_wait_for_server`.
+          * The server IS there and failing -- a bad build, a model that will not
+            load, an OOM on every request.  Waiting six hours on that just wastes
+            six hours, so it keeps the original 1m/2m/4m and then gives up.
+
+        `GET /running` tells them apart, and it is the same call preflight makes.
+        """
+        if not self._server_is_up():
+            return self._wait_for_server(iteration, detail)
+
         if not hasattr(self, "_errors"):
             self._errors = 0
         self._errors += 1
@@ -1219,11 +1298,7 @@ class Run:
         delay = 60 * 2 ** (self._errors - 1)
         self.rundir.event("backoff:start", iteration=iteration, seconds=delay, detail=detail)
         self.screen.log(f"    {detail}; retrying in {delay // 60}m")
-        for _ in range(delay):
-            if self.interrupted:
-                return False
-            time.sleep(1)
-        return True
+        return self._sleep_interruptibly(delay)
 
     def _summarise(self, reason: str | None, started: float) -> None:
         base = self.rundir.base_commit

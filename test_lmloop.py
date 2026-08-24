@@ -61,6 +61,28 @@ class RunPolicyTests(unittest.TestCase):
         eleven_hours_ago = time.monotonic() - 11 * 3600
         self.assertIn("max wall clock", run._abort_reason(2, eleven_hours_ago))
 
+    def test_resume_of_a_no_diff_stop_gets_one_iteration(self):
+        """A run stopped on the no-diff guard must still be resumable.
+
+        Reloading a tripped streak made `_abort_reason` fire before iteration 1,
+        so the run exited having executed nothing at all.
+        """
+        root = Path(tempfile.mkdtemp())
+        cfg = config.load(root)
+        limit = cfg["stop"]["no_diff_iterations"]
+        run = Run(root, cfg, "o", run_id="t")
+        run.max_iterations = 50
+
+        run.no_diff_streak = limit          # what a tripped run persists
+        self.assertIsNotNone(run._abort_reason(1, time.monotonic()))
+
+        run.rundir.write_run_state({"no_diff_streak": limit})
+        carried = min(limit, max(limit - 1, 0))
+        run.no_diff_streak = carried        # what attach() now loads
+        self.assertIsNone(run._abort_reason(1, time.monotonic()))
+        run.no_diff_streak = carried + 1    # one more fruitless iteration
+        self.assertIsNotNone(run._abort_reason(2, time.monotonic()))
+
     def test_wall_clock_carries_earlier_segments(self):
         cfg = config._merge(config.DEFAULTS, {"stop": {"max_wall_hours": 10}})
         run = self.make_run(cfg)

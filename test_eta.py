@@ -27,11 +27,15 @@ class EstimateTests(unittest.TestCase):
         self.assertEqual(2, result["eta_samples"])
         self.assertEqual("2026-08-24T00:35:00+00:00", result["eta_at"])
 
-    def test_two_samples_are_required(self):
-        self.assertEqual({}, eta.estimate(
-            [end(600, done=1, total=3)], iteration=2, max_iterations=5,
-            plan_done=1, plan_total=3,
-        ))
+    def test_two_distinct_attempts_are_required(self):
+        for events, done in (
+            ([end(600, done=1, total=3)], 1),
+            ([end(600, done=2, total=3)], 2),  # one attempt advanced two steps
+        ):
+            self.assertEqual({}, eta.estimate(
+                events, iteration=2, max_iterations=5,
+                plan_done=done, plan_total=3,
+            ))
 
     def test_pre_plan_fallback_excludes_failed_turns(self):
         result = eta.estimate([

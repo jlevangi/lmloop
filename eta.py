@@ -31,7 +31,10 @@ def estimate(events: list[dict], *, elapsed_seconds: float = 0,
             previous_done = max(previous_done, done)
             seconds = float(event.get("elapsedMs") or 0) / 1000
             if advanced and seconds > 0:
-                samples.extend([seconds / advanced] * advanced)
+                # One sample per completed attempt, even when that attempt checks
+                # off several steps.  Duplicating by `advanced` would let one
+                # iteration satisfy the two-attempt confidence threshold.
+                samples.append(seconds / advanced)
         remaining = max(plan_total - plan_done, 0)
         basis = "plan steps"
     else:

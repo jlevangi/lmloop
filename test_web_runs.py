@@ -42,6 +42,13 @@ class NestedPilotDiscoveryTests(unittest.TestCase):
         self.assertEqual(base, runs.owner(self.project, run_dir))
         self.assertEqual("pinned::same", runs.route_id(self.project, run_dir))
 
+    def test_follow_on_run_under_a_worktree_is_discovered_and_owned(self):
+        parent = self.project / ".worktrees" / "first-run"
+        child = self.make_run(parent, "follow-on")
+        self.assertIn(child, runs.run_dirs(self.project))
+        self.assertEqual(parent, runs.owner(self.project, child))
+        self.assertEqual("first-run::follow-on", runs.route_id(self.project, child))
+
     def test_latest_start_event_controls_agent_label(self):
         run_dir = self.make_run(self.project, "resumed", agent="pi")
         with (run_dir / "lmloop.log").open("a") as log:

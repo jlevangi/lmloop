@@ -63,6 +63,28 @@ class RunPolicyTests(unittest.TestCase):
             run.last_outcome = outcome
             self.assertTrue(run._counts_as_no_progress(None, False), outcome)
 
+    def test_retry_after_context_reset_is_a_transport_failure(self):
+        """llama-swap's reset cooldown retries the same turn, not a new one."""
+        run = self.make_run()
+        run.last_outcome = "agent-error"
+        run.last_detail = (
+            "400: request (131102 tokens) exceeds the available context size "
+            "(reset after 24s) retry-after-ms=24000"
+        )
+        run.last_commit = None
+        self.assertEqual(run.last_detail, run._transport_failure())
+
+        # A genuine oversized prompt has no retry marker and needs correction,
+        # not an endless transport retry.
+        run.last_detail = "request exceeds the available context size"
+        self.assertEqual("", run._transport_failure())
+
+        # Work already captured in Git is never repeated, even if the transport
+        # failed after the write.
+        run.last_detail = "retry-after-ms=30000"
+        run.last_commit = "abc123"
+        self.assertEqual("", run._transport_failure())
+
     def test_uncommitted_work_is_still_progress(self):
         run = self.make_run()
         run.last_outcome = "ok"

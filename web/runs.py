@@ -115,6 +115,33 @@ def _runs_under(root: Path) -> list[Path]:
         return []
 
 
+def _checkout_tree(base: Path):
+    """Yield a checkout and any lmloop worktrees launched from its worktrees.
+
+    Follow-on runs are valid: an operator may continue from an unmerged run
+    branch, which makes the child's checkout live under
+    ``parent/.worktrees/child``.  Walk only configured worktree roots rather
+    than the repository recursively; source trees may contain arbitrary nested
+    directories, while every directory under a worktree root is a checkout.
+    """
+    pending, seen = [base], set()
+    while pending:
+        checkout = pending.pop(0)
+        try:
+            key = checkout.resolve()
+        except OSError:
+            key = checkout
+        if key in seen:
+            continue
+        seen.add(key)
+        yield checkout
+        root = _worktree_root(checkout)
+        try:
+            pending.extend(sorted(path for path in root.iterdir() if path.is_dir()))
+        except OSError:
+            pass
+
+
 def run_dirs(project: Path) -> list[Path]:
     """Every run directory belonging to a project, newest run id first.
 
@@ -129,18 +156,21 @@ def run_dirs(project: Path) -> list[Path]:
     Each base is asked for its own worktree root, because it carries its own
     `.lmloop.toml` -- which is the whole point of pinning a base commit.
     """
-    found = _runs_under(_worktree_root(project))
-    for base in sorted((project / ".pilot-bases").glob("*")):
-        if base.is_dir():
-            found += _runs_under(_worktree_root(base))
+    bases = [project, *sorted((project / ".pilot-bases").glob("*"))]
+    checkouts = [checkout for base in bases if base.is_dir() for checkout in _checkout_tree(base)]
+    found = [run for checkout in checkouts for run in _runs_under(_worktree_root(checkout))]
     return sorted(found, key=lambda path: path.name, reverse=True)
 
 
 def owner(project: Path, run_dir: Path) -> Path:
     """Repository checkout whose worktree root contains ``run_dir``."""
-    for base in [project, *sorted((project / ".pilot-bases").glob("*"))]:
-        if base.is_dir() and _worktree_root(base) in run_dir.parents:
-            return base
+    bases = [project, *sorted((project / ".pilot-bases").glob("*"))]
+    candidates = [checkout for base in bases if base.is_dir() for checkout in _checkout_tree(base)]
+    # The deepest matching checkout owns a chained run; the repository root is
+    # also an ancestor, but dashboard actions must run from the immediate parent.
+    for checkout in sorted(candidates, key=lambda path: len(path.parts), reverse=True):
+        if _worktree_root(checkout) in run_dir.parents:
+            return checkout
     return project
 
 

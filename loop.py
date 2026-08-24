@@ -1253,6 +1253,13 @@ class Run:
         # agent timing out on the model -- which is the transport, by
         # definition.
         "timed out",
+        # llama-swap attaches this to a temporarily poisoned upstream after a
+        # context overflow.  The observed failure said reset after 30s, then
+        # returned the same stale token-count error with a shrinking
+        # retry-after-ms on six fresh two-message requests.  Treating each as a
+        # model failure burned six iterations in 26 seconds.  This marker means
+        # exactly what the transport asks us to do: back off and retry.
+        "retry-after-ms=",
         "no route to host",
         "name or service not known",
     )

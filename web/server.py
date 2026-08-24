@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
+import config as config_module
 from web import runs as runs_module
 from web.auth import AVAILABLE as AUTH_AVAILABLE, OIDC
 
@@ -506,15 +507,17 @@ class Handler(BaseHTTPRequestHandler):
     # three are the only code in the project that removes anything.  They are
     # built so that no single action destroys evidence:
     #
-    #   archive  copies the run out, *verifies the copy*, then removes only the
-    #            worktree -- the checkout, which git can recreate -- and leaves
-    #            the branch alone.  The run stays readable in the dashboard.
+    #   archive  copies the run out, *verifies the copy*, then asks git to remove
+    #            only a clean worktree -- never with --force -- and leaves the
+    #            branch alone.  The run stays readable in the dashboard.
     #   delete   refuses to run on anything that has not been archived first,
     #            so the destructive step is always the second one.
 
     def archive_run(self, project, run_dir):
         """Copy the run's record out of its worktree, then drop the worktree."""
+        import hashlib
         import shutil
+        import tempfile
 
         if runs_module.is_archived(run_dir):
             return self.json({"error": "already archived"}, 400)
@@ -526,30 +529,87 @@ class Handler(BaseHTTPRequestHandler):
 
         worktree = run_dir.parents[2]
         target = runs_module.archive_target(project["id"], run_dir.name)
+        if target.exists():
+            return self.json(
+                {"error": f"archive already exists at {target}; worktree left alone"}, 409
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{run_dir.name}.", dir=target.parent))
         try:
-            shutil.copytree(run_dir, target, dirs_exist_ok=True)
+            shutil.copytree(run_dir, staging, dirs_exist_ok=True)
         except OSError as error:
+            shutil.rmtree(staging, ignore_errors=True)
             return self.json({"error": f"archive copy failed: {error}"}, 500)
 
-        # Counted, not assumed.  The worktree removal below is the irreversible
-        # half, and it does not happen unless the copy that replaces it is
-        # provably complete.
-        before = sum(1 for path in run_dir.rglob("*") if path.is_file())
-        after = sum(1 for path in target.rglob("*") if path.is_file())
-        if after < before:
+        def contents(root):
+            return {
+                str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in root.rglob("*") if path.is_file()
+            }
+
+        # Exact paths and content, not file counts.  A stale target with the same
+        # number of files is not a copy, and this check guards the only deletion
+        # below: the original run record inside the worktree.
+        before, after = contents(run_dir), contents(staging)
+        if after != before:
+            shutil.rmtree(staging, ignore_errors=True)
             return self.json(
-                {"error": f"archive incomplete ({after}/{before} files); worktree left alone"},
+                {"error": "archive verification failed; worktree left alone"},
                 500,
             )
+        try:
+            staging.rename(target)
+        except OSError as error:
+            shutil.rmtree(staging, ignore_errors=True)
+            return self.json({"error": f"archive publish failed: {error}"}, 500)
 
-        result = subprocess.run(
-            ["git", "worktree", "remove", "--force", str(worktree)],
-            cwd=project["path"], capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
+        # `.lmloop` is ignored, so even a worktree with no user changes cannot be
+        # removed normally while this verified source copy remains inside it.
+        # Delete only the record now held byte-for-byte in the archive.  Any other
+        # ignored runtime data makes the non-forced git removal refuse safely.
+        settings = worktree / ".pi" / "settings.json"
+        settings_bytes = settings.read_bytes() if settings.is_file() else None
+        links = {}
+        for name in config_module.load(Path(project["path"]))["worktree"].get("link") or []:
+            linked = worktree / name
+            if linked.is_symlink():
+                links[linked] = os.readlink(linked)
+        shutil.rmtree(run_dir)
+
+        # lmloop also owns its generated pi workspace pointer and only the
+        # configured environment links.  Remove those links, never their targets.
+        # Any regular file at one of these names is user data and is left alone.
+        settings.unlink(missing_ok=True)
+        for linked in links:
+            linked.unlink()
+
+        def restore_source():
+            """Put lmloop-owned files back when Git retains the worktree."""
+            if not run_dir.exists():
+                shutil.copytree(target, run_dir)
+            if settings_bytes is not None and not settings.exists():
+                settings.parent.mkdir(parents=True, exist_ok=True)
+                settings.write_bytes(settings_bytes)
+            for linked, destination in links.items():
+                if not linked.exists() and not linked.is_symlink():
+                    linked.symlink_to(destination)
+
+        try:
+            result = subprocess.run(
+                ["git", "worktree", "remove", str(worktree)],
+                cwd=project["path"], capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            restore_source()
             return self.json(
-                {"error": f"archived to {target}, but worktree removal failed: "
+                {"error": f"run archived to {target}, but worktree removal timed out; "
+                          "the source record was restored"}, 500,
+            )
+        if result.returncode != 0:
+            restore_source()
+            return self.json(
+                {"error": f"run archived to {target}, but the worktree still has "
+                          f"other files and was not removed; the source record was restored: "
                           f"{(result.stderr or result.stdout).strip()[-300:]}"}, 500,
             )
         return self.json(runs_module.summarise(project, target))

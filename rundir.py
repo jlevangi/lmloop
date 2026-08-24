@@ -466,6 +466,8 @@ class RunDir:
             previous = json.loads(self.status_path.read_text())
         except (OSError, ValueError):
             previous = {}
+        for field in ("eta_seconds", "eta_at", "eta_basis", "eta_samples"):
+            previous.pop(field, None)
         self.write_status({
             **previous, "iteration": iteration,
             "phase": "completed" if completed else "stopped",

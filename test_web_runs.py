@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from web import runs
@@ -55,6 +56,23 @@ class NestedPilotDiscoveryTests(unittest.TestCase):
             log.write(json.dumps({"event": "run:start", "agent": "omp"}) + "\n")
         summary = runs.summarise({"id": "project", "path": str(self.project)}, run_dir)
         self.assertEqual("omp", summary["agent"])
+
+    def test_running_summary_calculates_eta_from_durable_events(self):
+        run_dir = self.make_run(self.project, "eta")
+        (run_dir / "plan.md").write_text("- [x] one\n- [x] two\n- [ ] three\n")
+        (run_dir / "status.json").write_text(json.dumps({
+            "phase": "working", "iteration": 3, "max_iterations": 6,
+            "elapsed_seconds": 60, "updated_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        with (run_dir / "lmloop.log").open("a") as log:
+            log.write(json.dumps({"event": "iteration:end", "elapsedMs": 600000,
+                                  "planDone": 1, "planTotal": 3}) + "\n")
+            log.write(json.dumps({"event": "iteration:end", "elapsedMs": 1200000,
+                                  "planDone": 2, "planTotal": 3}) + "\n")
+        summary = runs.summarise({"id": "project", "path": str(self.project)}, run_dir)
+        self.assertEqual("running", summary["state"])
+        self.assertEqual(840, summary["eta_seconds"])
+        self.assertEqual("plan steps", summary["eta_basis"])
 
 
 if __name__ == "__main__":

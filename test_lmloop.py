@@ -146,6 +146,17 @@ class RunPolicyTests(unittest.TestCase):
         state = json.loads(rd.status_path.read_text())
         self.assertEqual("completed", state["phase"])
 
+    def test_terminal_status_removes_live_eta(self):
+        root = Path(tempfile.mkdtemp())
+        rd = RunDir(root, "run")
+        rd.path.mkdir(parents=True)
+        rd.write_status({"phase": "working", "eta_seconds": 600,
+                         "eta_at": "later", "eta_basis": "plan steps",
+                         "eta_samples": 3})
+        rd.write_terminal_status("plan complete (2/2)", 2, 2, 2)
+        state = json.loads(rd.status_path.read_text())
+        self.assertFalse(any(key.startswith("eta_") for key in state))
+
     def test_prompt_granularity_is_configurable(self):
         def render(files, steps):
             return prompts.build(

@@ -115,6 +115,7 @@ function metaBits(run) {
   // here just spends a phone's width saying the same word twice.
   if (run.state !== "running" && run.last_tool) bits.push(run.last_tool);
   if (run.state === "running" && run.elapsed_seconds != null) bits.push(liveElapsed(run));
+  if (run.state === "running" && run.eta_seconds) bits.push(`~${duration(run.eta_seconds)} left`);
   if (run.state === "running" && run.tokens_per_second) bits.push(rate(run.tokens_per_second));
   if (run.compactions) bits.push(`${run.compactions} ovf`);
   if (run.defects?.length) bits.push(`${run.defects.length} broken`);
@@ -165,8 +166,8 @@ function patchRow(parts, run) {
   const key = JSON.stringify([
     run.state, run.title, run.plan_done, run.plan_total, run.outcomes,
     run.iteration, run.commits, run.last_tool, run.last_target, run.current_step,
-    run.elapsed_seconds, run.compactions, run.agent, run.model, run.age_seconds,
-    run.tokens_per_second,
+    run.elapsed_seconds, run.eta_seconds, run.compactions, run.agent, run.model,
+    run.age_seconds, run.tokens_per_second,
   ]);
   if (key === parts.last) return;
   parts.last = key;

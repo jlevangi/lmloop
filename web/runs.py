@@ -21,6 +21,8 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+import eta
+
 # status.json is rewritten every pi_runner.POLL_SECONDS (2s) while an iteration
 # runs.  Two minutes is far outside that, and comfortably inside the gap between
 # iterations where the loop is committing rather than polling.
@@ -425,6 +427,12 @@ def summarise(project: dict, run_dir: Path) -> dict:
     archived = is_archived(run_dir)
     if archived:
         state = "archived"
+    estimate = eta.estimate(
+        events, elapsed_seconds=status.get("elapsed_seconds") or 0,
+        iteration=status.get("iteration") or 0,
+        max_iterations=status.get("max_iterations") or 0,
+        plan_done=done, plan_total=total,
+    ) if state == "running" else {}
     return {
         "run_id": run_dir.name,
         "route_id": route_id(Path(project["path"]), run_dir),
@@ -465,6 +473,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "outcomes": outcomes[-12:],
         "commits": commits,
         "updated_at": status.get("updated_at"),
+        **estimate,
     }
 
 

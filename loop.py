@@ -26,6 +26,7 @@ from pathlib import Path
 import browser
 import checks
 import display
+import eta
 import gitops
 import models
 import prompts
@@ -842,6 +843,11 @@ class Run:
             detail = paint.dim("thinking")
 
         plan_done, plan_total = self.rundir.plan_progress()
+        estimate = eta.estimate(
+            self.rundir.read_events(), elapsed_seconds=snap["elapsed"],
+            iteration=number, max_iterations=self.max_iterations,
+            plan_done=plan_done, plan_total=plan_total,
+        )
         flags = "".join(
             flag
             for flag, on in (("PAUSE", self.rundir.paused()), ("STOP", self.rundir.stop_requested()))
@@ -896,6 +902,7 @@ class Run:
             "quiet_seconds": round(snap["quiet"]),
             "paused": self.rundir.paused(),
             "stopping": self.rundir.stop_requested(),
+            **estimate,
         })
 
     # -- commit -----------------------------------------------------------

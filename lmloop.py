@@ -24,10 +24,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config as config_module
 import display
+import eta
 import gitops
 import models as models_module
 from loop import Run
-from rundir import make_run_id
+from rundir import RunDir, make_run_id
 
 
 STATE_DIR = Path.home() / ".local" / "state" / "lmloop"
@@ -247,6 +248,20 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"{run_id}: no live status (run has not started, or predates status.json)")
         return 1
 
+    # A process launched by an older lmloop cannot add newly introduced status
+    # fields mid-run.  Rebuild ETA from the durable log so status gains the
+    # feature immediately without restarting that process.
+    live = state.get("phase") in ("loading", "working")
+    if live and not state.get("eta_seconds"):
+        rd = RunDir(run_dir.parents[2], run_id)
+        done, total = rd.plan_progress()
+        state.update(eta.estimate(
+            rd.read_events(), elapsed_seconds=state.get("elapsed_seconds") or 0,
+            iteration=state.get("iteration") or 0,
+            max_iterations=state.get("max_iterations") or 0,
+            plan_done=done, plan_total=total,
+        ))
+
     if args.json:
         print(json.dumps(state, indent=2))
         return 0
@@ -276,6 +291,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     if state.get("plan_total"):
         display.out(f"  plan {state['plan_done']}/{state['plan_total']} steps done")
+    if live and state.get("eta_seconds") and not stale:
+        display.out(f"  ETA about {display.elapsed(state['eta_seconds'])}")
     counts = f"  {state.get('tool_calls')} tools, {state.get('writes')} writes"
     if state.get("compactions"):
         counts += f", {state['compactions']} overflows"

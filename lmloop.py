@@ -15,6 +15,7 @@ throwing work away.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -186,6 +187,16 @@ def _discover_runs(repo: Path, config: dict) -> list[tuple[str, Path]]:
     return runs
 
 
+def _read_run_state(run_dir: Path) -> dict:
+    """A run's persisted state, for the resume path that reads it before the
+    `RunDir` exists.  A run from before this was written simply says nothing."""
+    try:
+        value = json.loads((run_dir / "run-state.json").read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     repo = gitops.repo_root(Path.cwd())
     runs = _discover_runs(repo, config_module.load(repo))
@@ -275,14 +286,27 @@ def cmd_resume(args: argparse.Namespace) -> int:
         config["agent"]["model"] = args.model
     if args.thinking:
         config["agent"]["thinking"] = args.thinking
-    config_module.override_agent(config, args.agent or "")
 
     runs = _discover_runs(repo, config)
     if not runs:
         raise SystemExit("lmloop: no runs to resume for this repo")
     run_id = args.run_id or runs[-1][0]
-    if run_id not in {name for name, _ in runs}:
+    directories = {name: path for name, path in runs}
+    if run_id not in directories:
         raise SystemExit(f"lmloop: no run {run_id} under this repo")
+
+    # Which agent this run has been using, before the config file gets a say.
+    # A run started with `--agent omp` against a repo whose .lmloop.toml says
+    # pi would otherwise be continued by pi -- same worktree, same session
+    # directory, same handoff chain, different agent -- and the run's own log
+    # would name both.  `--agent` on the resume still wins, because that is
+    # someone deciding rather than a file being stale.
+    if not args.agent:
+        state = _read_run_state(directories[run_id])
+        for key in ("harness", "tools"):
+            if isinstance(state.get(key), str) and state[key]:
+                config["agent"][key] = state[key]
+    config_module.override_agent(config, args.agent or "")
 
     run = Run(repo, config, objective="", max_iterations=None, run_id=run_id)
     # A leftover STOP -- or the STOP-NOW that accompanies a hard stop -- would

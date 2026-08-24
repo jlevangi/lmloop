@@ -108,13 +108,31 @@ def _worktree_root(project: Path) -> Path:
     return Path(template.format(repo=str(project), run_id="__run__")).parent
 
 
-def run_dirs(project: Path) -> list[Path]:
-    """Every run directory belonging to a project, newest run id first."""
-    root = _worktree_root(project)
+def _runs_under(root: Path) -> list[Path]:
     try:
-        found = [path for path in root.glob("*/.lmloop/runs/*") if path.is_dir()]
+        return [path for path in root.glob("*/.lmloop/runs/*") if path.is_dir()]
     except OSError:
         return []
+
+
+def run_dirs(project: Path) -> list[Path]:
+    """Every run directory belonging to a project, newest run id first.
+
+    Runs normally hang off the repository, and that is one glob.  A pilot checks
+    the repository out again under `.pilot-bases/<name>` and runs lmloop there,
+    so its worktrees hang off *that* copy instead -- two path segments deeper
+    than the glob reaches, which made a real omp run invisible to the dashboard
+    while every other reader handled it correctly.  `projects()` cannot find
+    those bases either, since it looks exactly one level below a root, so
+    neither half of the discovery saw them.
+
+    Each base is asked for its own worktree root, because it carries its own
+    `.lmloop.toml` -- which is the whole point of pinning a base commit.
+    """
+    found = _runs_under(_worktree_root(project))
+    for base in sorted((project / ".pilot-bases").glob("*")):
+        if base.is_dir():
+            found += _runs_under(_worktree_root(base))
     return sorted(found, key=lambda path: path.name, reverse=True)
 
 
@@ -341,6 +359,16 @@ def summarise(project: dict, run_dir: Path) -> dict:
         if event.get("event") == "run:complete":
             commits = event.get("commitCount", commits)
 
+    # Which agent did the typing.  It lives in `run:start` rather than in
+    # status.json because it cannot change within a run, and `_events` has
+    # already read the log for the outcomes above -- so surfacing it costs no
+    # extra I/O and works on runs that finished before anyone thought to show
+    # it.  A run older than the field says nothing rather than guessing "pi".
+    agent = next(
+        (event.get("agent", "") for event in events if event.get("event") == "run:start"),
+        "",
+    )
+
     objective = _read_text(run_dir / "prompt.md", 4000).strip()
     # The agent's name for the run when it has written one; the objective's
     # first line only as a fallback, for runs that predate the plan heading.
@@ -363,6 +391,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "title": name or (objective.splitlines()[0][:120] if objective else run_dir.name),
         "named": bool(name),
         "model": status.get("model", ""),
+        "agent": agent,
         "thinking": status.get("thinking", ""),
         "role": status.get("role", ""),
         "context_window": status.get("context_window"),

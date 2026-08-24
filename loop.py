@@ -456,11 +456,27 @@ class Run:
         if enabled and "browser" not in enabled:
             return
         cdp_url = agent.get("browser_cdp_url", "")
-        ok, detail = browser.preflight(cdp_url)
+        if not cdp_url:
+            # Not a failure, and saying it was one was wrong in the way that
+            # matters: a pilot run logged `ok=false, "no browser CDP endpoint
+            # configured"` and then opened a tab anyway, because with nothing
+            # configured omp launches its own headless Chromium.  There is
+            # nothing to preflight and nothing missing.
+            self.rundir.event("browser:preflight", ok=True, detail="omp's own browser")
+            self.screen.log("  browser: omp's own (no CDP endpoint configured)")
+            return
+        try:
+            ok, detail = browser.preflight(cdp_url)
+        except Exception as error:  # noqa: BLE001 - never fails a run
+            # This runs inside `prepare()`, after the worktree and the run
+            # directory exist and before `run:start` is emitted.  Anything that
+            # escapes here loses the run's own record of itself over a typo in
+            # an optional setting.
+            ok, detail = False, f"preflight failed: {type(error).__name__}"
         # `detail` is redacted at the source; see browser.redact.
         self.rundir.event("browser:preflight", ok=ok, detail=detail)
         self.screen.log(f"  browser: {detail}" if ok else
-                        f"  browser: {detail} (the agent will run without it)")
+                        f"  browser: {detail} (omp will fall back to its own)")
 
     # -- the gate ---------------------------------------------------------
 
@@ -1052,6 +1068,14 @@ class Run:
             "no_diff_streak": self.no_diff_streak,
             "thrashed_steps": self.thrashed_steps,
             "hard_turn_ceiling": self.iteration_ceiling,
+            # Which agent, and what it was allowed to use.  A resume that reads
+            # these back cannot hand omp's worktree, session directory and
+            # handoff chain to pi because the file on disk said pi -- which it
+            # does whenever the agent came from `--agent` rather than from
+            # `.lmloop.toml`.  Silent, and it makes the run's own record name
+            # two different agents for one run.
+            "harness": self.harness_name,
+            "tools": self.config["agent"].get("tools", ""),
         })
 
     # -- driver -----------------------------------------------------------

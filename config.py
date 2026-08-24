@@ -8,6 +8,7 @@ worktree placement live with the repo they describe.
 
 from __future__ import annotations
 
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -233,7 +234,7 @@ def _read(path: Path) -> dict:
         raise SystemExit(f"lmloop: cannot read {path}: {error}") from error
 
 
-def resolve_tools(harness_name: str, tools: str) -> str:
+def resolve_tools(harness_name: str, tools: str, strict: bool = True) -> str:
     """The tool allowlist, reconciled with the agent that has to accept it.
 
     Two agents, two vocabularies.  pi takes whatever it is handed and ignores
@@ -254,11 +255,16 @@ def resolve_tools(harness_name: str, tools: str) -> str:
     have been forgotten.
     """
     agent_name = (harness_name or "pi").strip().lower()
-    adapter = harness.get(agent_name)
+    try:
+        adapter = harness.get(agent_name)
+    except SystemExit:
+        if strict:
+            raise
+        return tools
     if agent_name == "omp" and tools == DEFAULTS["agent"]["tools"]:
         return harness.OMP_DEFAULT_TOOLS
     unknown = adapter.unknown_tools(tools)
-    if unknown:
+    if unknown and strict:
         raise SystemExit(
             f"lmloop: [agent] tools names {', '.join(unknown)}, which {agent_name} "
             f"does not have; it would exit before the first iteration.  Known: "
@@ -279,8 +285,13 @@ def load(repo_root: Path) -> dict:
             config["stop"]["initial_turns"] = legacy
         if "hard_turn_ceiling" not in explicit_stop:
             config["stop"]["hard_turn_ceiling"] = legacy
+    # Not strict: this is the path `list`, `status` and `prune` take, and a
+    # config that would refuse to start a run must still let you read one that
+    # is already running.  Starting a run goes through `override_agent`, which
+    # is strict, so nothing reaches an agent unchecked.
     config["agent"]["tools"] = resolve_tools(
-        config["agent"].get("harness", "pi"), config["agent"].get("tools", "")
+        config["agent"].get("harness", "pi"), config["agent"].get("tools", ""),
+        strict=False,
     )
     return config
 
@@ -295,6 +306,18 @@ def override_agent(config: dict, harness_name: str = "", tools: str = "") -> Non
     if harness_name:
         harness.get(harness_name)  # fail here, not eight lines into a run
         config["agent"]["harness"] = harness_name
+    # An agent that is not installed fails the same way an unknown one does, and
+    # for the same reason it should fail here: `Popen` raises FileNotFoundError
+    # from inside the driver loop, which builds the worktree, writes the prompt,
+    # runs the gate probe and *then* dies without a `run:complete`.  omp is
+    # installed separately from pi, so a missing binary is a routine input now
+    # rather than a broken machine.
+    binary = harness.get(config["agent"].get("harness", "pi")).binary
+    if not shutil.which(binary):
+        raise SystemExit(
+            f"lmloop: [agent] harness is {config['agent'].get('harness', 'pi')}, "
+            f"whose binary `{binary}` is not on PATH"
+        )
     if tools:
         config["agent"]["tools"] = tools
     config["agent"]["tools"] = resolve_tools(

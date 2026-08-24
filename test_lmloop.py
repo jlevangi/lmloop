@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import os
 import signal
 import subprocess
+from unittest import mock
 
 import browser
 import config
@@ -307,6 +308,20 @@ class ToolAllowlistTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             config.override_agent(config._merge(config.DEFAULTS, {}), "ompp")
 
+    def test_missing_agent_binary_fails_before_a_worktree_is_built(self):
+        cfg = config._merge(config.DEFAULTS, {})
+        with mock.patch("config.shutil.which", return_value=None):
+            with self.assertRaisesRegex(SystemExit, "binary `omp` is not on PATH"):
+                config.override_agent(cfg, "omp")
+
+    def test_read_only_config_load_tolerates_an_unavailable_agent(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".lmloop.toml").write_text(
+            '[agent]\nharness = "future-agent"\ntools = "read"\n'
+        )
+        loaded = config.load(root)
+        self.assertEqual("future-agent", loaded["agent"]["harness"])
+
 
 class BrowserPreflightTests(unittest.TestCase):
     """A CDP endpoint is credentials; the preflight must never widen them."""
@@ -328,6 +343,19 @@ class BrowserPreflightTests(unittest.TestCase):
         self.assertNotIn("alsosecret", redacted)
         self.assertIn("127.0.0.1:9222", redacted)
         self.assertIn("token=", redacted)
+
+    def test_redaction_drops_userinfo_as_well_as_query_values(self):
+        redacted = browser.redact(
+            "http://alice:password@127.0.0.1:9222/x?token=s3cret"
+        )
+        for secret in ("alice", "password", "s3cret"):
+            self.assertNotIn(secret, redacted)
+        self.assertIn("<redacted>@127.0.0.1:9222", redacted)
+
+    def test_malformed_endpoint_is_optional_not_an_exception(self):
+        ok, detail = browser.preflight("http://127.0.0.1:not-a-port")
+        self.assertFalse(ok)
+        self.assertTrue(detail)
 
     def test_an_unreachable_endpoint_is_not_fatal_and_is_redacted(self):
         # Port 9 is discard: nothing listens, and the failure is immediate.

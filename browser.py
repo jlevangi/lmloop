@@ -35,6 +35,7 @@ already using it.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -56,13 +57,26 @@ def redact(url: str) -> str:
         return ""
     try:
         parts = urllib.parse.urlsplit(url)
+        # `hostname` and `port` are properties that parse, so both can raise
+        # here rather than at the split -- a non-numeric port is a ValueError
+        # the caller would otherwise meet halfway through building a log line.
+        host, port, user = parts.hostname or "", parts.port, parts.username
     except ValueError:
         return "<unparseable>"
+    # The netloc carries a credential too, and it is the one the module's own
+    # advice produces: the loopback shim it recommends building is exactly the
+    # thing an operator points `http://user:pass@host` at.  Redacting only the
+    # query would have written that password into a run log verbatim.
+    netloc = f"[{host}]" if ":" in host else host
+    if port:
+        netloc += f":{port}"
+    if user:
+        netloc = f"<redacted>@{netloc}"
     query = urllib.parse.urlencode(
         [(key, "<redacted>") for key, _ in urllib.parse.parse_qsl(parts.query)]
     )
     return urllib.parse.urlunsplit(
-        (parts.scheme, parts.netloc, parts.path, query, "")
+        (parts.scheme, netloc, parts.path, query, "")
     )
 
 
@@ -77,7 +91,14 @@ def preflight(cdp_url: str, timeout: float = ATTACH_TIMEOUT_SECONDS) -> tuple[bo
     if not cdp_url:
         return False, "no browser CDP endpoint configured"
 
-    parts = urllib.parse.urlsplit(cdp_url)
+    try:
+        parts = urllib.parse.urlsplit(cdp_url)
+    except ValueError:
+        # A malformed endpoint is a typo in an optional setting, and the whole
+        # point of this module is that a browser it cannot reach never stops a
+        # run.  Saying so beats raising out of `prepare()` with a worktree
+        # already built and `run:start` never emitted.
+        return False, "unparseable endpoint"
     if parts.scheme in ("ws", "wss"):
         return False, (
             f"{parts.scheme}:// endpoint; omp attaches to an HTTP CDP discovery "
@@ -110,12 +131,20 @@ def preflight(cdp_url: str, timeout: float = ATTACH_TIMEOUT_SECONDS) -> tuple[bo
                 )
             return False, detail
         return False, f"{redact(cdp_url)}: HTTP {error.code}"
-    except (urllib.error.URLError, OSError, ValueError) as error:
+    except (urllib.error.URLError, OSError, ValueError,
+            http.client.HTTPException) as error:
+        # `http.client.InvalidURL` -- raised for a non-numeric port or a control
+        # character in the host -- descends from HTTPException, not from any of
+        # the other three, so without it a typo escaped as a traceback.
         return False, f"{redact(cdp_url)} unreachable: {error}"
 
+    if not isinstance(version, dict):
+        # `/json/version` answering 200 with something that is not an object is
+        # not Chrome, whatever else it is.
+        return False, f"{redact(cdp_url)} is not a CDP endpoint"
     browser = version.get("Browser") or "unknown"
     if carries_query:
         # Reachable without the credential it carries: the query is decoration,
         # and omp dropping it changes nothing.
         return True, f"{browser} at {redact(cdp_url)} (credential not required)"
-    return True, f"{browser} at {cdp_url}"
+    return True, f"{browser} at {redact(cdp_url)}"

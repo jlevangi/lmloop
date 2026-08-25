@@ -30,7 +30,7 @@ def estimate(events: list[dict], *, elapsed_seconds: float = 0,
             advanced = max(done - previous_done, 0)
             previous_done = max(previous_done, done)
             seconds = float(event.get("elapsedMs") or 0) / 1000
-            if advanced and seconds > 0:
+            if advanced and seconds > 0 and event.get("outcome") in USEFUL_OUTCOMES:
                 # One sample per completed attempt, even when that attempt checks
                 # off several steps.  Duplicating by `advanced` would let one
                 # iteration satisfy the two-attempt confidence threshold.
@@ -51,10 +51,26 @@ def estimate(events: list[dict], *, elapsed_seconds: float = 0,
         return {}
 
     seconds_each = statistics.median(samples)
+    if plan_total:
+        # The active step is censored evidence: it has taken at least this long,
+        # even though its final duration is not known yet.  A median of a tiny,
+        # skewed sample otherwise keeps saying "10m per step" while the current
+        # step has visibly been running for an hour.  Use the more conservative
+        # of that median and the productive mean including the active lower
+        # bound. Failed attempts never enter `samples` above.
+        productive_mean = (
+            sum(samples) + max(elapsed_seconds, 0)
+        ) / (len(samples) + 1)
+        seconds_each = max(seconds_each, productive_mean)
     # Once the active turn runs past its historical allowance, disappearing is
     # the least honest ETA: it looks like the feature broke exactly when the run
     # became late.  One minute means "due now" at this UI's minute precision.
-    seconds_left = max(round(seconds_each * remaining - max(elapsed_seconds, 0)), 60)
+    # `remaining` includes the step being worked right now.  Elapsed time may
+    # consume that step's allowance, but never the allowance of later steps: a
+    # single 70-minute outlier cannot make eleven untouched steps look free.
+    current_left = max(seconds_each - max(elapsed_seconds, 0), 0)
+    future_left = seconds_each * max(remaining - 1, 0)
+    seconds_left = max(round(current_left + future_left), 60)
     completion = datetime.now(timezone.utc) + timedelta(seconds=seconds_left)
     return {
         "eta_seconds": seconds_left,

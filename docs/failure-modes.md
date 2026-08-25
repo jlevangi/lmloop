@@ -100,6 +100,47 @@ fix, because decomposition is the loop's job.
 reading files*, then does the first unchecked step and nothing else. The same
 broad objective then produced 124 passing tests over 14 iterations.
 
+## One tool result is too big to compact
+
+**Shape.** The iteration has already made useful edits, then one broad search or
+binary read places most of a large artifact into the newest turn. The context
+overflows, compaction succeeds once, then the retry overflows immediately because
+the most recent turn is itself irreducible. This is not the read-only compaction
+thrash above: the iteration can have many writes and a coherent commit.
+
+**Evidence.** The Gamble King brand run completed all 16 plan steps, but one
+iteration ended `agent-error` after 157 tool calls and two overflow attempts.
+omp reported: "The most recent turn alone is too large to reduce further." The
+same run contained a pathless selector grep whose result was 335 KB, plus several
+30--60 KB search/edit results in other long iterations. The large source files
+contributed only when a broad operation returned too much of them; file size
+alone did not stall the agent. Exact repeated calls were rare (2 of 157 in the
+failed iteration), so this was not an action loop.
+
+**Fix.** The iteration prompt now forbids broad pathless/repository-wide grep,
+requires the narrowest known path and pattern, and tells the agent to read only
+the matching region. Keep the raw stream: it is the evidence needed to separate
+an oversized newest turn from repetitive compaction thrash.
+
+## Verification becomes the project
+
+**Shape.** The code change is already made, but an external verification path
+does not work. Instead of leaving the blocker for the next fresh iteration, the
+agent writes successive proxy servers, CDP runners, test pages, and launch
+scripts. Each attempt is locally reasonable; together they consume the entire
+four-hour backstop without improving the tracked tree.
+
+**Evidence.** Gamble King iteration 14 made 18 writes, then spent its last 30
+tool calls cycling through `/tmp/proxy14.py`, `/tmp/run14.py`, six browser/CDP
+test scripts, Chromium launches, and a synthetic `/tmp/night-test` site. It hit
+the 240-minute timeout. Exact command repetition was low, so duplicate-call
+detection would not catch it; the loop was semantic, not textual.
+
+**Fix.** After three failures at the same external boundary, the prompt requires
+the agent to record the exact blocker and attempted commands in the handoff and
+stop. It explicitly forbids replacing the application with an ad-hoc `/tmp`
+proxy, browser harness, or service merely to manufacture verification.
+
 ## Choosing omp and getting pi's vocabulary
 
 Three failures share one cause: omp is close enough to pi that a setting looks

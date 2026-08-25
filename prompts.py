@@ -80,6 +80,17 @@ Rules:
 - The repository inventory above was precomputed for you. Use it instead of
   exploring with `ls`, and use `grep` rather than reading a whole file to find
   one thing in it.
+- Scope every `grep` to the narrowest known file or directory. Never run a
+  repository-wide or pathless grep for a broad family of selectors/symbols: one
+  observed call returned 335 KB into a single turn, which compaction could not
+  shrink. If the first result is broad, narrow the path or pattern before
+  continuing; read only the matching region, not the whole file.
+- Do not turn verification into a second implementation. After three failed
+  attempts at the same external boundary (browser attach, server startup,
+  dependency or service), write the exact blocker and commands tried into the
+  handoff and stop. Do not build an ad-hoc proxy, browser harness, or replacement
+  service in `/tmp`; the next iteration starts fresh and can take a different
+  route.
 - Write `{handoff_path}` using your write tool. Line 1 must be a single-line
   summary of what you did this iteration -- it becomes the commit subject. After
   that, in whatever form is useful: what you changed, what you learned about

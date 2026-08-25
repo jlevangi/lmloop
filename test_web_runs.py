@@ -69,13 +69,14 @@ class NestedPilotDiscoveryTests(unittest.TestCase):
         }))
         with (run_dir / "lmloop.log").open("a") as log:
             log.write(json.dumps({"event": "iteration:end", "elapsedMs": 600000,
-                                  "planDone": 1, "planTotal": 3}) + "\n")
+                                  "planDone": 1, "planTotal": 3, "outcome": "ok"}) + "\n")
             log.write(json.dumps({"event": "iteration:end", "elapsedMs": 1200000,
-                                  "planDone": 2, "planTotal": 3}) + "\n")
+                                  "planDone": 2, "planTotal": 3, "outcome": "ok"}) + "\n")
         summary = runs.summarise({"id": "project", "path": str(self.project)}, run_dir)
         self.assertEqual("running", summary["state"])
         self.assertEqual(840, summary["eta_seconds"])
         self.assertEqual("plan steps", summary["eta_basis"])
+        self.assertEqual(1860, summary["run_elapsed_seconds"])
 
 
 class ArchiveTests(unittest.TestCase):

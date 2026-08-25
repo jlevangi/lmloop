@@ -177,6 +177,10 @@ class RunPolicyTests(unittest.TestCase):
         self.assertIn("at most three files", narrow)
         self.assertIn("FIRST unchecked step and nothing else", narrow)
         self.assertIn("Do not start a second step", narrow)
+        self.assertIn("repository-wide or pathless grep", narrow)
+        self.assertIn("read only the matching region", narrow)
+        self.assertIn("After three failed", narrow)
+        self.assertIn("Do not build an ad-hoc proxy", narrow)
         self.assertNotIn("Do not start a second step", wide)
 
 

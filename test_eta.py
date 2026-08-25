@@ -37,6 +37,15 @@ class EstimateTests(unittest.TestCase):
                 plan_done=done, plan_total=3,
             ))
 
+    def test_failed_attempt_that_advanced_plan_is_excluded(self):
+        result = eta.estimate([
+            end(600, done=1, total=4),
+            end(7200, done=2, total=4, outcome="agent-error"),
+            end(600, done=3, total=4),
+        ], iteration=4, max_iterations=5, plan_done=3, plan_total=4)
+        self.assertEqual(600, result["eta_seconds"])
+        self.assertEqual(2, result["eta_samples"])
+
     def test_pre_plan_fallback_excludes_failed_turns(self):
         result = eta.estimate([
             end(600), end(1200, outcome="truncated"),
@@ -53,6 +62,14 @@ class EstimateTests(unittest.TestCase):
             plan_done=2, plan_total=3,
         )
         self.assertEqual(60, result["eta_seconds"])
+
+    def test_overdue_active_step_does_not_consume_future_step_allowances(self):
+        result = eta.estimate(
+            [end(600, done=1, total=5), end(600, done=2, total=5)],
+            elapsed_seconds=3600, iteration=3, max_iterations=5,
+            plan_done=2, plan_total=5,
+        )
+        self.assertEqual(3200, result["eta_seconds"])
 
     def test_completed_plan_has_no_eta(self):
         self.assertEqual({}, eta.estimate(

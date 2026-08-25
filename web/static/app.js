@@ -85,6 +85,24 @@ function liveElapsed(run) {
   return duration(Math.round((run.elapsed_seconds || 0) + drift));
 }
 
+function elapsed(run) {
+  const seconds = run.run_elapsed_seconds ?? run.elapsed_seconds;
+  if (seconds == null) return "";
+  if (run.state !== "running") return duration(seconds);
+  const drift = (Date.now() - (state.fetchedAt || Date.now())) / 1000;
+  return duration(Math.round(seconds + drift));
+}
+
+function timingText(run) {
+  const bits = [];
+  const spent = elapsed(run);
+  if (spent) bits.push(`Elapsed ${spent}`);
+  if (run.state === "running" && run.eta_seconds != null) {
+    bits.push(`Estimated ${duration(run.eta_seconds)} left`);
+  }
+  return bits.join(" · ");
+}
+
 /* The same drawn chevron the back button and the strip use.  Built rather than
  * written as a glyph so all three are one mark at one weight: `▾` renders at a
  * different size in every font that has it, and at 10px it stopped reading as
@@ -105,6 +123,15 @@ function el(tag, className, content) {
   if (className) node.className = className;
   if (content != null) node.textContent = content;
   return node;
+}
+
+function syncSpans(container, bits, className = () => "") {
+  while (container.children.length > bits.length) container.lastChild.remove();
+  bits.forEach((bit, index) => {
+    const span = container.children[index] || container.appendChild(el("span"));
+    if (span.textContent !== bit) span.textContent = bit;
+    span.className = className(bit, index);
+  });
 }
 
 function metaBits(run) {
@@ -149,14 +176,15 @@ function makeRow(run) {
   const nowAct = el("span", "now-act");
   now.append(nowStep, nowAct);
 
+  const timing = el("div", "timing");
   const pips = el("div", "pips");
   const meta = el("div", "meta");
 
-  node.append(head, title, progress, now, pips, meta);
+  node.append(head, title, progress, now, timing, pips, meta);
   node.addEventListener("click", () => go(`#${run.project}/${run.route_id || run.run_id}`));
 
   const parts = { node, where, stateLabel, title, progress, track, fill, steps,
-                  now, nowStep, nowAct, pips, meta, last: null };
+                  now, nowStep, nowAct, timing, pips, meta, last: null };
   patchRow(parts, run);
   return parts;
 }
@@ -166,7 +194,7 @@ function patchRow(parts, run) {
   const key = JSON.stringify([
     run.state, run.title, run.plan_done, run.plan_total, run.outcomes,
     run.iteration, run.commits, run.last_tool, run.last_target, run.current_step,
-    run.elapsed_seconds, run.eta_seconds, run.compactions, run.agent, run.model,
+    run.elapsed_seconds, run.run_elapsed_seconds, run.eta_seconds, run.compactions, run.agent, run.model,
     run.age_seconds, run.tokens_per_second,
   ]);
   if (key === parts.last) return;
@@ -198,6 +226,9 @@ function patchRow(parts, run) {
     ? [run.last_tool, run.last_target].filter(Boolean).join(" ")
     : "";
 
+  parts.timing.textContent = timingText(run);
+  parts.timing.hidden = !parts.timing.textContent;
+
   parts.node.classList.toggle("broken", Boolean(run.defects?.length));
 
   const outcomes = run.outcomes || [];
@@ -210,13 +241,8 @@ function patchRow(parts, run) {
   parts.pips.title = outcomes.join(", ");
 
   const bits = metaBits(run);
-  while (parts.meta.children.length > bits.length) parts.meta.lastChild.remove();
   const clockAt = bits.indexOf(live && run.elapsed_seconds != null ? liveElapsed(run) : "\u0000");
-  bits.forEach((bit, index) => {
-    const span = parts.meta.children[index] || parts.meta.appendChild(el("span"));
-    span.textContent = bit;
-    span.className = index === clockAt ? "clock" : "";
-  });
+  syncSpans(parts.meta, bits, (_bit, index) => index === clockAt ? "clock" : "");
 }
 
 function syncGroup(container, runs) {
@@ -273,8 +299,16 @@ function renderList() {
 function renderFilters() {
   const projects = [...new Set(state.runs.map((r) => r.project))].sort();
   const holder = $("filters");
+  const values = projects.length < 2 ? [] : [null, ...projects];
+  const key = JSON.stringify(values);
+  if (holder.dataset.key === key) {
+    [...holder.children].forEach((node, index) =>
+      node.setAttribute("aria-pressed", String(state.project === values[index])));
+    return;
+  }
+  holder.dataset.key = key;
   holder.replaceChildren();
-  if (projects.length < 2) return;
+  if (!values.length) return;
   const tab = (label, value) => {
     const node = el("button", "tab", label);
     node.type = "button";
@@ -328,8 +362,9 @@ function makeHead() {
   const doingAct = el("div", "act");
   doing.append(doingLabel, doingStep, doingAct);
 
-  const parts = { node, name, cells, doing, doingLabel, doingStep, doingAct };
-  node.append(name, facts, doing, makeModel(parts));
+  const timing = el("div", "timing detail-timing");
+  const parts = { node, name, cells, doing, doingLabel, doingStep, doingAct, timing };
+  node.append(name, facts, timing, doing, makeModel(parts));
   return parts;
 }
 
@@ -382,6 +417,12 @@ function patchHead(head, run) {
     dd.className = label === "plan" && ACTIVE.has(run.state) ? "hot" : "";
   }
 
+  head.timing.textContent = timingText(run);
+  head.timing.hidden = !head.timing.textContent;
+  head.timing.title = run.eta_basis
+    ? `Estimate based on ${run.eta_basis}${run.eta_samples ? ` · ${run.eta_samples} samples` : ""}`
+    : "";
+
   const doing = ACTIVE.has(run.state) && (run.current_step || run.last_tool);
   head.doing.hidden = !doing;
   if (doing) {
@@ -389,9 +430,9 @@ function patchHead(head, run) {
     head.doingStep.textContent = run.current_step || "";
     head.doingStep.hidden = !run.current_step;
     const act = [run.last_tool, run.last_target].filter(Boolean).join(" ");
-    head.doingAct.replaceChildren(el("span", "clock", liveElapsed(run)));
-    if (act) head.doingAct.append(` · ${act}`);
-    if (run.quiet_seconds > 60) head.doingAct.append(` · quiet ${duration(run.quiet_seconds)}`);
+    const quiet = run.quiet_seconds > 60 ? ` · quiet ${duration(run.quiet_seconds)}` : "";
+    const activity = `${act}${quiet}`;
+    if (head.doingAct.textContent !== activity) head.doingAct.textContent = activity;
   }
 
   patchModel(head.model, run);
@@ -430,7 +471,7 @@ function patchModel(model, run) {
   if (run.tool_calls) bits.push(`${run.tool_calls} tools`);
   if (run.writes) bits.push(plural(run.writes, "write"));
   bits.push(run.compactions ? plural(run.compactions, "overflow") : "no overflow");
-  model.meta.replaceChildren(...bits.map((bit) => el("span", null, bit)));
+  syncSpans(model.meta, bits);
 }
 
 /* Plan steps are markdown the agent wrote for itself, so they arrive with
@@ -581,8 +622,14 @@ function runShell(runId) {
 
 async function renderRun(project, runId, { quiet = false } = {}) {
   const summary = state.runs.find((r) => (r.route_id || r.run_id) === runId);
-  const key = `${runId}:${summary?.updated_at || ""}:${summary?.state || ""}`;
-  if (quiet && key === state.detailKey) return;
+  const key = JSON.stringify([
+    runId, summary?.state, summary?.plan_done, summary?.plan_total,
+    summary?.iterations_done, summary?.commits, summary?.defects,
+  ]);
+  if (quiet && key === state.detailKey) {
+    if (summary && state.shell?.head) patchHead(state.shell.head, summary);
+    return;
+  }
 
   $("bar-title").textContent = project;
   $("bar-sub").textContent = elideMiddle(runId);
@@ -866,6 +913,7 @@ function patchRunbarRow(parts, run) {
     run.state, run.project, run.title, run.plan_done, run.plan_total,
     run.current_step, run.last_tool, run.last_target, run.iteration,
     run.max_iterations, run.commits, run.tokens_per_second, run.elapsed_seconds,
+    run.eta_seconds,
   ]);
   if (key === parts.last) return;
   parts.last = key;
@@ -890,13 +938,11 @@ function patchRunbarRow(parts, run) {
   if (run.iteration) bits.push(`iter ${run.iteration}/${run.max_iterations ?? "?"}`);
   if (run.commits) bits.push(plural(run.commits, "commit"));
   if (live && run.elapsed_seconds != null) bits.push(liveElapsed(run));
+  if (live && run.eta_seconds != null) bits.push(`~${duration(run.eta_seconds)} left`);
   if (live && run.tokens_per_second) bits.push(rate(run.tokens_per_second));
   if (run.compactions) bits.push(`${run.compactions} ovf`);
   const clockAt = live && run.elapsed_seconds != null ? bits.indexOf(liveElapsed(run)) : -1;
-  parts.meta.replaceChildren(...bits.map((bit, index) => {
-    const span = el("span", index === clockAt ? "clock" : null, bit);
-    return span;
-  }));
+  syncSpans(parts.meta, bits, (_bit, index) => index === clockAt ? "clock" : "");
 }
 
 function toggleRunbar(open) {
@@ -957,8 +1003,10 @@ function renderRunbar() {
     if (atIndex !== parts.node) panel.insertBefore(parts.node, atIndex || null);
   });
   while (panel.children.length > active.length) panel.lastChild.remove();
-  for (const [runId] of runbar.rows) {
-    if (!active.some((run) => run.run_id === runId)) runbar.rows.delete(runId);
+  for (const [id] of runbar.rows) {
+    if (!active.some((run) => `${run.project}/${run.route_id || run.run_id}` === id)) {
+      runbar.rows.delete(id);
+    }
   }
 }
 
@@ -1078,15 +1126,15 @@ document.addEventListener("visibilitychange", schedule);
 setInterval(() => {
   if (document.hidden) return;
   if (!state.runs.some((run) => run.state === "running")) return;
-  for (const [runId, parts] of state.rows) {
-    const run = state.runs.find((item) => item.run_id === runId);
+  for (const [id, parts] of state.rows) {
+    const run = state.runs.find((item) =>
+      `${item.project}/${item.route_id || item.run_id}` === id);
     if (!run || run.state !== "running") continue;
-    const clock = parts.meta.querySelector(".clock");
-    if (clock) clock.textContent = liveElapsed(run);
+    parts.timing.textContent = timingText(run);
   }
-  const panel = document.querySelector("#view-run .clock");
   const shown = state.runs.find((run) => run.run_id === state.route.run_id);
-  if (panel && shown?.state === "running") panel.textContent = liveElapsed(shown);
+  const panel = document.querySelector("#view-run .detail-timing");
+  if (panel && shown?.state === "running") panel.textContent = timingText(shown);
   // The strip carries the same clock, and it is on screen on every page.
   for (const [runId, parts] of runbar.rows) {
     const run = state.runs.find((item) => item.run_id === runId);

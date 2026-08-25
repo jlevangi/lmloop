@@ -433,6 +433,13 @@ def summarise(project: dict, run_dir: Path) -> dict:
         max_iterations=status.get("max_iterations") or 0,
         plan_done=done, plan_total=total,
     ) if state == "running" else {}
+    completed_seconds = sum(
+        float(event.get("elapsedMs") or 0) / 1000
+        for event in events if event.get("event") == "iteration:end"
+    )
+    run_elapsed_seconds = completed_seconds + (
+        float(status.get("elapsed_seconds") or 0) if state == "running" else 0
+    )
     return {
         "run_id": run_dir.name,
         "route_id": route_id(Path(project["path"]), run_dir),
@@ -462,6 +469,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "quiet_seconds": status.get("quiet_seconds"),
         "output_tokens": status.get("output_tokens"),
         "elapsed_seconds": status.get("elapsed_seconds"),
+        "run_elapsed_seconds": round(run_elapsed_seconds),
         "tool_calls": status.get("tool_calls"),
         "writes": status.get("writes"),
         "compactions": status.get("compactions"),

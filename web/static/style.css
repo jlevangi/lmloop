@@ -229,6 +229,14 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
   font-size: .72rem; color: var(--text-faint);
   display: flex; flex-wrap: wrap; gap: 2px 14px;
 }
+.timing {
+  color: var(--moon); font-family: var(--mono); font-size: .76rem;
+  font-variant-numeric: tabular-nums;
+}
+.detail-timing {
+  border-left: 2px solid var(--moon-dim); padding: 4px 10px;
+  font-size: .82rem;
+}
 
 /* State reads as a label, not a pill: uppercase, letterspaced, no chrome. */
 .state {

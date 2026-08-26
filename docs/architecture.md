@@ -21,7 +21,8 @@ loop.
 | `models.py` | Local-provider preflight and context measurement, plus the per-agent catalogue cache for models it cannot measure. Which provider is "local" is a setting, not a literal. |
 | `browser.py` | Whether omp's browser tool can attach to the CDP endpoint it was given. Redacts before it reports. |
 | `harness.py` | What lmloop needs from an agent: an argv, what its events mean, and the capabilities the rest of the system used to hardcode by name — default tool allowlist, browser tool, model-listing argv, environment namespace. One small adapter per agent. |
-| `config.py` | Defaults → global TOML → the repo's `.lmloop.toml`. |
+| `config.py` | Defaults → global TOML → the repo's `.lmloop.toml`. Validates both, and resolves secrets a config points at rather than holds. |
+| `doctor.py` | `lmloop doctor`: git, config, agent, model, server, storage, gate and notification. Returns rather than prints, and never raises — a broken environment is when a diagnostic must not add a traceback of its own. |
 | `env.py` | What the agent and the gate see of the host environment. An allowlist by default, plus a credential-name filter a blunt prefix rule cannot get past. Pure functions of their arguments; no `os.environ`. |
 | `display.py` | The status line and its width arithmetic. Load-bearing; see design.md. |
 

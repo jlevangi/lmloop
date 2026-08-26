@@ -322,6 +322,34 @@ mistyped.
   in the commit message and the next iteration's prompt but commits regardless,
   which is usually what you want; a gate that could not be run never blocks a
   commit, whatever that setting says.
+Before a first run, or after changing anything:
+
+```bash
+lmloop doctor
+```
+
+```
+  ok    python        3.11.9
+  ok    git           repository at /home/you/project
+  ok    config        /home/you/.config/lmloop/config.toml, .lmloop.toml
+  ok    harness       pi at /home/you/.local/bin/pi
+  ok    model         llama-swap/Qwen3.8-27B: 106496 context + 24576 output
+  ok    model server  http://127.0.0.1:8080: Qwen3.8-27B already loaded
+  ok    worktrees     /home/you/project/.worktrees
+  ok    gate          make test
+  ok    notify        disabled
+
+  ready
+```
+
+It exits non-zero on a `FAIL`. Every check it makes is one that otherwise
+surfaces several minutes into a run, in a message about something else: a
+missing binary raised `FileNotFoundError` from inside the driver loop, a model
+nobody set failed at preflight, a gate that cannot execute was discovered by
+running it. It also catches the case `preflight` cannot — a model name the
+server has never heard of, which `preflight` optimistically reports as a swap
+it would attempt.
+
 - `[agent] model` — **required; there is no default.** It shipped as
   `llama-swap/local-fast`, which is one person's model name on one person's
   server, so the default could only fail — and it failed after a worktree, a

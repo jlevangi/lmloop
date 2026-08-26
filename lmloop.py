@@ -407,6 +407,42 @@ def cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Say what is wrong before a run finds out the expensive way.
+
+    Non-strict config loading on purpose: a config with a typo in it is one of
+    the things this is here to *report*, so refusing to load would turn the
+    diagnostic into the same silent failure it exists to break.
+    """
+    import doctor as doctor_module
+
+    try:
+        repo = gitops.repo_root(Path.cwd())
+    except SystemExit:
+        repo = None
+    config = config_module.load(repo or Path.cwd(), strict=False)
+
+    results = doctor_module.check(
+        repo or Path.cwd(), config,
+        (config_module, harness, models_module, runrecord),
+    )
+    mark = {doctor_module.OK: "ok  ", doctor_module.WARN: "warn", doctor_module.FAIL: "FAIL"}
+    width = max(len(name) for name, _, _ in results)
+    for name, status, detail in results:
+        display.out(f"  {mark[status]}  {name.ljust(width)}  {detail}")
+    display.out()
+
+    verdict = doctor_module.worst(results)
+    if verdict == doctor_module.FAIL:
+        display.out("  a run would not get far; fix the FAIL lines above")
+        return 1
+    if verdict == doctor_module.WARN:
+        display.out("  a run would work, with the caveats above")
+        return 0
+    display.out("  ready")
+    return 0
+
+
 def cmd_prune(args: argparse.Namespace) -> int:
     """Compress finished runs' event streams.  Deletes nothing."""
     import prune as prune_module
@@ -525,6 +561,10 @@ def main() -> int:
     web.add_argument("--read-only", action="store_true", help="serve the views, refuse every control")
     web.add_argument("--env", help="env file to load (default ~/.config/lmloop/web.env)")
     web.set_defaults(func=cmd_web)
+
+    doctor = sub.add_parser(
+        "doctor", help="check git, config, agent, model, server and storage")
+    doctor.set_defaults(func=cmd_doctor)
 
     init = sub.add_parser("init", help="write a starting config")
     init.add_argument("--project", action="store_true", help="write ./.lmloop.toml instead of the global config")

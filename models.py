@@ -187,6 +187,18 @@ def running(base_url: str, timeout: float = 10.0) -> list[dict]:
     return _get(f"{base_url}/running", timeout).get("running", [])
 
 
+def available(base_url: str, timeout: float = 10.0) -> list[str]:
+    """Every model this server can serve, loaded or not.
+
+    Free, like `/running` and unlike `/upstream/<model>/props`: the entries come
+    back with a `status` of `unloaded` rather than being loaded to answer.  So
+    this can tell "a name this server has never heard of" from "a name it will
+    load on first use", which `/running` alone cannot.
+    """
+    payload = _get(f"{base_url}/v1/models", timeout)
+    return [entry.get("id", "") for entry in payload.get("data", []) if entry.get("id")]
+
+
 def preflight(model: str, base_url: str) -> tuple[bool, str]:
     """Check the model is reachable.  Returns ``(ok, detail)``.
 

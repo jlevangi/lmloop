@@ -363,8 +363,40 @@ model.
 
 ## Testing changes without waiting hours
 
-Local models make a real loop take hours. For anything that is not
-model-behaviour work, drive it with a fast cloud model on a scratch repo:
+Reach for `tools/smoke` first. It runs the whole loop with no model at all:
+
+```bash
+tools/smoke            # ~5 seconds
+KEEP=1 tools/smoke     # leave the scratch repository behind to poke at
+```
+
+It puts `tools/fake-agent` on PATH under the name the pi adapter looks for,
+builds a throwaway repository with a gate, and runs a real `lmloop run`
+against it — worktree, prompt, subprocess supervision, event reduction,
+checks, gate, commit, finalisation. Everything except the thinking. Then it
+asserts against the commit and the run directory: the branch exists, the
+agent's edit is in it, the gate result is in the commit message, the terminal
+status and `schema_version` were written, `run:complete` and `git:commit` are
+in the log, and the claim was released.
+
+No GPU, no API key, no network. It found an unbounded-run bug on its first
+execution that no amount of reading had.
+
+The agent it drives is scripted by `.fake-agent.json`, tracked in the
+repository under test because the agent runs with the worktree as its working
+directory:
+
+```json
+{"outcome": "ok", "write": "calc.py", "append": "\ndef subtract(a, b):\n    return a - b\n"}
+```
+
+`outcome` is one of `ok`, `error`, `no-action`, `truncated` or `silent`, and
+each produces the lmloop outcome it is named after — which is how the
+outcome-classification rules in `pi_runner` get exercised without a model that
+has to be coaxed into misbehaving.
+
+For model-behaviour work, where the agent's own judgement is the thing under
+test, drive a real one on a scratch repo instead:
 
 ```bash
 T=/tmp/lmtest && rm -rf $T && mkdir -p $T/src && cd $T

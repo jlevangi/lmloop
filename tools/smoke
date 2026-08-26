@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# End-to-end lmloop, with no model, no GPU, no API key and no network.
+#
+# Builds a throwaway repository, puts `tools/fake-agent` on PATH under the name
+# the pi adapter looks for, and runs a real `lmloop run` against it: worktree,
+# prompt, subprocess supervision, event reduction, checks, gate, commit,
+# finalisation. Everything except the thinking.
+#
+# The point is that it fails the way a real run fails. Reading the code proves
+# nothing here -- every real bug this project has found surfaced from running
+# it, and this is the cheapest way to run it.
+#
+#   tools/smoke            # build, run, assert, clean up
+#   KEEP=1 tools/smoke     # leave the scratch repository for inspection
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+work="$(mktemp -d)"
+shim="$work/bin"
+repo="$work/repo"
+trap '[ -n "${KEEP:-}" ] && echo "kept: $work" || rm -rf "$work"' EXIT
+
+mkdir -p "$shim" "$repo"
+# The pi adapter runs whatever is called `pi`; the fake one answers to it.
+ln -s "$here/tools/fake-agent" "$shim/pi"
+export PATH="$shim:$PATH"
+
+cd "$repo"
+git init -q -b main
+git config user.email smoke@lmloop
+git config user.name  "lmloop smoke"
+
+cat > calc.py <<'EOF'
+def add(a, b):
+    return a + b
+EOF
+
+# Tracked, because the gate and the agent both run with the worktree as their
+# working directory -- an untracked file is simply not there.
+cat > .fake-agent.json <<'EOF'
+{"outcome": "ok",
+ "write": "calc.py",
+ "append": "\n\ndef subtract(a, b):\n    return a - b\n",
+ "handoff": "Added subtract(). The next step is multiply()."}
+EOF
+
+cat > check.sh <<'EOF'
+#!/bin/sh
+python3 -c "import ast,sys; ast.parse(open('calc.py').read())"
+EOF
+chmod +x check.sh
+
+cat > .lmloop.toml <<'EOF'
+[agent]
+harness = "pi"
+model   = "fake/scripted"
+
+[gate]
+command       = "./check.sh"
+blocks_commit = true
+
+[stop]
+initial_turns     = 2
+hard_turn_ceiling = 2
+max_wall_hours    = 1
+
+[iteration]
+timeout_seconds = 120
+stall_seconds   = 60
+
+[prune]
+after_run = false
+EOF
+
+git add -A
+git commit -qm "seed"
+
+echo "== lmloop doctor =="
+python3 "$here/lmloop.py" doctor || true
+
+echo
+echo "== lmloop run =="
+python3 "$here/lmloop.py" run "Add a subtract function to calc.py."
+
+echo
+echo "== assertions =="
+fail=0
+say() { printf '  %-6s %s\n' "$1" "$2"; [ "$1" = FAIL ] && fail=1 || true; }
+
+branch="$(git for-each-ref --format='%(refname:short)' refs/heads/lmloop | head -1)"
+[ -n "$branch" ] && say ok "branch created: $branch" || say FAIL "no lmloop branch"
+
+commits="$(git rev-list --count "main..$branch" 2>/dev/null || echo 0)"
+[ "$commits" -ge 1 ] && say ok "$commits commit(s) on it" || say FAIL "no commits"
+
+git show "$branch:calc.py" 2>/dev/null | grep -q "def subtract" \
+  && say ok "the agent's edit is in the commit" \
+  || say FAIL "calc.py has no subtract()"
+
+git log -1 --format=%B "$branch" | grep -q "gate:.*pass" \
+  && say ok "the gate ran and its result is in the commit message" \
+  || say FAIL "no gate result recorded"
+
+run_dir="$(find . -path '*/.lmloop/runs/*' -name status.json -print -quit)"
+[ -n "$run_dir" ] && say ok "run directory written" || say FAIL "no status.json"
+
+python3 - "$run_dir" <<'EOF' || fail=1
+import json, sys
+status = json.loads(open(sys.argv[1]).read())
+checks = [
+    ("terminal phase recorded", status.get("phase") in ("completed", "stopped")),
+    ("stop reason recorded", bool(status.get("stop_reason"))),
+    ("schema_version stamped", "schema_version" in status),
+]
+for name, good in checks:
+    print(f'  {"ok" if good else "FAIL":<6} {name}')
+sys.exit(0 if all(good for _, good in checks) else 1)
+EOF
+
+log="$(dirname "$run_dir")/lmloop.log"
+grep -q '"run:complete"' "$log" && say ok "run:complete written" || say FAIL "no run:complete"
+grep -q '"git:commit"' "$log" && say ok "git:commit written" || say FAIL "no git:commit"
+
+pid="$(dirname "$run_dir")/loop.pid"
+[ ! -f "$pid" ] && say ok "claim released" || say FAIL "loop.pid left behind"
+
+echo
+if [ "$fail" -eq 0 ]; then
+  echo "smoke: ok"
+else
+  echo "smoke: FAILED"
+fi
+exit "$fail"

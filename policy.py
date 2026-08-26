@@ -74,8 +74,14 @@ def budget(
     """
     if not plan_total:
         # No plan yet.  Deriving a budget from an empty plan would say "one",
-        # and stop the run at the planning iteration.
-        return max(iteration_floor, iteration + 1)
+        # and stop the run at the planning iteration -- which is what the floor
+        # is for.  The ceiling still applies: without it this returned
+        # `iteration + 1` every time, so `iteration > max_iterations` could
+        # never be true and the turn ceiling was unreachable.  An agent that
+        # never wrote a plan then ran until the wall clock stopped it -- ten
+        # hours on the shipped default.  A fake-harness run configured for two
+        # iterations reached forty-three.
+        return max(iteration_floor, min(iteration + 1, iteration_ceiling))
     spent, remaining = iteration - 1, max(plan_total - plan_done, 0)
     wanted = spent + remaining + retry_allowance
     return max(iteration_floor, min(wanted, iteration_ceiling))

@@ -57,9 +57,16 @@ in this codebase is load-bearing and was paid for with a failed run.
 
 ```bash
 python3 -m compileall -q . web/
-python3 -m unittest test_lmloop     # policy, adapters, allowlists; no agent needed
-lmloop run "..." --max-iterations 1 # on a scratch repo, with a cloud model
+python3 -m unittest                 # policy, adapters, allowlists; no agent needed
+tools/smoke                         # the whole loop, no model: ~5s
+lmloop run "..." --max-iterations 1 # on a scratch repo, against a real model
 ```
+
+`tools/smoke` is the one to reach for first. It puts `tools/fake-agent` on PATH
+as `pi` and runs a real `lmloop run` -- worktree, prompt, subprocess, event
+reduction, checks, gate, commit, finalisation -- with no GPU, no API key and no
+network, then asserts against the commit and the run directory. It found an
+unbounded-run bug on its first execution that no amount of reading had.
 
 See `docs/operations.md` for the scratch-repo recipe that exercises every code
 path in about a minute, and the narrow-terminal recipe for display work.

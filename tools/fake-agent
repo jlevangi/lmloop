@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""An agent that needs no model, for exercising lmloop end to end.
+
+Stands in for `pi`: same argv shape, same JSONL event stream on stdout, same
+habit of reading a prompt on stdin and editing files in its working directory.
+What it does *not* do is think, which is the point -- it makes the whole
+pipeline (worktree, prompt, subprocess supervision, event reduction, checks,
+gate, commit, finalisation) runnable in seconds, on a machine with no GPU, no
+API key and no network.
+
+Put a directory containing this file, named `pi`, at the front of PATH.  See
+`tools/smoke`.
+
+The scenario comes from `.fake-agent.json` in the working directory -- which is
+the worktree, so the file has to be tracked in the repository under test.  A
+file rather than an environment variable on purpose: lmloop's own environment
+allowlist would filter an unknown variable out, and a smoke test should be
+exercising that allowlist rather than poking a hole in it.
+
+    {"outcome": "ok",            what to end up as: ok | error | no-action
+                                 | truncated | silent
+     "write": "calc.py",         file to append to, relative to the worktree
+                                 (ignored by no-action and truncated, which
+                                 are the two outcomes that write nothing)
+     "append": "\ndef fake():\n    return 1\n",
+     "handoff": "what I did",    written to .lmloop/runs/<id>/handoff.md
+     "delay": 0}                 seconds to sleep before finishing
+
+Defaults to a scenario that appends one function and succeeds.
+"""
+
+import json
+import sys
+import time
+from pathlib import Path
+
+DEFAULT = {
+    "outcome": "ok",
+    "write": "fake-agent-output.txt",
+    "append": "the fake agent was here\n",
+    "handoff": "Appended a line. Nothing was thought about.",
+    "delay": 0,
+}
+
+
+def emit(event):
+    sys.stdout.write(json.dumps(event) + "\n")
+    sys.stdout.flush()      # lmloop's stall clock watches this stream live
+
+
+def scenario():
+    try:
+        loaded = json.loads(Path(".fake-agent.json").read_text())
+    except (OSError, ValueError):
+        return dict(DEFAULT)
+    return {**DEFAULT, **loaded}
+
+
+def main():
+    sys.stdin.read()        # the prompt; read so the writer is never blocked
+    plan = scenario()
+
+    emit({"type": "agent_start"})
+    emit({"type": "turn_start"})
+
+    if plan["outcome"] == "silent":
+        # A harness that exits saying nothing at all.  lmloop should call this
+        # an agent-error rather than a success.
+        return 0
+
+    if plan["delay"]:
+        time.sleep(float(plan["delay"]))
+
+    # `truncated` means the model talked until its output budget ran out and
+    # the tool call it was building never arrived -- so, like `no-action`, it
+    # writes nothing.  lmloop only calls a `length` stop "truncated" when there
+    # were no writes; with writes it is an ordinary `ok`, because something was
+    # produced.  Naming the scenario after the outcome it actually causes is
+    # the whole point of a scripted agent.
+    if plan["outcome"] not in ("no-action", "truncated"):
+        target = Path(plan["write"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a") as handle:
+            handle.write(plan["append"])
+        emit({
+            "type": "tool_execution_start",
+            "toolCallId": "call-1",
+            "toolName": "edit",
+            "args": {"path": str(target)},
+        })
+        emit({
+            "type": "tool_execution_end",
+            "toolCallId": "call-1",
+            "toolName": "edit",
+            "isError": False,
+        })
+
+        # Found rather than told: lmloop passes the run directory in the
+        # prompt, not the environment, and a fake agent that parsed the prompt
+        # would break every time the prompt was reworded.  The working
+        # directory is the worktree, and a worktree holds exactly one run.
+        if plan["handoff"]:
+            for run_dir in sorted(Path(".lmloop/runs").glob("*")):
+                if run_dir.is_dir():
+                    try:
+                        (run_dir / "handoff.md").write_text(
+                            plan["handoff"].rstrip() + "\n")
+                    except OSError:
+                        pass
+                    break
+
+    stop = {
+        "ok": "stop",
+        "error": "error",
+        "no-action": "stop",
+        "truncated": "length",
+    }.get(plan["outcome"], "stop")
+
+    message = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "done"}],
+        "stopReason": stop,
+        "usage": {"input": 1234, "output": 56, "totalTokens": 1290},
+    }
+    if plan["outcome"] == "error":
+        message["errorMessage"] = "the fake agent was told to fail"
+    emit({"type": "message_end", "message": message})
+    emit({"type": "turn_end"})
+    emit({"type": "agent_end"})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -166,5 +166,49 @@ class FailureReasonTests(unittest.TestCase):
         self.assertFalse(policy.failure_reason(error).endswith("..."))
 
 
+class NoPlanBudgetTests(unittest.TestCase):
+    """The budget when the agent has written no plan, per lm-0l7.
+
+    This branch exists so an empty plan does not derive a budget of one and
+    stop the run at the planning iteration -- which the floor already
+    prevents.  It was not capped by the ceiling, so `max_iterations` came back
+    as `iteration + 1` every time and `iteration > max_iterations` could never
+    be true: the turn ceiling was unreachable and the run stopped only when
+    the wall clock ran out.  A fake-harness run configured for two iterations
+    reached forty-three.
+    """
+
+    def budget(self, iteration, floor=2, ceiling=2):
+        return policy.budget(
+            iteration, 0, 0,
+            iteration_floor=floor, iteration_ceiling=ceiling, retry_allowance=5,
+        )
+
+    def test_the_planning_iteration_is_never_cut_short(self):
+        self.assertGreaterEqual(self.budget(1), 2)
+
+    def test_the_budget_stops_at_the_ceiling(self):
+        for iteration in range(1, 12):
+            with self.subTest(iteration=iteration):
+                self.assertLessEqual(self.budget(iteration), 2)
+
+    def test_the_ceiling_becomes_reachable(self):
+        """`abort_reason` stops on `iteration > max_iterations`; if the budget
+        always outruns the iteration, that can never happen."""
+        reached = any(iteration > self.budget(iteration) for iteration in range(1, 12))
+        self.assertTrue(reached, "no iteration ever exceeds its budget")
+
+    def test_the_floor_still_wins_over_a_lower_ceiling_argument(self):
+        self.assertEqual(20, self.budget(1, floor=20, ceiling=20))
+        self.assertEqual(20, self.budget(15, floor=20, ceiling=20))
+
+    def test_a_run_with_a_plan_is_unaffected(self):
+        self.assertEqual(
+            policy.budget(3, 1, 4, iteration_floor=2, iteration_ceiling=20,
+                          retry_allowance=5),
+            2 + 3 + 5,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

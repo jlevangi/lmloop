@@ -13,6 +13,7 @@ from unittest import mock
 
 import browser
 import config
+import gitops
 import harness
 import lmloop
 import pi_runner
@@ -894,6 +895,260 @@ class TerminationTests(unittest.TestCase):
         done = subprocess.Popen(["true"], start_new_session=True)
         done.wait()
         pi_runner._terminate(done)  # must not raise
+
+
+class CommitPreservationCharacterizationTests(unittest.TestCase):
+    """Pins `Run.commit` before lm-ka5.2 moves it.
+
+    Named in this bead's acceptance text and previously untested: every
+    assertion here was only ever exercised by a real run.  What matters is
+    the invariant, not the wording -- a commit is the run's evidence that
+    work happened, so the cases that must never lose it (a failing gate, a
+    missing handoff, an outcome that is not "ok") are the ones pinned
+    hardest.
+
+    These use a real git repository rather than a mock.  `commit()` reaches
+    git four ways -- shortstat, add, commit, rev-parse -- and a mock would
+    pin the calls rather than the commits they produce.
+    """
+
+    def make_run(self, **gate):
+        repo = Path(tempfile.mkdtemp()) / "wt"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        self._git(repo, "config", "user.email", "lmloop@test")
+        self._git(repo, "config", "user.name", "lmloop test")
+        (repo / "seed.txt").write_text("seed\n")
+        self._git(repo, "add", "-A")
+        self._git(repo, "commit", "-qm", "seed")
+
+        root = Path(tempfile.mkdtemp())
+        cfg = config.load(root)
+        cfg["gate"].update(gate)
+        run = Run(root, cfg, "objective", run_id="test-run")
+        run.worktree = repo
+        run.rundir = RunDir(repo, "test-run")
+        run.rundir.path.mkdir(parents=True, exist_ok=True)
+        run.screen = mock.MagicMock()
+        run.model = "test-model"
+        return run, repo, gitops.head_commit(repo)
+
+    @staticmethod
+    def _git(cwd, *args):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+    @staticmethod
+    def _result(outcome="ok", detail=""):
+        return SimpleNamespace(outcome=outcome, detail=detail)
+
+    def _message(self, repo, sha):
+        return subprocess.run(
+            ["git", "log", "-1", "--format=%B", sha],
+            cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout
+
+    # -- the commit itself ------------------------------------------------
+
+    def test_a_touched_file_becomes_a_real_commit(self):
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("seed\nchanged\n")
+        sha = run.commit(3, "did a thing", self._result(), True, base)
+        self.assertIsNotNone(sha)
+        self.assertEqual(sha, gitops.head_commit(repo))
+        self.assertEqual(1, gitops.commit_count(repo, base))
+
+    def test_an_untouched_worktree_commits_nothing(self):
+        run, repo, base = self.make_run()
+        self.assertIsNone(run.commit(1, "no work", self._result(), True, base))
+        self.assertEqual(0, gitops.commit_count(repo, base))
+
+    def test_a_failed_outcome_still_commits_what_it_has(self):
+        """The whole point: work survives a bad iteration.  An outcome of
+        "timeout" or "error" is not a reason to leave the tree dirty."""
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("half-finished\n")
+        sha = run.commit(2, "ran out of time", self._result("timeout", "stalled"), False, base)
+        self.assertIsNotNone(sha)
+        self.assertIn("outcome: timeout (stalled)", self._message(repo, sha))
+
+    def test_new_files_are_committed_even_though_the_shortstat_misses_them(self):
+        """Characterises lm-7vq.  `commit_all` runs `git add -A`, so a brand
+        new file IS committed -- but `diff_shortstat` is computed first and
+        cannot see untracked files, so the `files:` line is missing from the
+        body.  Nothing is lost; the record just under-describes it."""
+        run, repo, base = self.make_run()
+        (repo / "brand_new.py").write_text("x = 1\n")
+        sha = run.commit(1, "wrote a module", self._result(), True, base)
+        self.assertIsNotNone(sha)
+        tracked = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", sha],
+            cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout.split()
+        self.assertIn("brand_new.py", tracked)
+        self.assertNotIn("files:", self._message(repo, sha))
+
+    # -- the message ------------------------------------------------------
+
+    def test_subject_names_the_run_and_the_iteration(self):
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(7, "did a thing", self._result(), True, base)
+        self.assertTrue(
+            self._message(repo, sha).startswith("lmloop test-run iter 7: did a thing"),
+        )
+
+    def test_a_multiline_summary_is_collapsed_to_one_line(self):
+        """Line 1 of the handoff is written by a model and is not reliably
+        one line's worth of text."""
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(1, "did\na  thing\n  across lines", self._result(), True, base)
+        self.assertTrue(
+            self._message(repo, sha).startswith("lmloop test-run iter 1: did a thing across lines"),
+        )
+
+    def test_an_overlong_subject_is_trimmed_with_an_ellipsis(self):
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(1, "z" * 200, self._result(), True, base)
+        subject = self._message(repo, sha).splitlines()[0]
+        self.assertTrue(subject.endswith("..."), subject)
+        self.assertEqual("lmloop test-run iter 1: " + "z" * 65 + "...", subject)
+
+    def test_body_records_the_model(self):
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(1, "s", self._result(), True, base)
+        self.assertIn("model:   test-model", self._message(repo, sha))
+
+    def test_a_modified_file_is_reported_in_the_files_line(self):
+        """Note the padding: every other label in the body is padded to nine
+        columns (`outcome: `, `model:   `, `gate:    `, `handoff: `) and
+        `files:  ` is padded to eight, so it sits one column left of the
+        rest.  Cosmetic, and pinned here as-is rather than quietly fixed --
+        this slice is not supposed to change what a commit looks like."""
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("seed\nplus one\n")
+        sha = run.commit(1, "s", self._result(), True, base)
+        self.assertIn("files:  1 file changed, 1 insertion(+)", self._message(repo, sha))
+
+    def test_a_missing_handoff_is_confessed_in_the_body(self):
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(1, "s", self._result(), False, base)
+        self.assertIn("handoff: missing (synthesised from git)", self._message(repo, sha))
+
+    def test_a_written_handoff_is_not_mentioned(self):
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(1, "s", self._result(), True, base)
+        self.assertNotIn("handoff:", self._message(repo, sha))
+
+    # -- the gate ---------------------------------------------------------
+
+    def test_a_configured_gate_is_recorded_in_the_body(self):
+        run, repo, base = self.make_run(command="make test")
+        run.gate_result = "pass"
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(1, "s", self._result(), True, base)
+        self.assertIn("gate:    make test -> pass", self._message(repo, sha))
+
+    def test_a_failing_gate_that_does_not_block_still_commits(self):
+        run, repo, base = self.make_run(command="make test", blocks_commit=False)
+        run.gate_result = "fail (2 tests)"
+        (repo / "seed.txt").write_text("x\n")
+        self.assertIsNotNone(run.commit(1, "s", self._result(), True, base))
+
+    def test_a_failing_gate_that_blocks_leaves_the_work_in_the_tree(self):
+        """`blocks_commit` withholds the commit -- it must never discard the
+        work.  The edit stays on disk for the next iteration or a human."""
+        run, repo, base = self.make_run(command="make test", blocks_commit=True)
+        run.gate_result = "fail (2 tests)"
+        (repo / "seed.txt").write_text("precious\n")
+        self.assertIsNone(run.commit(4, "s", self._result(), True, base))
+        self.assertEqual(0, gitops.commit_count(repo, base))
+        self.assertEqual("precious\n", (repo / "seed.txt").read_text())
+        self.assertTrue(gitops.has_uncommitted(repo))
+
+    def test_a_blocked_commit_says_so_in_the_event_log(self):
+        run, repo, base = self.make_run(command="make test", blocks_commit=True)
+        run.gate_result = "fail (2 tests)"
+        (repo / "seed.txt").write_text("x\n")
+        run.commit(4, "s", self._result(), True, base)
+        events = [e for e in run.rundir.read_events() if e.get("event") == "git:commit:blocked"]
+        self.assertEqual(1, len(events))
+        self.assertEqual(4, events[0]["iteration"])
+        self.assertEqual("fail (2 tests)", events[0]["gate"])
+
+    def test_a_passing_gate_that_blocks_commits_normally(self):
+        run, repo, base = self.make_run(command="make test", blocks_commit=True)
+        run.gate_result = "pass"
+        (repo / "seed.txt").write_text("x\n")
+        self.assertIsNotNone(run.commit(1, "s", self._result(), True, base))
+
+    def test_a_successful_commit_is_announced_in_the_event_log(self):
+        run, repo, base = self.make_run()
+        (repo / "seed.txt").write_text("x\n")
+        sha = run.commit(5, "s", self._result(), True, base)
+        events = [e for e in run.rundir.read_events() if e.get("event") == "git:commit"]
+        self.assertEqual(1, len(events))
+        self.assertEqual(sha, events[0]["sha"])
+        self.assertEqual(5, events[0]["iteration"])
+        self.assertEqual("ok", events[0]["outcome"])
+
+
+class InterruptCharacterizationTests(unittest.TestCase):
+    """Pins `Run._on_interrupt` before lm-ka5.2 moves it.
+
+    Named in this bead's acceptance text and previously untested.  The
+    contract is two-stage on purpose: the first signal asks the iteration to
+    wind up so its work reaches a commit, and only a second one takes the
+    process out from under it.
+    """
+
+    def make_run(self):
+        root = Path(tempfile.mkdtemp())
+        run = Run(root, config.load(root), "objective", run_id="test-run")
+        run.rundir.path.mkdir(parents=True)
+        run.screen = mock.MagicMock()
+        return run
+
+    def test_a_run_does_not_start_interrupted(self):
+        self.assertFalse(self.make_run().interrupted)
+
+    def test_the_first_signal_asks_to_wind_up_rather_than_raising(self):
+        run = self.make_run()
+        run._on_interrupt(signal.SIGINT, None)  # must not raise
+        self.assertTrue(run.interrupted)
+
+    def test_the_first_signal_promises_to_commit_what_it_has(self):
+        """The wording is load-bearing: an earlier version promised the
+        opposite of what the code did."""
+        run = self.make_run()
+        run._on_interrupt(signal.SIGINT, None)
+        said = " ".join(str(c.args[0]) for c in run.screen.log.call_args_list)
+        self.assertIn("committing what it has", said)
+
+    def test_a_second_signal_raises(self):
+        run = self.make_run()
+        run._on_interrupt(signal.SIGINT, None)
+        with self.assertRaises(KeyboardInterrupt):
+            run._on_interrupt(signal.SIGINT, None)
+
+    def test_sigterm_is_treated_the_same_as_sigint(self):
+        run = self.make_run()
+        run._on_interrupt(signal.SIGTERM, None)
+        self.assertTrue(run.interrupted)
+        with self.assertRaises(KeyboardInterrupt):
+            run._on_interrupt(signal.SIGTERM, None)
+
+    def test_an_interrupted_run_stops_sleeping(self):
+        """The flag is only worth anything if the waits actually watch it."""
+        run = self.make_run()
+        run._on_interrupt(signal.SIGINT, None)
+        with mock.patch("time.sleep") as slept:
+            self.assertFalse(run._sleep_interruptibly(60))
+        slept.assert_not_called()
 
 
 if __name__ == "__main__":

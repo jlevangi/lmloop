@@ -11,7 +11,9 @@ project's own history and appeared in the dashboard as an unstyled cell and a
 grey pip until this test was written.
 """
 
+import json
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -82,6 +84,79 @@ class OutcomeVocabularyTests(unittest.TestCase):
                 )
                 self.assertTrue(matched, f"{outcome} has no colour among: {expected}")
 
+
+class RunFieldContractTests(unittest.TestCase):
+    """Every `run.<field>` the dashboard reads is one the API really serves.
+
+    The other half of the drift this file exists for. `OUTCOME_CLASS` catches a
+    word the dashboard does not know; this catches a field the dashboard thinks
+    it knows and the API never sends -- which renders as nothing at all, and so
+    reads as "this run has none of that" rather than as a bug.
+    """
+
+    def payload_keys(self):
+        """The keys `web/runs.py` really returns, from really calling it."""
+        import eta
+        from web import runs as runs_module
+
+        base = Path(tempfile.mkdtemp())
+        run_dir = base / ".worktrees" / "r" / ".lmloop" / "runs" / "r"
+        run_dir.mkdir(parents=True)
+        (run_dir / "status.json").write_text(json.dumps({
+            "phase": "stopped", "model": "local/model", "updated_at": "",
+        }))
+        (run_dir / "lmloop.log").write_text(
+            json.dumps({"event": "run:start", "agent": "omp"}) + "\n"
+        )
+        served = set(runs_module.detail({"id": "p", "path": str(base)}, run_dir))
+        # The estimate is spread into the summary and only for a running run,
+        # so its keys are absent above.  Read them from `eta` rather than
+        # listing them here, for the same reason as everything else in this
+        # file.
+        served |= set(eta.estimate(
+            [{"event": "iteration:end", "outcome": "ok", "elapsedMs": 1000},
+             {"event": "iteration:end", "outcome": "ok", "elapsedMs": 1000}],
+            iteration=1, max_iterations=4,
+        ))
+        return served
+
+    def test_the_api_fixture_this_test_relies_on_still_produces_a_payload(self):
+        """A guard on the guard: an empty payload would pass everything."""
+        served = self.payload_keys()
+        self.assertGreaterEqual(len(served), 30, served)
+        for expected in ("state", "agent", "model", "eta_seconds"):
+            self.assertIn(expected, served)
+
+    def test_every_run_field_the_dashboard_reads_is_one_the_api_sends(self):
+        read = set(re.findall(r"\brun\.([a-z_]+)\b", APP))
+        missing = read - self.payload_keys()
+        self.assertEqual(set(), missing,
+                         f"fields the dashboard reads and the API never sends: {sorted(missing)}")
+
+class AgentAttributionTests(unittest.TestCase):
+    """lmloop drives pi, omp and opencode, and they fail differently enough
+    that reading a failure starts with knowing which one produced it.  The run
+    record names it because the `run:start` event used to say "pi" whatever it
+    was; the dashboard has to say it for that to be worth anything.
+    """
+
+    def function_body(self, name):
+        match = re.search(rf"function {name}\(.*?\) \{{(.*?)\n\}}", APP, re.S)
+        self.assertIsNotNone(match, f"{name} moved or was renamed")
+        return match.group(1)
+
+    def test_the_run_card_names_the_agent(self):
+        self.assertIn("run.agent", self.function_body("metaBits"))
+
+    def test_the_run_view_names_the_agent(self):
+        self.assertIn("run.agent", self.function_body("patchModel"))
+
+    def test_a_run_from_before_the_field_existed_shows_no_empty_separator(self):
+        """Six archived runs predate `agent`, and every run archived by an
+        older lmloop always will.  Both surfaces join with a separator, so an
+        empty value is not merely invisible -- it is a stray dot."""
+        self.assertIn("if (run.agent) bits.push(run.agent)", self.function_body("metaBits"))
+        self.assertIn(".filter(Boolean)", self.function_body("patchModel"))
 
 class RunStateVocabularyTests(unittest.TestCase):
     def test_every_state_the_api_computes_is_one_the_dashboard_knows(self):

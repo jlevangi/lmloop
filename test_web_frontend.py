@@ -21,6 +21,8 @@ ROOT = Path(__file__).parent
 APP = (ROOT / "web" / "static" / "app.js").read_text()
 CSS = (ROOT / "web" / "static" / "style.css").read_text()
 RUNNER = (ROOT / "pi_runner.py").read_text()
+SERVER = (ROOT / "web" / "server.py").read_text()
+HTML = (ROOT / "web" / "static" / "index.html").read_text()
 
 
 def runner_outcomes():
@@ -83,6 +85,61 @@ class OutcomeVocabularyTests(unittest.TestCase):
                            for fragment in candidates)
                 )
                 self.assertTrue(matched, f"{outcome} has no colour among: {expected}")
+
+
+def model_sources():
+    """Every answer `available_models` gives for where its list came from.
+
+    Read from the source, like the outcomes above.  The agent's own name is not
+    among these -- it is every value that is not one of these, which is what
+    makes the set worth keeping in step.
+    """
+    found = set()
+    # To the end of the line rather than to the first `}`: one of these values
+    # is an f-string, and its own `{agent}` closes before the string does.
+    for value in re.findall(r'"model_source":\s*(.*)', SERVER):
+        found |= {literal for literal in re.findall(r'f?"([^"]*)"', value) if literal}
+    return found
+
+
+class ModelSourceVocabularyTests(unittest.TestCase):
+    """A list the agent was never asked for renders exactly like its
+    catalogue, and the difference is minutes of a run that was doomed at the
+    first request.  `model_source` is the API saying which one it handed over;
+    the sheet has to know every word it can say."""
+
+    def test_the_api_reports_the_sources_this_test_thinks_it_does(self):
+        """A guard on the guard: finding nothing would pass everything."""
+        sources = model_sources()
+        self.assertGreaterEqual(len(sources), 4, sources)
+        self.assertIn("fallback", sources)
+        self.assertIn("{agent} cannot list", sources)
+
+    def test_the_sheet_can_explain_every_list_that_is_not_a_catalogue(self):
+        block = re.search(r"const MODEL_SOURCE_REASON = \{(.*?)\n\};", APP, re.S)
+        self.assertIsNotNone(block, "MODEL_SOURCE_REASON moved or was renamed")
+        known = set(re.findall(r'"([^"]+)":', block.group(1)))
+        for source in model_sources():
+            with self.subTest(source=source):
+                if source.startswith("{agent} "):
+                    # This one carries the agent's own name, so the sheet
+                    # matches it by suffix rather than by lookup.
+                    self.assertIn(source[len("{agent} "):], APP)
+                else:
+                    self.assertIn(source, known)
+
+    def test_the_reason_reaches_a_paragraph_that_exists(self):
+        """The whole feature is one element; a renamed id makes it silent."""
+        self.assertIn('id="model-source"', HTML)
+        self.assertIn('$("model-source").textContent = source', APP)
+        self.assertIn('$("model-source").hidden = !source', APP)
+
+    def test_a_real_catalogue_says_nothing(self):
+        """`model_source` is the agent's name in the normal case, and the
+        normal case was promised nothing new on screen."""
+        body = re.search(r"function modelSourceNote\(catalogue\) \{(.*?)\n\}", APP, re.S)
+        self.assertIsNotNone(body, "modelSourceNote moved or was renamed")
+        self.assertIn('if (!reason) return "";', body.group(1))
 
 
 class RunFieldContractTests(unittest.TestCase):

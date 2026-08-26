@@ -783,6 +783,39 @@ async function renderRun(project, runId, { quiet = false } = {}) {
 
 /* ── New run ───────────────────────────────────────────────────────────── */
 
+/* Why the model list is what it is.
+ *
+ * `/api/models` asks the configured agent for its catalogue, and says in
+ * `model_source` when it could not: the agent's own name when the list really
+ * came from asking it, one of these when it did not.  Rendered as <option>s
+ * the two are indistinguishable, and picking from a list nobody asked for
+ * produces a run that dies on its first request, minutes later, for a reason
+ * nothing on this page would explain.
+ *
+ * Every other value of `model_source` is an agent's name -- so this map is
+ * also the definition of "the list is real", and `test_web_frontend.py` reads
+ * both it and `web/server.py` to keep the two spellings the same. */
+const MODEL_SOURCE_REASON = {
+  "unavailable": "The agent could not be asked: not installed, or it did not answer.",
+  "unknown agent": "The configured agent is not one lmloop knows.",
+  "fallback": "The agent listed no models.",
+};
+const CANNOT_LIST = " cannot list";
+
+function modelSourceNote(catalogue) {
+  const source = catalogue.model_source || "";
+  const reason = MODEL_SOURCE_REASON[source] || (source.endsWith(CANNOT_LIST)
+    ? `${source.slice(0, -CANNOT_LIST.length)} has no way to list its models.`
+    : "");
+  if (!reason) return "";
+  // What the operator does about it differs by which of these it is.  An empty
+  // select is not a dead end: `start_run` sends no --model at all when nothing
+  // is picked, and the run takes the model from the project's own config.
+  return `${reason} ${(catalogue.models || []).length
+    ? "This is the configured default, not a catalogue."
+    : "Nothing to pick from \u2014 the run will use the model in the project\u2019s own .lmloop.toml."}`;
+}
+
 async function renderNew() {
   $("bar-title").textContent = "New run";
   $("bar-sub").textContent = "one objective, many iterations";
@@ -812,6 +845,9 @@ async function renderNew() {
     return option;
   }));
   $("model").value = state.config.default_model;
+  const source = modelSourceNote(catalogue);
+  $("model-source").textContent = source;
+  $("model-source").hidden = !source;
   $("thinking").value = state.config.default_thinking || "";
   $("iterations").value = state.config.default_max_iterations;
 }

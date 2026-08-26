@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import os
 import signal
 import subprocess
+import sys
 from unittest import mock
 
 import browser
@@ -19,6 +20,15 @@ import prompts
 import runrecord
 from loop import Run
 from rundir import RunDir
+
+
+# A process that stays alive *and* carries "lmloop" in its /proc cmdline, for
+# the one holder case that asserts a live loop is reported.  It used to be
+# `sleep --lmloop-tag=1 300`, which GNU sleep rejects outright as an
+# unrecognized option: the child was dead before the assertion ran, and the
+# test passed only by beating it to /proc.  A zombie's cmdline reads empty, so
+# `holder` saw no "lmloop", returned 0, and the suite failed intermittently.
+LMLOOP_LOOKALIKE = [sys.executable, "-c", "import time  # lmloop\ntime.sleep(300)"]
 
 
 class ResumeStateTests(unittest.TestCase):
@@ -448,9 +458,7 @@ class RunDirCharacterizationTests(unittest.TestCase):
 
     def test_holder_reports_a_live_pid_whose_cmdline_contains_lmloop(self):
         rd = self.make_rundir()
-        proc = subprocess.Popen(
-            ["sleep", "--lmloop-tag=1", "300"], start_new_session=True,
-        )
+        proc = subprocess.Popen(LMLOOP_LOOKALIKE, start_new_session=True)
         try:
             rd.pid_path.write_text(f"{proc.pid}\n")
             self.assertEqual(proc.pid, rd.holder())

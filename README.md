@@ -58,20 +58,35 @@ and the change guard read.
 ## Install
 
 ```bash
-git clone <this repo> ~/git/lmloop
-printf '#!/usr/bin/env bash\nexec python3 "$HOME/git/lmloop/lmloop.py" "$@"\n' > ~/.local/bin/lmloop
-chmod +x ~/.local/bin/lmloop
-lmloop init            # writes ~/.config/lmloop/config.toml
+pipx install lmloop            # or: pip install --user lmloop
+pipx install 'lmloop[web]'     # if you want the dashboard on a network
 
+lmloop init                    # writes ~/.config/lmloop/config.toml
+lmloop doctor                  # says what is still missing
+```
+
+Or run it out of a clone, which stays supported — the modules are flat at the
+repo root and nothing needs building:
+
+```bash
+git clone <this repo> ~/git/lmloop
+python3 ~/git/lmloop/lmloop.py doctor
+```
+
+Optional files, all of which fall back to a working default:
+
+```bash
 cp model-budgets.example.json ~/.config/lmloop/model-budgets.json
 cp web/deploy/web.env.example ~/.config/lmloop/web.env      # only for the dashboard
 ```
 
 Nothing in the repo hardcodes an address for your machine: the defaults are
-loopback, and the three files above are where yours go. All three are optional —
-every one of them falls back to a working default.
+loopback.
 
-Python 3.11+ (for `tomllib`), stdlib only, no build step.
+Python 3.11+ (for `tomllib`), stdlib only, no build step. The one optional
+dependency is PyJWT and requests, and only for the dashboard on a network —
+without them OIDC is unavailable and the server refuses to bind anything but
+loopback, which is the safe failure rather than an error.
 
 ### What else you need
 

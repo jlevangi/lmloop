@@ -1,3 +1,15 @@
+# lmloop dashboard, as a systemd *user* unit:
+#
+#   pipx install 'lmloop[web]'          # or: pip install --user 'lmloop[web]'
+#   mkdir -p ~/.config/systemd/user
+#   cp lmloop-web.service ~/.config/systemd/user/
+#   systemctl --user enable --now lmloop-web
+#
+# Nothing here names a person, a checkout or an interpreter. `lmloop-web` is a
+# console script the install puts on PATH, which is what replaced pointing
+# ExecStart at a python and a path inside somebody's home directory -- that
+# broke whenever the clone moved, and pinned an interpreter that had to be the
+# one PyJWT was installed for.
 [Unit]
 Description=lmloop dashboard
 After=network-online.target
@@ -5,15 +17,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/git/lmloop
-# /usr/bin/python3 rather than whatever is first on PATH: PyJWT and requests are
-# installed for it, and without them OIDC is unavailable and the server refuses
-# to bind anything but loopback.
-ExecStart=/usr/bin/python3 %h/git/lmloop/lmloop.py web
+ExecStart=%h/.local/bin/lmloop-web
 Environment=PYTHONUNBUFFERED=1
-# lmloop shells out to `pi` and to git; pin the path so a manager-environment
-# change cannot break run launching in a way that only surfaces hours later.
+# lmloop shells out to the agent and to git, so pin the path: a change in the
+# manager environment would otherwise break run launching in a way that only
+# surfaces hours later, inside a run.
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Everything else -- host, port, roots, OIDC -- comes from
+# ~/.config/lmloop/web.env; see web.env.example.
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15

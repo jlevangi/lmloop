@@ -1,6 +1,12 @@
 __pycache__/
 *.pyc
 
+# Build artefacts from `pip install .`; the source is the flat modules at the
+# repo root, and these are regenerated on demand.
+build/
+dist/
+*.egg-info/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

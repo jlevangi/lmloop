@@ -508,7 +508,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> int:
+def web_main() -> int:
+    """Console entry point for the dashboard on its own.
+
+    `lmloop web` already does this; the separate name exists so a service unit
+    can name the thing it runs instead of a subcommand, and so the dashboard
+    can be started by something that knows nothing about lmloop's argv.
+    """
+    return main(["web", *sys.argv[1:]])
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lmloop", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -570,7 +580,7 @@ def main() -> int:
     init.add_argument("--project", action="store_true", help="write ./.lmloop.toml instead of the global config")
     init.set_defaults(func=cmd_init)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     return args.func(args)
 
 

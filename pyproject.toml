@@ -1,0 +1,42 @@
+# lmloop packages as a flat set of modules rather than a src/ tree, because it
+# is also meant to be readable by running it out of a clone -- `python3
+# lmloop.py run ...` has to keep working, and a package layout would break that
+# for the sake of a convention nothing here needs.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lmloop"
+version = "0.1.0"
+description = "Hand one objective to a local model and let it work for hours in a git worktree"
+readme = "README.md"
+requires-python = ">=3.11"          # tomllib
+license = { text = "MIT" }
+# No runtime dependencies, deliberately: the whole thing is standard library,
+# which is what lets it be installed by cloning it and run on a machine that
+# has nothing but Python.  See config.py on why the config is TOML.
+dependencies = []
+
+[project.optional-dependencies]
+# Only the dashboard, and only when it is exposed beyond loopback.  Without
+# these OIDC is unavailable and the server refuses to bind anything else, which
+# is the safe failure and not an error.
+web = ["PyJWT[crypto]>=2.7,<3", "requests>=2.31,<3"]
+
+[project.scripts]
+lmloop = "lmloop:main"
+lmloop-web = "lmloop:web_main"
+
+[tool.setuptools]
+py-modules = [
+    "lmloop", "loop", "policy", "pi_runner", "prompts", "rundir", "runrecord",
+    "gitops", "checks", "models", "browser", "harness", "config", "env",
+    "display", "doctor", "eta", "notify", "prune",
+]
+
+[tool.setuptools.packages.find]
+include = ["web*"]
+
+[tool.setuptools.package-data]
+web = ["static/*", "deploy/*"]

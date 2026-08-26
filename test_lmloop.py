@@ -2032,5 +2032,55 @@ class RequireModelTests(unittest.TestCase):
             config.override_agent(cfg)  # must not raise
 
 
+class LegacyConfigTests(unittest.TestCase):
+    """A config written before a rename still has to work.
+
+    Both shims are exercised through `load` and a real file, not through
+    `_merge`: the translation lives in `load`, and testing the merge underneath
+    it would pass whether or not the translation ran.
+    """
+
+    def load(self, text):
+        root = Path(tempfile.mkdtemp())
+        (root / ".lmloop.toml").write_text(text)
+        with mock.patch.object(config, "GLOBAL_CONFIG", root / "absent.toml"):
+            return config.load(root)
+
+    def test_the_old_turn_limit_still_sets_both_new_ones(self):
+        cfg = self.load('[agent]\nmodel = "p/m"\n\n[stop]\nmax_iterations = 7\n')
+        self.assertEqual(7, cfg["stop"]["initial_turns"])
+        self.assertEqual(7, cfg["stop"]["hard_turn_ceiling"])
+
+    def test_an_explicit_new_key_beats_the_old_one(self):
+        cfg = self.load('[agent]\nmodel = "p/m"\n\n'
+                        "[stop]\nmax_iterations = 7\ninitial_turns = 3\n")
+        self.assertEqual(3, cfg["stop"]["initial_turns"])
+        self.assertEqual(7, cfg["stop"]["hard_turn_ceiling"], "still fills the other")
+
+    def test_the_old_turn_limit_is_not_reported_as_a_mistake(self):
+        """It is legacy, not wrong; validation must not reject it."""
+        self.assertEqual([], config.validate({"stop": {"max_iterations": 7}}, Path("f")))
+
+    def test_a_config_from_before_any_of_this_still_loads(self):
+        """The shape README shipped with, key for key."""
+        cfg = self.load(
+            '[agent]\nharness = "pi"\nmodel = "p/m"\ntools = "read,write"\n\n'
+            '[worktree]\nroot = "{repo}/.worktrees/{run_id}"\n'
+            'branch = "lmloop/{run_id}"\nlink = [".venv"]\n\n'
+            "[iteration]\ntimeout_seconds = 3600\nstall_seconds = 600\n\n"
+            '[gate]\ncommand = "make test"\nblocks_commit = false\n\n'
+            "[stop]\nmax_iterations = 5\nmax_wall_hours = 2\n"
+        )
+        self.assertEqual("p/m", cfg["agent"]["model"])
+        self.assertEqual("make test", cfg["gate"]["command"])
+        self.assertEqual(5, cfg["stop"]["hard_turn_ceiling"])
+        self.assertEqual(3600, cfg["iteration"]["timeout_seconds"])
+
+    def test_a_config_that_sets_nothing_still_loads(self):
+        cfg = self.load("")
+        self.assertEqual(config.DEFAULTS["stop"]["initial_turns"],
+                         cfg["stop"]["initial_turns"])
+
+
 if __name__ == "__main__":
     unittest.main()

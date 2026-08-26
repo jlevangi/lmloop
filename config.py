@@ -24,6 +24,24 @@ forever.
 The gap is small for ten sections of scalars, and TOML's `[section]` maps
 exactly onto the shape below.  Worth revisiting if lmloop ever grows a
 dependency for another reason; not worth acquiring one for this.
+
+## Compatibility
+
+A config written before a rename keeps working, and the renames so far are
+handled in place rather than by a version number:
+
+* `[stop] max_iterations` sets both `initial_turns` and `hard_turn_ceiling`,
+  and an explicit new key wins over it.  Translated in `load`, and still a
+  valid setting as far as `validate` is concerned -- legacy is not wrong.
+* `[models] local_provider` (a string) is read as a one-item `local_providers`;
+  see `models.local_providers`.
+
+No `schema_version` here, deliberately, unlike `runrecord.py` -- that one is a
+contract between two *programs* that must agree about files on disk, where a
+version is what lets a reader refuse politely.  This is a file a person writes,
+where a rename is better absorbed than announced.  Add one if a change ever
+cannot be: the shim goes in `load`, and `validate` keeps accepting the old
+spelling so nobody is told their working config is a mistake.
 """
 
 from __future__ import annotations

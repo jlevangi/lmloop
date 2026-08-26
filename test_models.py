@@ -122,20 +122,26 @@ class DeclaredWindowTests(unittest.TestCase):
              mock.patch.object(models, "load_cache", return_value={}):
             self.assertIsNone(models.declared_window("llama-swap/never-measured"))
 
-    def test_a_router_model_falls_back_to_the_harness_config(self):
+    def test_a_router_model_comes_from_the_agents_own_catalogue(self):
+        catalogue = {"openrouter/x": (200000, 50000)}
         with self.with_provider("llama-swap"), \
-             mock.patch.object(models, "_pi_declared", return_value=(200000, 50000)) as declared:
-            self.assertEqual((200000, 50000), models.declared_window("openrouter/x"))
-        declared.assert_called_once_with("openrouter", "x")
+             mock.patch.object(models, "harness_windows", return_value=catalogue) as asked:
+            self.assertEqual((200000, 50000), models.declared_window("openrouter/x", "omp"))
+        asked.assert_called_once_with("omp")
+
+    def test_a_model_the_agent_has_never_heard_of_is_unknown(self):
+        with self.with_provider("llama-swap"), \
+             mock.patch.object(models, "harness_windows", return_value={}):
+            self.assertIsNone(models.declared_window("openrouter/mystery", "pi"))
 
     def test_with_no_local_provider_even_a_llama_swap_id_takes_the_router_path(self):
         """Turning the local path off has to turn it off for everything, or a
         machine with no local server still ends up reading a context cache."""
+        catalogue = {"llama-swap/local-fast": (1000, 100)}
         with self.with_provider(""), \
-             mock.patch.object(models, "_pi_declared", return_value=(1000, 100)) as declared, \
+             mock.patch.object(models, "harness_windows", return_value=catalogue), \
              mock.patch.object(models, "load_cache") as cache:
             self.assertEqual((1000, 100), models.declared_window("llama-swap/local-fast"))
-        declared.assert_called_once_with("llama-swap", "local-fast")
         cache.assert_not_called()
 
 
@@ -154,6 +160,54 @@ class BudgetsTests(unittest.TestCase):
     def test_an_unparseable_file_changes_nothing(self):
         with mock.patch.object(models.Path, "read_text", return_value="{not json"):
             self.assertEqual(models._FALLBACK, models.budgets())
+
+
+class HarnessWindowsCacheTests(unittest.TestCase):
+    """The agent's catalogue is fetched at most once per process.
+
+    Not an optimisation: `omp models --json` takes about two seconds, and
+    `Run._wider_model` walks every candidate model looking for a wider window.
+    """
+
+    def setUp(self):
+        models.forget_harness_windows()
+        self.addCleanup(models.forget_harness_windows)
+
+    def fake_adapter(self, windows):
+        return mock.Mock(declared_windows=mock.Mock(return_value=windows))
+
+    def test_a_catalogue_is_fetched_once_however_often_it_is_asked(self):
+        adapter = self.fake_adapter({"p/m": (100, 10)})
+        with mock.patch("harness.get", return_value=adapter):
+            for _ in range(5):
+                self.assertEqual({"p/m": (100, 10)}, models.harness_windows("omp"))
+        adapter.declared_windows.assert_called_once()
+
+    def test_each_agent_is_cached_separately(self):
+        pi = self.fake_adapter({"p/pi-only": (1, 1)})
+        omp = self.fake_adapter({"p/omp-only": (2, 2)})
+        with mock.patch("harness.get", side_effect=lambda n: pi if n == "pi" else omp):
+            self.assertIn("p/pi-only", models.harness_windows("pi"))
+            self.assertIn("p/omp-only", models.harness_windows("omp"))
+            self.assertNotIn("p/omp-only", models.harness_windows("pi"))
+
+    def test_an_unknown_agent_is_an_empty_catalogue_not_a_crash(self):
+        with mock.patch("harness.get", side_effect=SystemExit("unknown harness")):
+            self.assertEqual({}, models.harness_windows("nonesuch"))
+
+    def test_an_unknown_agent_is_not_retried_either(self):
+        with mock.patch("harness.get", side_effect=SystemExit("unknown")) as get:
+            models.harness_windows("nonesuch")
+            models.harness_windows("nonesuch")
+        get.assert_called_once()
+
+    def test_forgetting_makes_the_next_call_fetch_again(self):
+        adapter = self.fake_adapter({})
+        with mock.patch("harness.get", return_value=adapter):
+            models.harness_windows("pi")
+            models.forget_harness_windows()
+            models.harness_windows("pi")
+        self.assertEqual(2, adapter.declared_windows.call_count)
 
 
 if __name__ == "__main__":

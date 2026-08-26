@@ -16,6 +16,7 @@ two forks drifting apart -- is one this project has already paid for twice
 
 import json
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import harness
@@ -214,6 +215,92 @@ class CompactionSummaryContractTests(unittest.TestCase):
         for agent in ("pi", "omp"):
             with self.subTest(agent=agent):
                 self.assertEqual("", harness.get(agent).compaction_summary({}))
+
+
+class DeclaredWindowContractTests(unittest.TestCase):
+    """Where each agent's model catalogue comes from.
+
+    For anything lmloop cannot measure itself, the agent's own catalogue is the
+    authority -- and it has to be *that* agent's.  Reading pi's file whatever
+    the agent was configured answered for four models where omp knows
+    ninety-seven, and every other one came back with no window at all.
+    """
+
+    def test_pi_reads_its_own_models_file(self):
+        payload = json.dumps({"providers": {"9router": {"models": [
+            {"id": "agent-default", "contextWindow": 262144, "maxTokens": 32768},
+        ]}}})
+        adapter = harness.get("pi")
+        with unittest.mock.patch.object(
+            type(adapter), "models_file", _FakeFile(payload),
+        ):
+            self.assertEqual({"9router/agent-default": (262144, 32768)},
+                             adapter.declared_windows())
+
+    def test_pi_survives_a_missing_or_broken_models_file(self):
+        adapter = harness.get("pi")
+        for content in (OSError("gone"), "{not json"):
+            with self.subTest(content=str(content)[:20]):
+                with unittest.mock.patch.object(
+                    type(adapter), "models_file", _FakeFile(content),
+                ):
+                    self.assertEqual({}, adapter.declared_windows())
+
+    def test_pi_skips_entries_with_no_usable_numbers(self):
+        payload = json.dumps({"providers": {"p": {"models": [
+            {"id": "good", "contextWindow": 100, "maxTokens": 10},
+            {"id": "no-output", "contextWindow": 100},
+            {"id": "text-numbers", "contextWindow": "100", "maxTokens": "10"},
+        ]}}})
+        adapter = harness.get("pi")
+        with unittest.mock.patch.object(
+            type(adapter), "models_file", _FakeFile(payload),
+        ):
+            self.assertEqual({"p/good": (100, 10)}, adapter.declared_windows())
+
+    def test_omp_asks_omp_rather_than_reading_pis_file(self):
+        """The bug this replaced: `OmpHarness` extends `PiHarness`, so it
+        inherited a reader pointed at a config directory omp does not use."""
+        payload = json.dumps({"models": [
+            {"selector": "9router/xmtp/mimo-v2.5",
+             "contextWindow": 1048576, "maxTokens": 131072},
+        ]})
+        completed = unittest.mock.Mock(stdout=payload)
+        with unittest.mock.patch.object(
+            harness.subprocess, "run", return_value=completed,
+        ) as run:
+            windows = harness.get("omp").declared_windows()
+        self.assertEqual({"9router/xmtp/mimo-v2.5": (1048576, 131072)}, windows)
+        self.assertEqual(["omp", "models", "--json"], run.call_args.args[0])
+
+    def test_omp_survives_not_being_installed_or_answering_rubbish(self):
+        """A run with no window metadata still runs, so this can never raise."""
+        for failure in (OSError("no such binary"),
+                        harness.subprocess.TimeoutExpired("omp", 60)):
+            with self.subTest(failure=type(failure).__name__):
+                with unittest.mock.patch.object(
+                    harness.subprocess, "run", side_effect=failure,
+                ):
+                    self.assertEqual({}, harness.get("omp").declared_windows())
+        with unittest.mock.patch.object(
+            harness.subprocess, "run", return_value=unittest.mock.Mock(stdout="not json"),
+        ):
+            self.assertEqual({}, harness.get("omp").declared_windows())
+
+    def test_an_agent_with_no_catalogue_says_so_rather_than_guessing(self):
+        self.assertEqual({}, harness.get("opencode").declared_windows())
+
+
+class _FakeFile:
+    """Stands in for a `Path` that `declared_windows` only ever reads."""
+
+    def __init__(self, content):
+        self._content = content
+
+    def read_text(self):
+        if isinstance(self._content, Exception):
+            raise self._content
+        return self._content
 
 
 if __name__ == "__main__":

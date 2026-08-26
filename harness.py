@@ -26,7 +26,10 @@ and enough divergence in its argv and its stream to need an adapter of its own.
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+from pathlib import Path
 
 # The normalised vocabulary.  An adapter maps its agent's events onto these and
 # returns None for everything else.
@@ -118,6 +121,23 @@ class Harness:
         """
         return []
 
+    def declared_windows(self) -> dict[str, tuple[int, int]]:
+        """`(context, max_output)` per full model selector, from this agent's
+        own catalogue.  Empty when the agent cannot be asked.
+
+        For any model lmloop cannot measure itself -- a router, a cloud
+        provider -- the agent's catalogue is the authority, because it is what
+        the agent will actually build its request against.  It has to come from
+        the adapter because each agent keeps its own: pi reads
+        `~/.pi/agent/models.json`, omp has a separate config directory
+        (`~/.omp/agent`) and a much larger catalogue, and asking pi's file on
+        omp's behalf answered for four models out of ninety-seven.
+
+        Callers cache this -- see `models.declared_window`.  An implementation
+        is allowed to be slow.
+        """
+        return {}
+
     def compaction_summary(self, event: dict) -> str:
         """The summary the agent wrote for itself when its context overflowed.
 
@@ -145,6 +165,25 @@ class PiHarness(Harness):
 
     def list_models_argv(self):
         return [self.binary, "--list-models"]
+
+    # pi's own provider config: the authority for models lmloop does not
+    # measure itself, because it is the same file pi reads when it builds the
+    # request.
+    models_file = Path.home() / ".pi" / "agent" / "models.json"
+
+    def declared_windows(self):
+        try:
+            config = json.loads(self.models_file.read_text())
+        except (OSError, ValueError):
+            return {}
+        windows = {}
+        for provider, section in (config.get("providers") or {}).items():
+            for entry in (section or {}).get("models") or []:
+                model_id = entry.get("id")
+                context, output = entry.get("contextWindow"), entry.get("maxTokens")
+                if model_id and isinstance(context, int) and isinstance(output, int):
+                    windows[f"{provider}/{model_id}"] = (context, output)
+        return windows
     interesting = (
         '"tool_execution_start"', '"message_end"', '"agent_end"', '"compaction_start"',
     )
@@ -381,6 +420,35 @@ class OmpHarness(PiHarness):
         # against omp v17.4.0 -- inheriting pi's spelling printed that error
         # where a catalogue belonged.
         return [self.binary, "models"]
+
+    def declared_windows(self):
+        """Asked of omp itself rather than read from a file.
+
+        omp keeps its catalogue in `~/.omp/agent/models.db` behind a
+        `models.yml`, and `omp models --json` is the supported way to read it --
+        which also avoids parsing YAML, which this project has no dependency
+        for.  Inheriting `PiHarness`'s file reader instead answered for four
+        models where omp knows ninety-seven, and every other one came back with
+        no window at all.
+
+        Roughly two seconds, so the caller caches; never fatal, because a run
+        with no window metadata still runs.
+        """
+        try:
+            result = subprocess.run(
+                [self.binary, "models", "--json"],
+                capture_output=True, text=True, timeout=60,
+            )
+            catalogue = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return {}
+        windows = {}
+        for entry in catalogue.get("models") or []:
+            selector = entry.get("selector")
+            context, output = entry.get("contextWindow"), entry.get("maxTokens")
+            if selector and isinstance(context, int) and isinstance(output, int):
+                windows[selector] = (context, output)
+        return windows
 
     def argv(self, *, model, tools, thinking, session_dir, session_id):
         # `session_id` is accepted and dropped; see 1. above.

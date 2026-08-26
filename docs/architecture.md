@@ -18,7 +18,7 @@ loop.
 | `runrecord.py` | The run-record contract shared by the runner and the WebUI: canonical readers for liveness, plan progress, control sentinels, and `run:start`-recorded worktree/branch/owner, plus the `schema_version` marker. Takes a bare run directory path, not a `RunDir`, so it works the same for a live worktree or an archived copy with none. |
 | `gitops.py` | Every git invocation. **No reset, no clean, no worktree removal** — grep it. |
 | `checks.py` | "Did the edit land intact", on the files git says changed, whatever the project configured. |
-| `models.py` | llama-swap preflight and context measurement. |
+| `models.py` | Local-provider preflight and context measurement, plus the per-agent catalogue cache for models it cannot measure. Which provider is "local" is a setting, not a literal. |
 | `browser.py` | Whether omp's browser tool can attach to the CDP endpoint it was given. Redacts before it reports. |
 | `harness.py` | What lmloop needs from an agent: an argv, what its events mean, and the capabilities the rest of the system used to hardcode by name — default tool allowlist, browser tool, model-listing argv, environment namespace. One small adapter per agent. |
 | `config.py` | Defaults → global TOML → the repo's `.lmloop.toml`. |

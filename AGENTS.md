@@ -45,7 +45,10 @@ in this codebase is load-bearing and was paid for with a failed run.
   `--list-models` (the flag is an outright error, so an adapter that inherits
   pi's spelling prints one where a catalogue belongs), and it *rejects* `--tools`
   names it does not know instead of ignoring them — which is one of the few ways
-  `--mode json` exits non-zero.
+  `--mode json` exits non-zero. It also keeps its own config directory,
+  `~/.omp/agent`, so a reader pointed at `~/.pi/agent` answers for pi's models
+  and nobody else's: pi's `models.json` listed four where `omp models --json`
+  knows ninety-seven.
 - **omp's browser cannot carry a query-string credential.** It takes an HTTP CDP
   discovery endpoint, rejects `ws://`, and drops `?token=` on both the paths it
   uses to reach one. `browser.py` says so before a run rather than after.

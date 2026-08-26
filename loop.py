@@ -69,7 +69,8 @@ class Run:
         # trusted to name the thing that produced it.
         self.harness_name = config["agent"].get("harness", "pi")
         self.role = "editing"
-        self.window, self.max_output = models.declared_window(self.model) or (0, 0)
+        self.window, self.max_output = models.declared_window(
+            self.model, self.harness_name) or (0, 0)
         self.interrupted = False
 
         # An explicit run id is one somebody else already resolved -- `lmloop
@@ -640,11 +641,11 @@ class Run:
         agent = self.config["agent"]
         current = agent["model"]
         candidates = {name for name in (current, agent.get("planner_model")) if name}
-        best, best_room = "", models.declared_window(current)
+        best, best_room = "", models.declared_window(current, self.harness_name)
         if best_room is None:
             return ""  # unmeasured: no basis to call anything wider
         for name in candidates:
-            room = models.declared_window(name)
+            room = models.declared_window(name, self.harness_name)
             if room and room[0] > best_room[0]:
                 best, best_room = name, room
         return best
@@ -657,7 +658,8 @@ class Run:
         # one configured -- planning uses one, a thrash retry another -- and a
         # dashboard that shows the configured model is showing the wrong one.
         self.thinking, self.role = thinking, role
-        self.window, self.max_output = models.declared_window(self.model) or (0, 0)
+        self.window, self.max_output = models.declared_window(
+            self.model, self.harness_name) or (0, 0)
         ok, detail = models.preflight(self.model, self.config["models"]["llama_swap_url"])
         self.rundir.event("preflight", iteration=number, ok=ok, detail=detail)
         if not ok:

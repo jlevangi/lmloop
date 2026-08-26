@@ -36,6 +36,7 @@ import config as config_module
 import harness
 import runrecord
 from web import runs as runs_module
+from web import service
 from web import auth as auth_module
 
 BASE = Path(__file__).resolve().parent
@@ -705,60 +706,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.json({"deleted": run_dir.name, "branch_deleted": dropped})
 
     def open_pr(self, project, run_dir, payload):
-        """Push the run's branch and open a pull request for it."""
-        start = runrecord.latest_run_start(runs_module._events(run_dir))
-        branch = runrecord.resolved_branch(run_dir, start)
-        repo = project["path"]
-
-        def git(args, **kwargs):
-            return subprocess.run(
-                ["git", *args], cwd=repo, capture_output=True, text=True,
-                timeout=kwargs.pop("timeout", 120),
-            )
-
-        if git(["rev-parse", "--verify", branch]).returncode != 0:
-            return self.json({"error": f"no branch {branch}"}, 404)
-        base = (git(["symbolic-ref", "--short", "HEAD"]).stdout or "main").strip() or "main"
-        ahead = git(["rev-list", "--count", f"{base}..{branch}"]).stdout.strip()
-        if ahead in ("", "0"):
-            return self.json({"error": f"{branch} has no commits beyond {base}"}, 400)
-
-        pushed = git(["push", "-u", "origin", branch], timeout=180)
-        if pushed.returncode != 0:
-            return self.json(
-                {"error": f"push failed: {(pushed.stderr or pushed.stdout).strip()[-300:]}"}, 500
-            )
-
-        objective = runs_module._read_text(run_dir / "prompt.md", 4000).strip()
-        title = payload.get("title") or (
-            objective.splitlines()[0][:100] if objective else branch
-        )
-        done, total = runs_module._plan_progress(runs_module._read_text(run_dir / "plan.md"))
-        body = payload.get("body") or (
-            objective
-            + "\n\n---\n\n"
-            + f"Plan: {done}/{total} steps. Branch `{branch}`, {ahead} commits.\n\n"
-            + "Produced by lmloop. The run's plan, handoff and per-iteration "
-            + f"record are in `.lmloop/runs/{run_dir.name}/`.\n"
-        )
-        made = subprocess.run(
-            ["gh", "pr", "create", "--head", branch, "--base", base,
-             "--title", title, "--body", body],
-            cwd=repo, capture_output=True, text=True, timeout=120,
-        )
-        if made.returncode != 0:
-            message = (made.stderr or made.stdout).strip()
-            # An existing PR is not a failure -- it is the answer to "where is
-            # the PR for this run", so hand back the link rather than an error.
-            existing = subprocess.run(
-                ["gh", "pr", "view", branch, "--json", "url", "-q", ".url"],
-                cwd=repo, capture_output=True, text=True, timeout=60,
-            )
-            if existing.returncode == 0 and existing.stdout.strip():
-                return self.json({"url": existing.stdout.strip(), "existing": True})
-            return self.json({"error": f"gh pr create failed: {message[-400:]}"}, 500)
-        return self.json({"url": made.stdout.strip()})
-
+        status, body = service.open_pr(project, run_dir, payload)
+        return self.json(body, status)
 
 def serve(config: dict | None = None) -> int:
     config = config or configure()

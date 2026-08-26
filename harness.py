@@ -36,6 +36,11 @@ from pathlib import Path
 TOOL = "tool"                 # {kind, name, target}
 COMPACTION = "compaction"     # {kind}
 MESSAGE_END = "message_end"   # {kind, stop_reason, error, input, output}
+# A tool call finishing.  Paired with TOOL so the loop can tell "a tool call is
+# still running" from "the model is thinking", which look identical from
+# outside: both are silence.  An agent that reports a tool call and its result
+# as one event has no in-flight state to report and never emits this.
+TOOL_END = "tool_end"         # {kind}
 
 
 def _tail(path: str) -> str:
@@ -83,6 +88,13 @@ class Harness:
     # not, and `Run.probe_browser` then has nothing to preflight.  A name rather
     # than a flag because the preflight also has to find it in the allowlist.
     browser_tool: str = ""
+    # Does this agent announce a tool call starting and finishing separately?
+    # Only then can the loop tell "a tool call is still running" from "the
+    # model is thinking" and cut a hung subprocess short -- see `tool_seconds`.
+    # An agent that reports a call and its result as one event has no in-flight
+    # state to offer, and the check has to stay off for it rather than treat
+    # every completed call as one that never returned.
+    reports_tool_ends: bool = True
     # Environment variables this agent needs, on top of `env.BASE_ALLOW`.
     # Trailing `*` is a prefix.  The adapter owns these because nothing else
     # can: `PI_CODING_AGENT_DIR` relocates pi's whole config directory and is
@@ -185,7 +197,8 @@ class PiHarness(Harness):
                     windows[f"{provider}/{model_id}"] = (context, output)
         return windows
     interesting = (
-        '"tool_execution_start"', '"message_end"', '"agent_end"', '"compaction_start"',
+        '"tool_execution_start"', '"tool_execution_end"', '"message_end"',
+        '"agent_end"', '"compaction_start"',
     )
     activity = (b'"message_', b'"tool_execution')
     compaction_marker = b'"compaction_end"'
@@ -215,6 +228,8 @@ class PiHarness(Harness):
                 "target": self._target(args),
                 "path": self._path(args),
             }
+        if kind == "tool_execution_end":
+            return {"kind": TOOL_END}
         if self.compaction_event and kind == self.compaction_event:
             return {"kind": COMPACTION}
         if kind == "message_end":
@@ -276,6 +291,10 @@ class OpencodeHarness(Harness):
 
     name = "opencode"
     binary = "opencode"
+    # Its tool events arrive with the result already attached -- one `tool_use`
+    # per call, never a start and an end -- so a call is never observably in
+    # flight and `tool_seconds` cannot apply.
+    reports_tool_ends = False
     env_passthrough = ("OPENCODE_*",)
     interesting = ('"tool_use"', '"step_finish"')
     activity = (b'"text"', b'"tool_use"', b'"step_')
@@ -404,8 +423,8 @@ class OmpHarness(PiHarness):
     # inherited `PI_*` rather than replacing it.
     env_passthrough = ("PI_*", "OMP_*")
     interesting = (
-        '"tool_execution_start"', '"message_end"', '"agent_end"',
-        '"auto_compaction_start"',
+        '"tool_execution_start"', '"tool_execution_end"', '"message_end"',
+        '"agent_end"', '"auto_compaction_start"',
     )
     activity = (b'"message_', b'"tool_execution')
     compaction_marker = b'"auto_compaction_end"'

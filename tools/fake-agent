@@ -18,7 +18,7 @@ allowlist would filter an unknown variable out, and a smoke test should be
 exercising that allowlist rather than poking a hole in it.
 
     {"outcome": "ok",            what to end up as: ok | error | no-action
-                                 | truncated | silent
+                                 | truncated | silent | hang
      "write": "calc.py",         file to append to, relative to the worktree
                                  (ignored by no-action and truncated, which
                                  are the two outcomes that write nothing)
@@ -62,6 +62,20 @@ def main():
 
     emit({"type": "agent_start"})
     emit({"type": "turn_start"})
+
+    if plan["outcome"] == "hang":
+        # lm-8l4, reproduced: announce a tool call and never finish it. An
+        # agent did this for real by starting a headless Chrome inside its bash
+        # tool for a frontend objective; the browser never exited, so the tool
+        # call never returned and the agent went silent behind it.
+        emit({
+            "type": "tool_execution_start",
+            "toolCallId": "call-hang",
+            "toolName": "bash",
+            "args": {"command": plan.get("command", "a command that never returns")},
+        })
+        time.sleep(float(plan.get("hang_for", 3600)))
+        return 0
 
     if plan["outcome"] == "silent":
         # A harness that exits saying nothing at all.  lmloop should call this

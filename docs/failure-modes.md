@@ -8,6 +8,35 @@ The recurring lesson: **an outcome of `ok` was the most expensive bug in the
 system.** Four distinct failures all reported success, so nobody reached for the
 fix while the log said the run was fine.
 
+
+## An agent's own subprocess hangs the iteration
+
+Observed on a frontend objective: the agent launched a headless Chrome inside
+its bash tool — reasonable for the task — and the browser never exited.
+
+```
+pi(3798871) - bash(3807306) - chrome-headless(3807307) - ...
+```
+
+The tool call never returned, so the agent never spoke again. Thirty-eight
+minutes, 19,605 output tokens, 37 tool calls, nothing committed. A second-order
+effect made it look like something else: llama-swap's TTL evicted the model,
+because nothing had asked it anything for longer than the TTL. That was a
+symptom.
+
+Nothing distinguished it from a slow model, because from outside both are
+silence, and only `stall_seconds` ended either. That repository had
+`stall_seconds = 3600` — raised for good reason when iterations genuinely took
+an hour — so the wait was an hour long.
+
+`[iteration] tool_seconds` is the separate clock. A tool call that has been
+running for thirty minutes is not a model thinking, and the two now get
+different budgets. Reproducible without a model:
+
+```bash
+echo '{"outcome": "hang", "command": "chrome-headless --serve"}' > .fake-agent.json
+```
+
 ## Compaction thrash
 
 **Shape.** The agent reads a dozen files, overflows its context, pi compacts

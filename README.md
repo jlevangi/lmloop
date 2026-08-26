@@ -387,6 +387,23 @@ it would attempt.
   An unresolvable reference reads as empty rather than being sent as the
   literal string.
 
+- `[iteration] tool_seconds` — cut an iteration short when a single tool call
+  has run this long without returning. A different question from
+  `stall_seconds`, which asks how long the *agent* may be silent and is
+  routinely raised into the hours for a slow model — so it is the wrong clock
+  for a subprocess that will never return.
+
+  This is not hypothetical: an agent started a headless Chrome inside its bash
+  tool for a frontend objective and the browser never exited. That blocked the
+  tool call, which blocked the agent, which went silent; the repository had
+  `stall_seconds = 3600`, so the run sat idle for 38 minutes. Generous by
+  default (30m), because a real build or test suite is a tool call too and
+  killing one of those is worse than waiting. `0` disables it.
+
+  Only agents that announce a call starting and finishing separately can be
+  watched this way — pi and omp do; opencode reports a call and its result as
+  one event, so it has no in-flight state to offer and the check stays off.
+
 - `[models] local_providers` — which model-id prefixes mean "served by the
   local llama-swap", and so get a real *measured* window instead of whatever
   the agent's catalogue claims. Defaults to what

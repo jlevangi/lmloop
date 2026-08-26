@@ -729,6 +729,7 @@ class Run:
             raw_path=self.rundir.iteration_jsonl(number),
             timeout_seconds=self.config["iteration"]["timeout_seconds"],
             stall_seconds=self.config["iteration"]["stall_seconds"],
+            tool_seconds=self.config["iteration"].get("tool_seconds", 0),
             max_compactions=self.config["iteration"]["max_compactions"],
             env=self.env(),
             # Only the *hard* stop reaches in here.  A plain STOP means "end the

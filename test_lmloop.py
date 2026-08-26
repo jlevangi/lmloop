@@ -21,6 +21,7 @@ import lmloop
 import models
 import loop
 import pi_runner
+import policy
 import prompts
 import runrecord
 from loop import Run
@@ -2261,6 +2262,77 @@ class LmloopCmdlineTests(unittest.TestCase):
     def test_a_name_that_merely_starts_the_same_is_not(self):
         self.assertFalse(runrecord.is_lmloop_cmdline(b"/usr/bin/lmloopy\x00run\x00"))
         self.assertFalse(runrecord.is_lmloop_cmdline(b"/usr/bin/notlmloop\x00"))
+
+
+class HungToolCallTests(unittest.TestCase):
+    """Cutting a tool call that will never return, per lm-8l4.
+
+    A hung subprocess and a thinking model are both silence from outside, and
+    `stall_seconds` -- which asks how long the agent may be quiet -- is the
+    wrong clock for the first: it is routinely raised into the hours for a slow
+    model. Observed for real when an agent started a headless Chrome inside its
+    bash tool and the browser never exited; that repository had
+    `stall_seconds = 3600`, so the run sat idle for 38 minutes.
+    """
+
+    def reduce(self, events, agent="pi"):
+        state = pi_runner._Stream()
+        adapter = harness.get(agent)
+        for event in events:
+            pi_runner._handle(event, state, adapter)
+        return state
+
+    def test_a_tool_start_marks_a_call_in_flight(self):
+        state = self.reduce([
+            {"type": "tool_execution_start", "toolName": "bash",
+             "args": {"command": "sleep 999"}},
+        ])
+        self.assertGreater(state.tool_started_at, 0.0)
+
+    def test_a_tool_end_clears_it(self):
+        state = self.reduce([
+            {"type": "tool_execution_start", "toolName": "bash", "args": {}},
+            {"type": "tool_execution_end", "toolName": "bash"},
+        ])
+        self.assertEqual(0.0, state.tool_started_at)
+
+    def test_nothing_is_in_flight_before_any_tool_call(self):
+        self.assertEqual(0.0, self.reduce([{"type": "agent_start"}]).tool_started_at)
+
+    def test_a_second_call_after_a_first_completes_is_tracked_afresh(self):
+        state = self.reduce([
+            {"type": "tool_execution_start", "toolName": "read", "args": {}},
+            {"type": "tool_execution_end", "toolName": "read"},
+            {"type": "tool_execution_start", "toolName": "bash", "args": {}},
+        ])
+        self.assertGreater(state.tool_started_at, 0.0)
+        self.assertEqual("bash", state.last_tool)
+
+    def test_omp_reports_tool_ends_too(self):
+        state = self.reduce([
+            {"type": "tool_execution_start", "toolName": "bash", "args": {}},
+            {"type": "tool_execution_end", "toolName": "bash"},
+        ], agent="omp")
+        self.assertEqual(0.0, state.tool_started_at)
+
+    def test_opencode_never_has_a_call_in_flight(self):
+        """Its tool events arrive with the result already attached, so there is
+        no in-flight state to report and this check simply never fires."""
+        state = self.reduce([{
+            "type": "tool_use",
+            "part": {"tool": "bash", "state": {"status": "completed", "input": {}}},
+        }], agent="opencode")
+        self.assertEqual(0.0, state.tool_started_at)
+
+    def test_the_outcome_is_not_counted_as_a_completed_attempt(self):
+        """The no-diff streak is for attempts that ran to the end and produced
+        nothing. This one was cut off, like `timeout` and `stalled`."""
+        self.assertNotIn("tool-timeout", policy.NO_PROGRESS_OUTCOMES)
+
+    def test_the_config_knob_exists_and_is_generous(self):
+        """A real build or test suite is a tool call too, and killing one of
+        those is worse than waiting."""
+        self.assertGreaterEqual(config.DEFAULTS["iteration"]["tool_seconds"], 900)
 
 
 if __name__ == "__main__":

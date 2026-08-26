@@ -106,6 +106,11 @@ class _Stream:
         self.stderr = ""
         self.last_tool = ""
         self.last_target = ""
+        # When the tool call currently in flight started, or 0.0 if none is.
+        # A hung tool call and a thinking model look identical from outside --
+        # both are silence -- and this is the one thing that tells them apart.
+        # See `tool_seconds` in `run`.
+        self.tool_started_at = 0.0
         # (monotonic, cumulative output tokens) at each message end.  Output
         # tokens only become known in lumps -- one lump per assistant message,
         # which on a slow model is minutes apart -- so a rate needs the times
@@ -193,11 +198,18 @@ def _handle(event: dict, state: _Stream, agent) -> None:
         state.tool_calls += 1
         state.last_tool = note["name"]
         state.last_target = note["target"]
+        # Only for an agent that will also say when the call finished.  For
+        # one that does not, every completed call would look like a call still
+        # running, and `tool_seconds` would fire on a healthy iteration.
+        if agent.reports_tool_ends:
+            state.tool_started_at = time.monotonic()
         if note["name"] in WRITE_TOOLS:
             state.writes += 1
             path = note.get("path")
             if path and path not in state.files:
                 state.files.append(path)
+    elif kind == harness.TOOL_END:
+        state.tool_started_at = 0.0
     elif kind == harness.COMPACTION:
         state.compactions += 1
     elif kind == harness.MESSAGE_END:
@@ -295,6 +307,7 @@ def run(
     raw_path: Path,
     timeout_seconds: int,
     stall_seconds: int,
+    tool_seconds: int = 0,
     max_compactions: int = 0,
     env: dict | None = None,
     should_stop=lambda: False,
@@ -344,6 +357,7 @@ def run(
             last_event = state.last_event_at
             writes = state.writes
             compactions = state.compactions
+            tool_started = state.tool_started_at
             snapshot = {
                 "elapsed": now - started,
                 "tool_calls": state.tool_calls,
@@ -367,6 +381,21 @@ def run(
 
         if now - started > timeout_seconds:
             killed = "timeout"
+        elif tool_seconds and tool_started and now - tool_started > tool_seconds:
+            # A tool call that has been running this long is not a model
+            # thinking, and `stall_seconds` is the wrong clock for it: that one
+            # is sized for how long a slow model may take to say anything, and
+            # is routinely raised into the hours for exactly that reason.
+            #
+            # Observed: an agent launched a headless Chrome inside its bash
+            # tool for a frontend objective and the browser never exited.  That
+            # blocked the tool call, which blocked the agent, which went
+            # silent, and the run sat idle for 38 minutes -- until
+            # `stall_seconds`, which that repository had set to 3600.
+            #
+            # Safe by construction, like every other cut here: whatever the
+            # iteration wrote is gated, checked and committed on the way out.
+            killed = "tool-timeout"
         elif first_event and now - last_event > stall_seconds:
             # The stall clock only starts once pi has said something.  Before
             # that, llama-swap may legitimately be evicting one model and
@@ -404,6 +433,11 @@ def run(
             outcome, detail = "timeout", f"no result after {elapsed / 60:.0f}m"
         elif killed == "stalled":
             outcome, detail = "stalled", f"no output for {stall_seconds // 60}m"
+        elif killed == "tool-timeout":
+            outcome = "tool-timeout"
+            what = " ".join(part for part in (state.last_tool, state.last_target) if part)
+            detail = (f"{what or 'a tool call'} ran for "
+                      f"{tool_seconds // 60}m without returning")
         elif killed == "thrashing":
             outcome = "thrashing"
             detail = f"{state.compactions} context overflows with no writes"

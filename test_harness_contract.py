@@ -85,6 +85,16 @@ class CapturedEventContractTests(unittest.TestCase):
                     result = adapter.classify(event)
                     self.assertEqual(key.rsplit(":", 1)[1], result["stop_reason"])
 
+    def test_a_tool_call_finishing_is_reported_as_such(self):
+        """Paired with the start so the loop can tell "a tool call is still
+        running" from "the model is thinking" -- both are silence from
+        outside, and only one of them is a hung subprocess (lm-8l4)."""
+        for agent, fixture, _ in self.CASES:
+            with self.subTest(agent=agent):
+                adapter = harness.get(agent)
+                event = load(fixture)["tool_execution_end"]
+                self.assertEqual({"kind": harness.TOOL_END}, adapter.classify(event))
+
     def test_a_tool_result_is_not_mistaken_for_an_assistant_turn(self):
         """Both arrive as `message_end`.  Counting a `toolResult` as a turn
         would multiply the token totals by the number of tools called."""
@@ -118,7 +128,7 @@ class CapturedEventContractTests(unittest.TestCase):
         for agent, fixture, _ in self.CASES:
             adapter = harness.get(agent)
             events = load(fixture)
-            for key in ("agent_start", "turn_start", "tool_execution_end"):
+            for key in ("agent_start", "turn_start"):
                 if key not in events:
                     continue
                 with self.subTest(agent=agent, event=key):

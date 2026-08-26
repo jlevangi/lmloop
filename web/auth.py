@@ -1,14 +1,40 @@
-"""OIDC login for the web UI, ported from the predecessor dashboard unchanged in substance.
+"""Who is allowed to drive the dashboard, in three deployments.
+
+The dashboard can start and stop agents, delete archives and open pull
+requests, so "who is asking" is not a display concern.  There are three honest
+answers, and lmloop supports all three rather than assuming the one this was
+first deployed with:
+
+* `none` -- nobody is asked, and the server binds loopback only.  Reach it
+  over an SSH tunnel.  The right answer for a laptop.
+* `proxy` -- identity is asserted by a reverse proxy that has already
+  authenticated the request, in a header.  The right answer behind an existing
+  ingress that does SSO, and the common one: oauth2-proxy, Authelia, Cloudflare
+  Access, an nginx `auth_request`.
+* `oidc` -- the dashboard runs the login itself.  Generic OIDC discovery, not
+  any particular provider: Keycloak is one issuer among many and nothing here
+  knows its name.
+
+The mode is chosen explicitly by `LMLOOP_WEB_AUTH_MODE`, or inferred from
+whether OIDC is configured, which keeps every existing deployment working
+without being told about this.
+
+**A network bind without an identity boundary is refused**, in every mode.
+That is the invariant the modes exist to serve, not a property of one of them.
+
+`proxy` mode has a trap this is built around: a header is only evidence if
+nothing else can set it.  Anyone who can reach the port directly can send
+`X-Forwarded-User: admin`, so the header is read *only* when the connection
+comes from an address in `LMLOOP_WEB_TRUSTED_PROXIES`, and configuring the
+mode without that list is refused rather than defaulted.
 
 lmloop itself is stdlib-only and stays that way: PyJWT and requests are
-imported here and nowhere else, and a missing one disables authentication
-rather than breaking the loop.  `lmloop web` refuses to bind anything but
-localhost when auth is unavailable -- an unauthenticated dashboard that can't
-start and stop agents has no business on a network.
+imported here and nowhere else, and a missing one disables OIDC rather than
+breaking the loop.  `none` and `proxy` need neither.
 
 Install with the interpreter that will run the server:
 
-    /usr/bin/python3 -m pip install "PyJWT[crypto]>=2.7,<3" "requests>=2.31,<3"
+    python3 -m pip install "PyJWT[crypto]>=2.7,<3" "requests>=2.31,<3"
 """
 
 import base64
@@ -29,6 +55,63 @@ except ImportError:  # pragma: no cover - depends on the host interpreter
 
 
 
+LOOPBACK = ("127.0.0.1", "localhost", "::1", "")
+
+
+class NoAuth:
+    """Nobody is asked, so nothing may be reached from off the machine."""
+
+    mode = "none"
+    trusted = False        # no identity boundary: bind loopback only
+    interactive = False    # no login or logout to route
+    enabled = False        # OIDC-specific branches stay off
+    session_seconds = 0
+
+    def session_for(self, handler) -> dict:
+        # A CSRF token guards a session cookie against another origin.  There
+        # is no session cookie here and no origin but this machine, so there is
+        # nothing for one to protect; saying so is better than minting a token
+        # that means nothing.
+        return {"name": "local", "csrf": "disabled"}
+
+
+class ProxyAuth:
+    """Identity asserted by a reverse proxy that already authenticated it.
+
+    The header is evidence only because of where it came from.  A request that
+    reaches this port from anywhere but a trusted proxy is anonymous however it
+    is decorated -- otherwise the mode is a way of asking attackers to name
+    themselves.
+    """
+
+    mode = "proxy"
+    trusted = True
+    interactive = False
+    enabled = False
+    session_seconds = 0
+
+    def __init__(self, header: str, trusted_proxies, display_header: str = ""):
+        self.header = header or "X-Forwarded-User"
+        self.display_header = display_header
+        self.trusted_proxies = tuple(p for p in trusted_proxies if p)
+
+    def peer_is_trusted(self, peer: str) -> bool:
+        return peer in self.trusted_proxies
+
+    def session_for(self, handler) -> dict | None:
+        peer = handler.client_address[0] if handler.client_address else ""
+        if not self.peer_is_trusted(peer):
+            return None
+        user = (handler.headers.get(self.header) or "").strip()
+        if not user:
+            return None
+        name = (handler.headers.get(self.display_header) or "").strip() if self.display_header else ""
+        # No CSRF token: there is no ambient credential for another origin to
+        # ride on.  The proxy authenticated this request; a browser at
+        # evil.example cannot make the proxy assert a user it has not logged in.
+        return {"name": name or user, "user": user, "csrf": "disabled"}
+
+
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
@@ -38,6 +121,15 @@ def _unb64(value: str) -> bytes:
 
 
 class OIDC:
+    """The dashboard runs the login itself, against any OIDC issuer.
+
+    Generic on purpose: discovery is `/.well-known/openid-configuration` and
+    nothing here knows a provider by name.
+    """
+
+    mode = "oidc"
+    interactive = True     # owns /login, /oauth/* and /logout
+
     def __init__(self, issuer, client_id, client_secret, public_url, session_secret, session_hours=12):
         self.issuer = issuer.rstrip("/")
         self.client_id = client_id
@@ -50,6 +142,15 @@ class OIDC:
     @property
     def enabled(self):
         return all((self.issuer, self.client_id, self.client_secret, self.public_url, self.session_secret))
+
+    @property
+    def trusted(self):
+        """Is there an identity boundary?  Same question `enabled` answers for
+        this mode, named the way the other two answer it."""
+        return self.enabled
+
+    def session_for(self, handler):
+        return self.session(handler.cookies().get("lmloop_session"))
 
     @property
     def callback_url(self):
@@ -116,3 +217,61 @@ class OIDC:
 
     def logout_url(self):
         return self.metadata().get("end_session_endpoint", self.public_url)
+
+
+def build(settings: dict):
+    """The auth for one deployment, from its settings.
+
+    `mode` is explicit when given and inferred otherwise: a deployment that
+    configured OIDC before this existed means `oidc`, and one that did not
+    means `none`.  Nobody has to be told about the modes for their existing
+    setup to keep working.
+    """
+    mode = (settings.get("mode") or "").strip().lower()
+    explicit = bool(mode)
+    if not mode:
+        mode = "oidc" if settings.get("oidc_issuer") else "none"
+
+    if mode == "none":
+        return NoAuth()
+    if mode == "proxy":
+        proxies = settings.get("trusted_proxies") or ()
+        if not proxies:
+            raise SystemExit(
+                "lmloop web: auth mode `proxy` trusts an identity header, and a\n"
+                "  header is only evidence if nothing else can set it.  Set\n"
+                "  LMLOOP_WEB_TRUSTED_PROXIES to the addresses your proxy connects\n"
+                "  from, or anyone who can reach this port can name themselves."
+            )
+        return ProxyAuth(
+            settings.get("proxy_header", ""), proxies,
+            settings.get("proxy_display_header", ""),
+        )
+    if mode == "oidc":
+        if not AVAILABLE:
+            if explicit:
+                raise SystemExit(
+                    "lmloop web: auth mode `oidc` needs PyJWT and requests, which\n"
+                    "  are not installed for this interpreter.  Install them, or use\n"
+                    "  LMLOOP_WEB_AUTH_MODE=proxy behind an ingress that authenticates."
+                )
+            # Inferred, not asked for: a deployment that configured OIDC and
+            # then lost the libraries used to fall back to loopback rather than
+            # refuse to start, and taking that away would break it on an
+            # upgrade it did not ask for.  Loud, and still safe -- the bind
+            # check below refuses the network either way.
+            print("lmloop web: OIDC is configured but PyJWT/requests are not"
+                  " installed;\n  falling back to auth mode `none`, which binds"
+                  " loopback only.")
+            return NoAuth()
+        return OIDC(
+            settings.get("oidc_issuer", ""),
+            settings.get("oidc_client_id", ""),
+            settings.get("oidc_client_secret", ""),
+            settings.get("public_url", ""),
+            settings.get("session_secret", ""),
+            int(settings.get("session_hours", 12) or 12),
+        )
+    raise SystemExit(
+        f"lmloop web: unknown auth mode {mode!r}; known: none, proxy, oidc"
+    )

@@ -33,9 +33,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import config as config_module
+import harness
 import runrecord
 from web import runs as runs_module
-from web.auth import AVAILABLE as AUTH_AVAILABLE, OIDC
+from web import auth as auth_module
 
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
@@ -80,22 +81,36 @@ def configure() -> dict:
         "poll_seconds": float(os.environ.get("LMLOOP_WEB_POLL_SECONDS", "3")),
         "hidden_poll_seconds": float(os.environ.get("LMLOOP_WEB_HIDDEN_POLL_SECONDS", "30")),
         "read_only": _flag("LMLOOP_WEB_READ_ONLY", False),
-        "default_model": os.environ.get("LMLOOP_WEB_DEFAULT_MODEL", "llama-swap/local-fast"),
+        # No default: see `_fallback_models`.  Empty means the dashboard offers
+        # what the agent lists, and nothing of its own invention.
+        "default_model": os.environ.get("LMLOOP_WEB_DEFAULT_MODEL", ""),
+        "harness": os.environ.get("LMLOOP_WEB_HARNESS", "pi"),
         "default_max_iterations": int(os.environ.get("LMLOOP_WEB_DEFAULT_MAX_ITERATIONS", "20")),
         "default_thinking": os.environ.get("LMLOOP_WEB_DEFAULT_THINKING", "low"),
         "python": os.environ.get("LMLOOP_WEB_PYTHON", "python3"),
     }
 
 
-def build_auth() -> OIDC:
-    return OIDC(
-        os.environ.get("LMLOOP_WEB_OIDC_ISSUER", ""),
-        os.environ.get("LMLOOP_WEB_OIDC_CLIENT_ID", ""),
-        os.environ.get("LMLOOP_WEB_OIDC_CLIENT_SECRET", ""),
-        os.environ.get("LMLOOP_WEB_PUBLIC_URL", ""),
-        os.environ.get("LMLOOP_WEB_SESSION_SECRET", ""),
-        int(os.environ.get("LMLOOP_WEB_SESSION_HOURS", "12")),
-    )
+def build_auth():
+    """The auth for this deployment; see `web.auth.build` for the modes."""
+    return auth_module.build({
+        "mode": os.environ.get("LMLOOP_WEB_AUTH_MODE", ""),
+        "oidc_issuer": os.environ.get("LMLOOP_WEB_OIDC_ISSUER", ""),
+        "oidc_client_id": os.environ.get("LMLOOP_WEB_OIDC_CLIENT_ID", ""),
+        "oidc_client_secret": config_module.secret(
+            os.environ.get("LMLOOP_WEB_OIDC_CLIENT_SECRET", "")),
+        "public_url": os.environ.get("LMLOOP_WEB_PUBLIC_URL", ""),
+        "session_secret": config_module.secret(
+            os.environ.get("LMLOOP_WEB_SESSION_SECRET", "")),
+        "session_hours": os.environ.get("LMLOOP_WEB_SESSION_HOURS", "12"),
+        "proxy_header": os.environ.get("LMLOOP_WEB_PROXY_HEADER", ""),
+        "proxy_display_header": os.environ.get("LMLOOP_WEB_PROXY_NAME_HEADER", ""),
+        "trusted_proxies": [
+            item.strip()
+            for item in os.environ.get("LMLOOP_WEB_TRUSTED_PROXIES", "").split(",")
+            if item.strip()
+        ],
+    })
 
 
 # `pi --list-models` costs ~2.6s: it starts node, loads every extension, and
@@ -104,6 +119,23 @@ def build_auth() -> OIDC:
 # from the one first paint waits on.  Models change when someone installs one.
 _MODEL_CACHE: dict = {"at": 0.0, "value": None}
 MODEL_CACHE_SECONDS = 300
+
+# A provider name as an agent prints it: a bare token in the first column.
+# Header and rule lines from a table do not match, and neither does a model id
+# that already carries its provider.
+_PROVIDER = re.compile(r"[A-Za-z0-9][\w.-]*")
+
+
+def _fallback_models(config: dict) -> list[str]:
+    """What to offer when the agent cannot be asked.
+
+    Only what the operator configured, if anything.  This used to fall back to
+    a hardcoded `llama-swap/local-fast`, which is one person's model name on
+    one person's server -- offering it to somebody else produces a run that
+    dies on its first request, minutes later, for a reason nothing here
+    explains.
+    """
+    return [config["default_model"]] if config["default_model"] else []
 
 
 def available_models(config: dict, force: bool = False) -> dict:
@@ -116,20 +148,34 @@ def available_models(config: dict, force: bool = False) -> dict:
     fresh = time.monotonic() - _MODEL_CACHE["at"] < MODEL_CACHE_SECONDS
     if _MODEL_CACHE["value"] and fresh and not force:
         return _MODEL_CACHE["value"]
+    agent = config["harness"]
     try:
-        result = subprocess.run(
-            ["pi", "--list-models"], capture_output=True, text=True, timeout=30
-        )
+        argv = harness.get(agent).list_models_argv()
+    except SystemExit:
+        return {"models": _fallback_models(config), "model_source": "unknown agent"}
+    if not argv:
+        return {"models": _fallback_models(config), "model_source": f"{agent} cannot list"}
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
-        return {"models": [config["default_model"]], "model_source": "unavailable"}
+        return {"models": _fallback_models(config), "model_source": "unavailable"}
     models = []
     for line in result.stdout.splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[0] in ("llama-swap", "9router"):
+        # Any provider, not a list of the two this was first deployed against.
+        # `9router` is one person's router and had no business being a
+        # condition in shipped code; a provider name is whatever the agent says
+        # it is.  Which leaves the table's own header to exclude, since
+        # `provider model` is otherwise shaped exactly like a row -- excluded by
+        # what it says rather than by guessing at column widths, so a change in
+        # the layout costs nothing and a change in the wording costs one model.
+        if parts[:2] == ["provider", "model"]:
+            continue
+        if len(parts) >= 2 and _PROVIDER.fullmatch(parts[0]):
             models.append(f"{parts[0]}/{parts[1]}")
     result = {
-        "models": models or [config["default_model"]],
-        "model_source": "pi" if models else "fallback",
+        "models": models or _fallback_models(config),
+        "model_source": agent if models else "fallback",
     }
     _MODEL_CACHE.update(at=time.monotonic(), value=result)
     return result
@@ -185,9 +231,14 @@ class Handler(BaseHTTPRequestHandler):
         return {key: morsel.value for key, morsel in jar.items()}
 
     def session(self):
-        if not self.auth.enabled:
-            return {"name": "local", "csrf": "disabled"}
-        return self.auth.session(self.cookies().get("lmloop_session"))
+        """Whoever is asking, however this deployment establishes that.
+
+        Each mode answers for itself -- see `web/auth.py`.  It used to be a
+        branch on "is OIDC configured", which had only two answers and so could
+        not express the common deployment: an ingress that has already
+        authenticated the request.
+        """
+        return self.auth.session_for(self)
 
     def require_auth(self, api=False):
         session = self.session()
@@ -235,11 +286,13 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/health":
-            return self.json({"status": "ok", "oidc": self.auth.enabled, "read_only": self.config["read_only"]})
+            return self.json({"status": "ok", "auth": self.auth.mode,
+                              "oidc": self.auth.enabled,
+                              "read_only": self.config["read_only"]})
         if path == "/login":
-            return self.static("login.html") if self.auth.enabled else self.redirect("/")
+            return self.static("login.html") if self.auth.interactive else self.redirect("/")
         if path == "/login/start":
-            if not self.auth.enabled:
+            if not self.auth.interactive:
                 return self.redirect("/")
             try:
                 location, transaction = self.auth.begin()
@@ -273,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             ])
         if path == "/logout":
             location = "/"
-            if self.auth.enabled:
+            if self.auth.interactive:
                 location = self.auth.logout_url() + "?" + urlencode(
                     {"post_logout_redirect_uri": self.auth.public_url, "client_id": self.auth.client_id}
                 )
@@ -303,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
                 "default_thinking": self.config["default_thinking"],
                 "user": session["name"],
                 "csrf": session["csrf"],
+                "auth": self.auth.mode,
                 "oidc": self.auth.enabled,
             })
         if path == "/api/models":
@@ -331,7 +385,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.config["read_only"]:
             return self.json({"error": "read-only mode"}, 403)
-        if self.auth.enabled and not hmac.compare_digest(
+        # Only a cookie session needs one: CSRF is about a browser attaching
+        # an ambient credential to somebody else's request, and the other modes
+        # have no ambient credential to attach.
+        if self.auth.interactive and not hmac.compare_digest(
             self.headers.get("X-CSRF-Token", ""), session.get("csrf", "")
         ):
             return self.json({"error": "bad CSRF token"}, 403)
@@ -707,23 +764,27 @@ def serve(config: dict | None = None) -> int:
     config = config or configure()
     auth = build_auth()
 
-    if not auth.enabled and config["host"] not in ("127.0.0.1", "localhost", "::1"):
-        reason = "OIDC is not configured" if AUTH_AVAILABLE else (
-            "PyJWT/requests are not installed for this interpreter, so OIDC cannot run"
-        )
+    if not auth.trusted and config["host"] not in auth_module.LOOPBACK:
         raise SystemExit(
-            f"lmloop web: refusing to bind {config['host']} because {reason}.\n"
-            "  Configure LMLOOP_WEB_OIDC_*, or set LMLOOP_WEB_HOST=127.0.0.1 and reach it\n"
-            "  over an SSH tunnel."
+            f"lmloop web: refusing to bind {config['host']} with auth mode"
+            f" `{auth.mode}`.\n"
+            "  This dashboard starts and stops agents, deletes archives and opens\n"
+            "  pull requests; unauthenticated, that does not belong on a network.\n"
+            "  Either:\n"
+            "    LMLOOP_WEB_AUTH_MODE=proxy  behind an ingress that authenticates,\n"
+            "                                with LMLOOP_WEB_TRUSTED_PROXIES set\n"
+            "    LMLOOP_WEB_AUTH_MODE=oidc   with LMLOOP_WEB_OIDC_* configured\n"
+            "    LMLOOP_WEB_HOST=127.0.0.1   and reach it over an SSH tunnel"
         )
 
     Handler.config = config
     Handler.auth = auth
     httpd = ThreadingHTTPServer((config["host"], config["port"]), Handler)
-    scheme = "https" if auth.enabled else "http"
+    scheme = "https" if auth.trusted else "http"
     print(f"lmloop web on {scheme}://{config['host']}:{config['port']}")
     print(f"  roots     {', '.join(str(root) for root in config['roots'])}")
-    print(f"  auth      {'OIDC' if auth.enabled else 'none (loopback only)'}")
+    print(f"  auth      {auth.mode}"
+          + ("" if auth.trusted else " (loopback only)"))
     print(f"  mode      {'read-only' if config['read_only'] else 'read-write'}")
     try:
         httpd.serve_forever()

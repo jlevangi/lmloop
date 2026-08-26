@@ -122,18 +122,49 @@ answers "is it worth waiting for this".
 lmloop web        # 127.0.0.1:8082 by default
 ```
 
-Deployed here as a systemd user unit on **:8766**, reachable at
-`https://lmloop.example.com`, authenticating against the `lmloop-web` Keycloak
-client.
+Config lives in `~/.config/lmloop/web.env` (mode 600); see
+[`web.env.example`](../web/deploy/web.env.example). Run it as a systemd user
+unit with [`lmloop-web.service`](../web/deploy/lmloop-web.service):
 
 ```bash
 systemctl --user status lmloop-web
 journalctl --user -u lmloop-web -f
 ```
 
-Config lives in `~/.config/lmloop/web.env` (mode 600). Without OIDC configured
-the server **refuses to bind anything but loopback** — it has a launch button,
-and that does not belong on a network unauthenticated.
+### Who may drive it
+
+The dashboard starts and stops agents, deletes archives and opens pull
+requests. **It refuses to bind anything but loopback without an identity
+boundary**, in every mode — that invariant is the reason the modes exist, not
+a property of one of them.
+
+| `LMLOOP_WEB_AUTH_MODE` | who establishes identity | needs |
+|---|---|---|
+| `none` (default) | nobody; loopback only | — |
+| `proxy` | an ingress that already authenticated the request | `LMLOOP_WEB_TRUSTED_PROXIES` |
+| `oidc` | the dashboard itself, against any OIDC issuer | PyJWT, requests |
+
+Left unset, the mode is inferred — `oidc` if the OIDC settings are filled in,
+`none` otherwise — so a deployment that predates the modes keeps working
+without being told about them.
+
+`proxy` is the common one, and the one with a trap. A header is only evidence
+if nothing else can set it: anyone who can reach the port directly can send
+`X-Forwarded-User: admin`. So the header is read **only** when the connection
+comes from an address in `LMLOOP_WEB_TRUSTED_PROXIES`, and configuring the mode
+without that list is refused rather than defaulted:
+
+```bash
+LMLOOP_WEB_AUTH_MODE=proxy
+LMLOOP_WEB_TRUSTED_PROXIES=127.0.0.1,10.0.0.5
+LMLOOP_WEB_PROXY_HEADER=X-Auth-Request-User     # oauth2-proxy's name for it
+LMLOOP_WEB_HOST=0.0.0.0
+```
+
+Nothing in `oidc` mode knows a provider by name — discovery is
+`/.well-known/openid-configuration`, and Keycloak is one issuer among many.
+The two secrets accept a reference rather than a value (`env:`, `file:`,
+`!command`), so neither has to sit in the file.
 
 ## Choosing the agent
 

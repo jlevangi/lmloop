@@ -34,7 +34,7 @@ loop.
 |---|---|
 | `web/server.py` | stdlib `ThreadingHTTPServer`, routing, static, the API. |
 | `web/runs.py` | Finds and reads runs across projects. Reads `status.json` rather than replaying history. |
-| `web/auth.py` | OIDC. The only place a third-party import appears. |
+| `web/auth.py` | Who may drive the dashboard: `none` (loopback), `proxy` (identity from a trusted ingress), `oidc` (any issuer). Each mode answers `session_for`; `trusted` is what the network-bind refusal asks. The only place a third-party import appears, and only `oidc` needs it. |
 | `web/static/` | Vanilla JS and CSS, no build step. Hash-routed views, keyed row patching. |
 
 Two properties keep it small:

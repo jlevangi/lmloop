@@ -56,6 +56,16 @@ in this codebase is load-bearing and was paid for with a failed run.
   `~/.omp/agent`, so a reader pointed at `~/.pi/agent` answers for pi's models
   and nobody else's: pi's `models.json` listed four where `omp models --json`
   knows ninety-seven.
+- **An agent's environment can block `git`, and pi's does by default.**
+  `@vtstech/pi-security`, a pi npm package, blocks 66 commands in `max` mode --
+  `git` among them -- and uses `max` when `~/.pi/agent/security.json` does not
+  exist, which it does not until somebody writes it. A run then spends
+  iterations working around a `git` it will never be allowed to run. `basic`
+  keeps all 41 critical blocks and allows `git`. `lmloop doctor` warns, and
+  names the file. Two investigations blamed something else first -- pi itself,
+  then `moshi-hooks.ts`, which registers only notification events and cannot
+  deny anything: what gates a tool call was a *package* in `settings.json`, not
+  a file in `extensions/`.
 - **omp's browser cannot carry a query-string credential.** It takes an HTTP CDP
   discovery endpoint, rejects `ws://`, and drops `?token=` on both the paths it
   uses to reach one. `browser.py` says so before a run rather than after.

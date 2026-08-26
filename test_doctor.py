@@ -279,11 +279,13 @@ class ExtensionsCheckTests(unittest.TestCase):
 
     def test_a_package_that_can_block_git_is_named(self):
         """The whole point. Captured rather than written: this is the file the
-        check was blind to, exactly as it is on disk."""
+        check was blind to, exactly as it is on disk -- and with no
+        `security.json` beside it, which is the state it was found in and the
+        one that blocks `git`."""
         with self.with_captured_settings():
             _, status, detail = doctor.extensions_check(
                 harness, {"agent": {"harness": "pi"}})
-        self.assertEqual(doctor.OK, status)
+        self.assertEqual(doctor.WARN, status)
         self.assertIn("npm:@vtstech/pi-security", detail)
 
     def test_files_and_packages_are_counted_together(self):
@@ -308,6 +310,43 @@ class ExtensionsCheckTests(unittest.TestCase):
                     _, status, _ = doctor.extensions_check(
                         harness, {"agent": {"harness": "pi"}})
                 self.assertEqual(doctor.OK, status)
+
+    def with_pi_security(self, mode=None):
+        """pi with the package that blocks `git` loaded, in a given mode."""
+        self.config_dir = Path(tempfile.mkdtemp())
+        (self.config_dir / "extensions").mkdir()
+        (self.config_dir / "settings.json").write_text(
+            json.dumps({"packages": ["npm:@vtstech/pi-security"]}))
+        if mode is not None:
+            (self.config_dir / "security.json").write_text(json.dumps({"mode": mode}))
+        return mock.patch.object(type(harness.get("pi")), "config_dir", self.config_dir)
+
+    def test_a_default_that_blocks_git_is_a_warning_not_a_shrug(self):
+        """`max` is what the package uses when nothing is set, and it blocks
+        `git`. A loop whose only witness is git will spend iterations working
+        around one it is never going to be allowed to run."""
+        with self.with_pi_security(mode=None):
+            _, status, detail = doctor.extensions_check(
+                harness, {"agent": {"harness": "pi"}})
+        self.assertEqual(doctor.WARN, status)
+        self.assertIn("blocks `git`", detail)
+
+    def test_the_warning_names_the_file_to_change(self):
+        """A diagnostic that says "set it somewhere" costs the reader the
+        search this check exists to save."""
+        with self.with_pi_security(mode="max"):
+            _, _, detail = doctor.extensions_check(harness, {"agent": {"harness": "pi"}})
+        self.assertIn(str(self.config_dir / "security.json"), detail)
+
+    def test_an_operator_who_has_already_chosen_hears_nothing_further(self):
+        for mode in ("basic", "off"):
+            with self.subTest(mode=mode), self.with_pi_security(mode=mode):
+                _, status, detail = doctor.extensions_check(
+                    harness, {"agent": {"harness": "pi"}})
+                self.assertEqual(doctor.OK, status)
+                self.assertNotIn("blocks `git`", detail)
+                # Still named: what is loaded is reported either way.
+                self.assertIn("npm:@vtstech/pi-security", detail)
 
     def test_it_never_judges_an_extension(self):
         """`model-catalog.js` is an extension too, and lmloop would not work

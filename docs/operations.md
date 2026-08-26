@@ -219,6 +219,34 @@ Nothing in `oidc` mode knows a provider by name — discovery is
 The two secrets accept a reference rather than a value (`env:`, `file:`,
 `!command`), so neither has to sit in the file.
 
+## What the agent is allowed to do
+
+An agent runs inside whatever its own configuration allows, and lmloop can see
+none of that from the inside. `lmloop doctor` names it:
+
+```
+warn  agent extensions  7 loaded into pi (each can gate what a run may do):
+      model-catalog.js, moshi-hooks.ts, npm:@vtstech/pi-security, ...
+      -- npm:@vtstech/pi-security blocks `git` in max mode, which it uses when
+      nothing is set -- run `/security mode basic` in pi, or write
+      {"mode": "basic"} to /home/you/.pi/agent/security.json
+```
+
+Two kinds of thing are loaded, and only one of them is a file: pi reads
+`~/.pi/agent/extensions/*` **and** the npm packages named in its
+`settings.json`. The second is where a gate is likely to be, and where one was.
+
+The specific case above is worth knowing before it costs a run.
+`@vtstech/pi-security` blocks 66 commands in `max` mode, `git` among them, and
+uses `max` whenever `security.json` is absent — so it is the mode nobody chose.
+An unattended loop cannot answer an approval prompt or argue with a denial, and
+a loop whose only witness is git cannot show its work without it. `basic` keeps
+all 41 critical blocks and allows `git`.
+
+lmloop reports this and does not fix it. Routing an agent around a security
+control the operator installed is not lmloop's call to make — but neither is
+letting somebody lose an afternoon to it silently.
+
 ## Choosing the agent
 
 lmloop drives three, selected by name and never inferred:

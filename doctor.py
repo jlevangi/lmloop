@@ -17,6 +17,7 @@ cause and the rest are consequences.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -143,6 +144,48 @@ def gate_check(config: dict, repo: Path):
     return ("gate", OK, command)
 
 
+def _pi_security_verdict(config_dir: Path) -> str:
+    """`@vtstech/pi-security` blocks `git`, and defaults to the mode that does.
+
+    Its `max` mode blocks 66 commands, `git` among them, and `getSecurityMode`
+    returns `max` when `security.json` does not exist -- so an operator who
+    installed it for its critical-command list gets the extended one without
+    choosing it.  `basic` keeps all 41 critical blocks and allows `git`.
+
+    That matters here more than it would anywhere else: git is the only witness
+    a run has, and an agent that cannot run it cannot show its work.  It is not
+    fatal -- lmloop commits with its own `git`, not the agent's -- so this is a
+    warning about wasted iterations rather than a refusal.
+    """
+    try:
+        mode = json.loads((config_dir / "security.json").read_text()).get("mode")
+    except (OSError, ValueError, AttributeError):
+        mode = ""
+    if mode in ("basic", "off"):
+        return ""
+    # Name the file. A diagnostic that says "set the mode somewhere" costs the
+    # reader the search this check exists to save them.
+    return (f"npm:@vtstech/pi-security blocks `git` in max mode, which it uses "
+            f"when nothing is set -- run `/security mode basic` in pi, or write "
+            f'{{"mode": "basic"}} to {config_dir / "security.json"}')
+
+
+# Things loaded into an agent that are known to stop a run doing its job, and
+# what to do about each.
+#
+# Not a security opinion, and not a list anybody has to keep current for lmloop
+# to work: every entry names one thing lmloop cannot run without and the setting
+# that gives it back, and says nothing about whether the extension should be
+# installed.  Saying a run will fail is this file's whole purpose; deciding what
+# a machine's posture ought to be is not.
+#
+# One entry, because one has been paid for. A run spent iterations working
+# around a `git` it was never going to be allowed to run, and it took two wrong
+# investigations to find out why -- both of which would have been one `lmloop
+# doctor` away.
+BLOCKING_EXTENSIONS = {"npm:@vtstech/pi-security": _pi_security_verdict}
+
+
 def extensions_check(harness_module, config: dict):
     """Name what is loaded into the agent, because it decides what a run can do.
 
@@ -181,9 +224,15 @@ def extensions_check(harness_module, config: dict):
     # One line, deliberately: `display.out` re-flows whatever it is given to the
     # terminal width, so a newline embedded here becomes a run of spaces rather
     # than a break. Wrapping belongs to the thing that knows the width.
-    return ("agent extensions", OK,
-            f"{len(loaded)} loaded into {name} (each can gate what a run may do): "
-            + ", ".join(loaded))
+    listing = (f"{len(loaded)} loaded into {name} (each can gate what a run may do): "
+               + ", ".join(loaded))
+    verdicts = [
+        verdict for item in loaded
+        if (verdict := BLOCKING_EXTENSIONS.get(item, lambda _: "")(Path(adapter.config_dir)))
+    ]
+    if verdicts:
+        return ("agent extensions", WARN, listing + " -- " + "; ".join(verdicts))
+    return ("agent extensions", OK, listing)
 
 
 def notify_check(config_module, config: dict):

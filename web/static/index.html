@@ -56,6 +56,14 @@
       Nothing here yet.<br>
       Start one above, or run <code>lmloop run "…"</code> in a repo.
     </p>
+    <!-- Who the server thinks you are, when anybody was asked.  Absent in
+         `none` mode, which is loopback-only by construction and has no
+         identity to report. -->
+    <footer id="who" class="who" hidden>
+      <span id="who-name"></span>
+      <a id="who-out" href="/logout" hidden>Sign out</a>
+      <span id="who-note" hidden></span>
+    </footer>
   </section>
 
   <!-- Run ----------------------------------------------------------------->

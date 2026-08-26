@@ -26,6 +26,83 @@ class PwaResumeRecoveryTests(unittest.TestCase):
 from web.server import Handler
 
 
+class ContextPressureTests(unittest.TestCase):
+    """The loop knows an iteration is running out of room and says so; the run
+    view is where that has to arrive.
+
+    Without it a run that overflows reads as ordinary work followed by an
+    inexplicable compaction -- which is exactly how the run that motivated
+    `policy.CONTEXT_PRESSURE` looked: three iterations at 80-84%, then a
+    compaction that cost the agent everything it had read.
+    """
+
+    def make_run(self, events):
+        base = Path(tempfile.mkdtemp())
+        run_dir = base / ".worktrees" / "r" / ".lmloop" / "runs" / "r"
+        run_dir.mkdir(parents=True)
+        (run_dir / "status.json").write_text(json.dumps({
+            "phase": "stopped", "model": "local/model", "updated_at": "",
+        }))
+        (run_dir / "lmloop.log").write_text(
+            "".join(json.dumps(event) + "\n" for event in events)
+        )
+        return {"id": "p", "path": str(base)}, run_dir
+
+    def iterations(self, events):
+        project, run_dir = self.make_run(events)
+        return runs.detail(project, run_dir)["iterations"]
+
+    def test_an_iteration_the_loop_flagged_carries_its_share_of_the_window(self):
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "ok",
+             "totalInputTokens": 20599},
+            {"event": "context:pressure", "iteration": 1,
+             "inputTokens": 20599, "window": 24576},
+        ])
+        self.assertAlmostEqual(20599 / 24576, rows[0]["pressure"])
+        self.assertEqual(24576, rows[0]["context_window"])
+
+    def test_an_iteration_the_loop_did_not_flag_carries_nothing(self):
+        """The threshold stays `policy`'s to decide.  A row with no `pressure`
+        is not a row at 0% -- it is one the loop had nothing to say about."""
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "ok",
+             "totalInputTokens": 4000},
+        ])
+        self.assertNotIn("pressure", rows[0])
+
+    def test_the_window_is_read_per_iteration_and_not_per_run(self):
+        """Planning and a thrash retry escalate to different models, so one
+        run's iterations do not share a window."""
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "thrashing",
+             "totalInputTokens": 20000},
+            {"event": "context:pressure", "iteration": 1,
+             "inputTokens": 20000, "window": 24576},
+            {"event": "iteration:start", "iteration": 2},
+            {"event": "iteration:end", "iteration": 2, "outcome": "ok",
+             "totalInputTokens": 90000},
+            {"event": "context:pressure", "iteration": 2,
+             "inputTokens": 90000, "window": 106496},
+        ])
+        self.assertEqual([24576, 106496], [row["context_window"] for row in rows])
+
+    def test_a_pressure_event_with_no_window_is_not_reported_as_zero(self):
+        """`Run.window` is 0 for a model nobody measured, and a ratio against
+        zero is an invented number rather than a missing one."""
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "ok",
+             "totalInputTokens": 20000},
+            {"event": "context:pressure", "iteration": 1,
+             "inputTokens": 20000, "window": 0},
+        ])
+        self.assertNotIn("pressure", rows[0])
+
+
 # A process that really is an lmloop program, for the holder case that asserts a
 # live loop is reported.  A real one is `python3 /path/to/lmloop.py run ...`, so
 # a file of that name is what makes this a positive rather than a lookalike --

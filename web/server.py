@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import config as config_module
 import harness
+import policy
 import runrecord
 from web import runs as runs_module
 from web import service
@@ -348,6 +349,11 @@ class Handler(BaseHTTPRequestHandler):
                 "csrf": session["csrf"],
                 "auth": self.auth.mode,
                 "oidc": self.auth.enabled,
+                # The dashboard's context gauge used to carry its own `0.75`,
+                # which agreed with `policy.CONTEXT_PRESSURE` by coincidence.
+                # Served rather than duplicated: the number was measured from
+                # real overflows and belongs to one file.
+                "context_pressure": policy.CONTEXT_PRESSURE,
             })
         if path == "/api/models":
             # Fetched only when the new-run form opens, so first paint never

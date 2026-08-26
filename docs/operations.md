@@ -161,6 +161,29 @@ systemctl --user status lmloop-web
 journalctl --user -u lmloop-web -f
 ```
 
+### What it says about a run
+
+Additive to what the run already records; the dashboard invents nothing.
+
+* **Which agent produced it.** A run card and a run view both name it, from the
+  `run:start` event rather than from the current config — a run archived before
+  the field existed shows the model alone.
+* **Where the model list came from.** The new-run sheet asks the configured
+  agent for its catalogue. When it could not be asked — not installed, no
+  listing command, an agent lmloop does not know — the sheet says so instead of
+  presenting a list that looks authoritative. An empty list is not a dead end:
+  a run started with nothing picked takes the model from the project's own
+  `.lmloop.toml`.
+* **Which iterations ran out of room.** The `in` column carries its share of
+  the window for any iteration the loop flagged with `context:pressure`, warm
+  above `policy.CONTEXT_PRESSURE` and red above 90%. That threshold is served
+  by `/api/config` rather than written out again in the page, so the gauge and
+  the table cannot drift apart. Three iterations at 80–84% and then a
+  compaction is what an overflow looks like on the way in; before this it
+  looked like ordinary work followed by something inexplicable.
+* **Who you are signed in as**, when anybody was asked — see below. `none`
+  shows nothing, having asked nobody.
+
 ### Who may drive it
 
 The dashboard starts and stops agents, deletes archives and opens pull

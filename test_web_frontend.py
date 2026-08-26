@@ -25,6 +25,19 @@ SERVER = (ROOT / "web" / "server.py").read_text()
 HTML = (ROOT / "web" / "static" / "index.html").read_text()
 
 
+def code_only(source: str) -> str:
+    """`source` with its comments removed.
+
+    The same move `test_lmloop.py` makes on every `git` argv, for the same
+    reason: a check on the text of a file must not be answerable by prose.
+    Here it runs the other way -- a comment recording what a number *used* to
+    be would otherwise fail a test asserting the number is gone.
+    """
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    return "\n".join(line for line in source.splitlines()
+                     if not line.lstrip().startswith("//"))
+
+
 def runner_outcomes():
     """Every outcome `pi_runner` can hand back, read from the source.
 
@@ -142,6 +155,106 @@ class ModelSourceVocabularyTests(unittest.TestCase):
         self.assertIn('if (!reason) return "";', body.group(1))
 
 
+def auth_modes():
+    """Every deployment `web/auth.py` supports, as `{mode: class}`.
+
+    Read off the classes rather than out of the text: `interactive` is the
+    thing being checked below, and a regex for it has to guess where one class
+    ends and the next begins -- which it got wrong on the first try, in the
+    direction that passes.
+    """
+    from web import auth as auth_module
+    return {
+        value.mode: value for value in vars(auth_module).values()
+        if isinstance(value, type) and getattr(value, "mode", "")
+    }
+
+
+class AuthModeVocabularyTests(unittest.TestCase):
+    """There are three ways to answer "who is asking", and the page knew none.
+
+    The one that hurt is `proxy`, the common deployment: every request carried
+    an identity the API had already resolved, and the dashboard showed no name
+    and no way out -- correctly no way out, since the proxy owns that session,
+    but silently, which reads as a missing button rather than a fact.
+    """
+
+    def test_the_server_has_the_modes_this_test_thinks_it_does(self):
+        """A guard on the guard: finding none would pass everything."""
+        self.assertEqual({"none", "proxy", "oidc"}, set(auth_modes()))
+
+    def test_the_dashboard_has_an_answer_for_every_mode(self):
+        block = re.search(r"const AUTH_IDENTITY = \{(.*?)\n\};", APP, re.S)
+        self.assertIsNotNone(block, "AUTH_IDENTITY moved or was renamed")
+        known = set(re.findall(r'"([a-z]+)":', block.group(1)))
+        missing = set(auth_modes()) - known
+        self.assertEqual(set(), missing,
+                         f"modes the dashboard would render as nothing: {sorted(missing)}")
+
+    def test_only_the_mode_that_routes_a_logout_offers_one(self):
+        """`/logout` exists in every mode but only clears an OIDC cookie; in
+        `proxy` the credential was never here to clear."""
+        block = re.search(r"const AUTH_IDENTITY = \{(.*?)\n\};", APP, re.S).group(1)
+        offers = set(re.findall(r'"([a-z]+)":[^\n]*logout: true', block))
+        interactive = {mode for mode, cls in auth_modes().items() if cls.interactive}
+        self.assertEqual({"oidc"}, offers)
+        self.assertEqual(interactive, offers)
+
+    def test_the_fields_it_reads_are_the_ones_the_config_endpoint_sends(self):
+        served = re.search(r'if path == "/api/config":(.*?)\}\)', SERVER, re.S)
+        self.assertIsNotNone(served, "/api/config moved or was renamed")
+        for field in ("auth", "user"):
+            with self.subTest(field=field):
+                self.assertIn(f'"{field}":', served.group(1))
+                self.assertIn(f"config?.{field}" if field == "auth" else f"config.{field}", APP)
+
+
+class ContextPressureTests(unittest.TestCase):
+    """One threshold, in one file.
+
+    `policy.CONTEXT_PRESSURE` was measured from real overflows, and the gauge
+    carried a second copy of the number as a literal.  Two definitions that
+    agree are indistinguishable from two that have drifted until the day one
+    moves.
+    """
+
+    def test_the_page_reads_the_threshold_rather_than_repeating_it(self):
+        import policy
+        self.assertIn("state.config?.context_pressure", APP)
+        self.assertNotIn(str(policy.CONTEXT_PRESSURE), code_only(APP),
+                         "the measured threshold is written out again in the page")
+
+    def test_the_api_serves_the_one_definition(self):
+        served = re.search(r'if path == "/api/config":(.*?)\}\)', SERVER, re.S)
+        self.assertIn("policy.CONTEXT_PRESSURE", served.group(1))
+
+    def test_the_gauge_and_the_table_cannot_disagree(self):
+        """Both go through one function, so a band is decided in one place."""
+        for site in ("model.gaugeFill.className = pressureClass(share)",
+                     'el("td", pressureClass(row.pressure || 0)'):
+            with self.subTest(site=site):
+                self.assertIn(site, APP)
+
+    def test_no_band_is_decided_anywhere_but_that_function(self):
+        """The gauge used to compare against two bare numbers inline.  Both
+        are named now -- one served, one a constant -- and a comparison against
+        a literal share is the shape that would bring the drift back."""
+        body = re.search(r"function pressureClass\(share\) \{(.*?)\n\}",
+                         code_only(APP), re.S)
+        self.assertIsNotNone(body, "pressureClass moved or was renamed")
+        strays = re.findall(r"share\s*[<>]=?\s*0\.\d+",
+                            code_only(APP).replace(body.group(1), ""))
+        self.assertEqual([], strays, f"bands decided outside pressureClass: {strays}")
+
+    def test_the_table_marks_only_what_the_loop_itself_flagged(self):
+        """`pressure` is present on a row only when the runner emitted
+        `context:pressure` for it, so the threshold is never re-decided here."""
+        served = (ROOT / "web" / "runs.py").read_text()
+        self.assertIn('event.get("event") == "context:pressure"', served)
+        self.assertIn("policy.context_pressure(", served)
+        self.assertIn("row.pressure", APP)
+
+
 class RunFieldContractTests(unittest.TestCase):
     """Every `run.<field>` the dashboard reads is one the API really serves.
 
@@ -190,6 +303,7 @@ class RunFieldContractTests(unittest.TestCase):
         self.assertEqual(set(), missing,
                          f"fields the dashboard reads and the API never sends: {sorted(missing)}")
 
+
 class AgentAttributionTests(unittest.TestCase):
     """lmloop drives pi, omp and opencode, and they fail differently enough
     that reading a failure starts with knowing which one produced it.  The run
@@ -214,6 +328,7 @@ class AgentAttributionTests(unittest.TestCase):
         empty value is not merely invisible -- it is a stray dot."""
         self.assertIn("if (run.agent) bits.push(run.agent)", self.function_body("metaBits"))
         self.assertIn(".filter(Boolean)", self.function_body("patchModel"))
+
 
 class RunStateVocabularyTests(unittest.TestCase):
     def test_every_state_the_api_computes_is_one_the_dashboard_knows(self):

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import config as config_module
 import eta
+import policy
 import runrecord
 
 # See `runrecord.STALE_AFTER_SECONDS`; kept as an attribute here too since it
@@ -466,6 +467,15 @@ def _iterations(run_dir: Path) -> list[dict]:
     failure: `thrashing`, `truncated`, `no-action` and `stalled` each mean
     something different about what to change, and collapsing them to "failed"
     throws away the diagnosis the loop worked to produce.
+
+    `pressure` is the same care applied to the iteration *before* the failure.
+    A run that overflows looks, in a table of outcomes, like ordinary work
+    followed by an inexplicable compaction -- but the loop already knew, and
+    said so in a `context:pressure` event: three iterations at 80-84% of the
+    window is what an overflow looks like on the way in.  Carried here rather
+    than recomputed, so the threshold stays defined in `policy` alone, and per
+    iteration rather than per run because the window is not constant across
+    one: planning and a thrash retry each escalate to a different model.
     """
     rows: dict[int, dict] = {}
     for event in _events(run_dir):
@@ -497,6 +507,14 @@ def _iterations(run_dir: Path) -> list[dict]:
                 "input_tokens": event.get("totalInputTokens"),
                 "output_tokens": event.get("totalOutputTokens"),
             })
+        elif event.get("event") == "context:pressure":
+            share = policy.context_pressure(
+                event.get("inputTokens") or 0, event.get("window") or 0)
+            if share:
+                rows.setdefault(number, {"iteration": number}).update({
+                    "pressure": share,
+                    "context_window": event.get("window"),
+                })
     return [rows[key] for key in sorted(rows)]
 
 

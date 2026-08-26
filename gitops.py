@@ -8,7 +8,9 @@ thing in the system; nothing here may throw it away.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -93,8 +95,46 @@ def diff_shortstat(cwd: Path, base: str) -> str:
     This is the only honest progress signal in the system.  The agent's own
     account of what it did is not evidence; free cloud routing combos once
     reported twelve successful iterations across 479 tool calls and zero writes.
+
+    Measured through a throwaway index rather than with a plain `git diff`,
+    because a plain one cannot see a file that is not tracked yet -- and an
+    iteration whose whole output is new files is the ordinary case, not an edge
+    one.  It reported nothing for those: no `files:` line in the commit, and an
+    empty summary handed to `write_synthetic_handoff`, which is the evidence the
+    *next* iteration starts from.  A witness blind to new files is not a
+    witness.
+
+    The throwaway index is what keeps this a measurement and not a side effect.
+    One caller runs before the commit decision has been made, and staging the
+    working tree there would decide it.  `git add -A` against `GIT_INDEX_FILE`
+    honours `.gitignore` and `info/exclude` exactly as the real one does, so
+    run artifacts under `.lmloop/` and bytecode stay out of the count.
     """
-    return git(["diff", "--shortstat", base], cwd, check=False)
+    handle, index = tempfile.mkstemp(prefix="lmloop-index-")
+    os.close(handle)
+    os.unlink(index)          # git wants to create it; it only wants the name
+    env = dict(os.environ, GIT_INDEX_FILE=index)
+    try:
+        seeded = subprocess.run(
+            ["git", "read-tree", "HEAD"], cwd=str(cwd), capture_output=True, env=env,
+        )
+        if seeded.returncode != 0:
+            # No HEAD to seed from -- a repository with no commits cannot have
+            # a base to diff against either.  Fall back rather than invent one.
+            return git(["diff", "--shortstat", base], cwd, check=False)
+        subprocess.run(["git", "add", "-A"], cwd=str(cwd), capture_output=True, env=env)
+        measured = subprocess.run(
+            ["git", "diff", "--cached", "--shortstat", base],
+            cwd=str(cwd), capture_output=True, text=True, env=env,
+        )
+        return measured.stdout.strip()
+    except OSError:
+        return git(["diff", "--shortstat", base], cwd, check=False)
+    finally:
+        try:
+            os.unlink(index)
+        except OSError:
+            pass
 
 
 def log_oneline(cwd: Path, base: str, limit: int = 20) -> str:

@@ -979,11 +979,11 @@ class CommitPreservationCharacterizationTests(unittest.TestCase):
         self.assertIsNotNone(sha)
         self.assertIn("outcome: timeout (stalled)", self._message(repo, sha))
 
-    def test_new_files_are_committed_even_though_the_shortstat_misses_them(self):
-        """Characterises lm-7vq.  `commit_all` runs `git add -A`, so a brand
-        new file IS committed -- but `diff_shortstat` is computed first and
-        cannot see untracked files, so the `files:` line is missing from the
-        body.  Nothing is lost; the record just under-describes it."""
+    def test_a_brand_new_file_is_both_committed_and_reported(self):
+        """lm-7vq.  `commit_all` runs `git add -A`, so a new file was always
+        committed -- but `diff_shortstat` could not see it, so the `files:`
+        line was missing entirely from a commit whose whole content was new
+        files.  An iteration that writes a new module is the ordinary case."""
         run, repo, base = self.make_run()
         (repo / "brand_new.py").write_text("x = 1\n")
         sha = run.commit(1, "wrote a module", self._result(), True, base)
@@ -993,7 +993,26 @@ class CommitPreservationCharacterizationTests(unittest.TestCase):
             cwd=repo, check=True, capture_output=True, text=True,
         ).stdout.split()
         self.assertIn("brand_new.py", tracked)
-        self.assertNotIn("files:", self._message(repo, sha))
+        self.assertIn("files:  1 file changed, 1 insertion(+)", self._message(repo, sha))
+
+    def test_new_and_modified_files_are_counted_together(self):
+        run, repo, base = self.make_run()
+        (repo / "brand_new.py").write_text("x = 1\n")
+        (repo / "seed.txt").write_text("seed\nchanged\n")
+        sha = run.commit(1, "both", self._result(), True, base)
+        self.assertIn("files:  2 files changed", self._message(repo, sha))
+
+    def test_measuring_does_not_stage_anything(self):
+        """One caller measures *before* the commit decision has been made, so
+        staging the working tree there would decide it."""
+        run, repo, base = self.make_run()
+        (repo / "brand_new.py").write_text("x = 1\n")
+        gitops.diff_shortstat(repo, base)
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertIn("?? brand_new.py", porcelain, "still untracked, not staged")
 
     # -- the message ------------------------------------------------------
 
@@ -2080,6 +2099,96 @@ class LegacyConfigTests(unittest.TestCase):
         cfg = self.load("")
         self.assertEqual(config.DEFAULTS["stop"]["initial_turns"],
                          cfg["stop"]["initial_turns"])
+
+
+class DiffShortstatTests(unittest.TestCase):
+    """The progress witness, per lm-7vq.
+
+    It is the only honest progress signal in the system, and it could not see
+    a file that was not tracked yet -- so an iteration whose whole output was
+    new files reported nothing at all. That fed two places: the `files:` line
+    in the commit body, and the summary handed to `write_synthetic_handoff`,
+    which is the evidence the *next* iteration starts from.
+    """
+
+    def make_repo(self):
+        repo = Path(tempfile.mkdtemp()) / "r"
+        repo.mkdir()
+        for args in (("init", "-q", "-b", "main"),
+                     ("config", "user.email", "t@t"), ("config", "user.name", "t")):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        (repo / "seed.txt").write_text("seed\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True,
+                       capture_output=True)
+        return repo, gitops.head_commit(repo)
+
+    def test_a_clean_tree_measures_nothing(self):
+        repo, base = self.make_repo()
+        self.assertEqual("", gitops.diff_shortstat(repo, base).strip())
+
+    def test_a_modified_file_is_measured(self):
+        repo, base = self.make_repo()
+        (repo / "seed.txt").write_text("seed\nmore\n")
+        self.assertIn("1 file changed", gitops.diff_shortstat(repo, base))
+
+    def test_a_brand_new_file_is_measured(self):
+        repo, base = self.make_repo()
+        (repo / "new.py").write_text("x = 1\n")
+        self.assertIn("1 file changed", gitops.diff_shortstat(repo, base))
+
+    def test_new_and_modified_are_counted_together(self):
+        repo, base = self.make_repo()
+        (repo / "new.py").write_text("x = 1\n")
+        (repo / "seed.txt").write_text("seed\nmore\n")
+        self.assertIn("2 files changed", gitops.diff_shortstat(repo, base))
+
+    def test_a_new_directory_of_files_is_measured(self):
+        repo, base = self.make_repo()
+        (repo / "pkg").mkdir()
+        (repo / "pkg" / "a.py").write_text("a = 1\n")
+        (repo / "pkg" / "b.py").write_text("b = 2\n")
+        self.assertIn("2 files changed", gitops.diff_shortstat(repo, base))
+
+    def test_it_stages_nothing(self):
+        """The caller at `Run.iterate` runs before the commit decision; making
+        this a side effect would decide it."""
+        repo, base = self.make_repo()
+        (repo / "new.py").write_text("x = 1\n")
+        (repo / "seed.txt").write_text("seed\nmore\n")
+        gitops.diff_shortstat(repo, base)
+        porcelain = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                                   check=True, capture_output=True, text=True).stdout
+        self.assertIn("?? new.py", porcelain)
+        self.assertIn(" M seed.txt", porcelain)
+
+    def test_it_leaves_no_index_file_behind(self):
+        repo, base = self.make_repo()
+        (repo / "new.py").write_text("x = 1\n")
+        before = set(Path(tempfile.gettempdir()).glob("lmloop-index-*"))
+        gitops.diff_shortstat(repo, base)
+        self.assertEqual(before, set(Path(tempfile.gettempdir()).glob("lmloop-index-*")))
+
+    def test_ignored_files_stay_out_of_the_count(self):
+        """Run artifacts under `.lmloop/` and bytecode are excluded exactly as
+        they are for the real index -- `git add -A` honours the same rules."""
+        repo, base = self.make_repo()
+        (repo / ".gitignore").write_text("junk/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "ignore"], cwd=repo, check=True,
+                       capture_output=True)
+        base = gitops.head_commit(repo)
+        (repo / "junk").mkdir()
+        (repo / "junk" / "noise.txt").write_text("noise\n")
+        self.assertEqual("", gitops.diff_shortstat(repo, base).strip())
+
+    def test_a_repository_with_no_commits_does_not_raise(self):
+        repo = Path(tempfile.mkdtemp()) / "empty"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True,
+                       capture_output=True)
+        gitops.diff_shortstat(repo, "HEAD")   # must not raise
 
 
 if __name__ == "__main__":

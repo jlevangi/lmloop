@@ -27,33 +27,21 @@ import display
 import eta
 import gitops
 import models as models_module
+import runrecord
 from loop import Run
 from rundir import RunDir, make_run_id
 
 
 STATE_DIR = Path.home() / ".local" / "state" / "lmloop"
 
-# status.json is rewritten every pi_runner.POLL_SECONDS (2s) for as long as an
-# iteration is running.  Two minutes of silence is far outside that and well
-# inside the gap between iterations, where the loop is committing rather than
-# polling.
-STALE_AFTER_SECONDS = 120
+# See `runrecord.STALE_AFTER_SECONDS`; kept as an attribute here too since it
+# is part of this module's own public surface.
+STALE_AFTER_SECONDS = runrecord.STALE_AFTER_SECONDS
 
 
 def _status_age(state: dict) -> float | None:
     """Seconds since the run last wrote its status, or None if unreadable."""
-    from datetime import datetime, timezone
-
-    stamp = state.get("updated_at")
-    if not isinstance(stamp, str):
-        return None
-    try:
-        written = datetime.fromisoformat(stamp)
-    except ValueError:
-        return None
-    if written.tzinfo is None:
-        written = written.replace(tzinfo=timezone.utc)
-    return max((datetime.now(timezone.utc) - written).total_seconds(), 0.0)
+    return runrecord.age_seconds(state.get("updated_at"))
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -175,17 +163,16 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _discover_runs(repo: Path, config: dict) -> list[tuple[str, Path]]:
-    """Every run directory under this repo's configured worktree root."""
-    # Substituting a placeholder rather than "" -- an empty run_id leaves a
-    # trailing slash, which Path normalises away, so .parent would climb one
-    # level too far and glob the whole repo.
-    template = config["worktree"]["root"]
-    root = Path(template.format(repo=str(repo), run_id="__run__")).parent
-    runs = []
-    for run_dir in sorted(root.glob("*/.lmloop/runs/*")):
-        if run_dir.is_dir():
-            runs.append((run_dir.name, run_dir))
-    return runs
+    """Every run directory under this repo's configured worktree root.
+
+    See `runrecord.worktree_root`/`.discover_runs`: the WebUI used to resolve
+    `[worktree] root` by reading `.lmloop.toml` on its own, which missed an
+    override set only in global config -- something that could never happen
+    here, since `config` has already been through `config.load`'s full
+    defaults-then-global-then-project layering by the time it arrives.
+    """
+    root = runrecord.worktree_root(repo, config)
+    return [(run_dir.name, run_dir) for run_dir in runrecord.discover_runs(root)]
 
 
 def _read_run_state(run_dir: Path) -> dict:

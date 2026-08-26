@@ -29,6 +29,7 @@ import display
 import eta
 import gitops
 import models
+import policy
 import prompts
 import pi_runner
 from rundir import RunDir, make_run_id, previous_runs
@@ -197,6 +198,7 @@ class Run:
             tools=self.config["agent"].get("tools", ""),
             model=self.model,
             worktree=True,
+            repoPath=str(self.repo),
             worktreePath=str(self.worktree),
             branch=self.branch,
             baseCommit=base,
@@ -263,6 +265,7 @@ class Run:
             model=self.model,
             resumed=True,
             completedIterations=done,
+            repoPath=str(self.repo),
             worktreePath=str(self.worktree),
             branch=self.branch,
             maxIterations=self.max_iterations,
@@ -292,67 +295,31 @@ class Run:
         if not self.config["stop"].get("budget_follows_plan", False):
             return self.iteration_floor
         done, total = self.rundir.plan_progress()
-        if not total:
-            # No plan yet.  Deriving a budget from an empty plan would say
-            # "one", and stop the run at the planning iteration.
-            return max(self.iteration_floor, iteration + 1)
-        # Spent, plus what is left, plus slack.  A wasted iteration raises the
-        # first term without lowering the second, so the budget moves out by
-        # exactly the one that was wasted -- which is the whole request: a step
-        # that fails twice must not cost the run its last step.
-        spent, remaining = iteration - 1, max(total - done, 0)
-        wanted = spent + remaining + self.config["stop"].get("retry_allowance", 5)
-        return max(self.iteration_floor, min(wanted, self.iteration_ceiling))
+        return policy.budget(
+            iteration, done, total,
+            iteration_floor=self.iteration_floor,
+            iteration_ceiling=self.iteration_ceiling,
+            retry_allowance=self.config["stop"].get("retry_allowance", 5),
+        )
 
     def _abort_reason(self, iteration: int, started: float) -> str | None:
-        if self.interrupted:
-            return "interrupted"
-        if self.rundir.stop_now_requested():
-            return "STOP-NOW sentinel present"
-        if self.rundir.stop_requested():
-            return "STOP sentinel present"
-        # Before the budget check: a run that has done everything it set out to
-        # do has finished, and reporting that as "ran out of iterations" tells
-        # the operator to add more of something it does not need.
-        #
-        # This one trusts a self-report, which nothing else here does.  It is
-        # the safe direction to trust: the failure is a run that stops early
-        # leaving its commits behind, which the operator sees as a checked plan
-        # and can continue.  The dangerous direction -- a self-report that keeps
-        # a run alive -- stays guarded by `no_diff_iterations`.
+        """Why this run should stop now, or None -- see `policy.abort_reason`."""
         done, total = self.rundir.plan_progress()
-        if total and done >= total and iteration > 1:
-            return f"plan complete ({done}/{total})"
-        if iteration > self.max_iterations:
-            if self.max_iterations >= self.iteration_ceiling:
-                return "turn ceiling hit"
-            return f"max iterations reached ({self.max_iterations})"
-        hours = (self.elapsed_before + time.monotonic() - started) / 3600
-        if hours >= self.config["stop"]["max_wall_hours"]:
-            return f"max wall clock reached ({hours:.1f}h)"
-        limit = self.config["stop"]["no_diff_iterations"]
-        if self.no_diff_streak >= limit:
-            # Iteration counts and self-reported summaries are not evidence of
-            # work.  Git is the only honest witness, so this is the one guard
-            # that cannot be talked out of stopping -- plan progress deliberately
-            # does NOT reset the streak, because checking a box is a self-report
-            # and an agent that could reset this guard by doing so would be able
-            # to talk its way past the only check that never lies.
-            #
-            # But the operator needs to tell a stuck run from a clean stop, and
-            # those look identical in the streak alone: a plan can legitimately
-            # contain steps that change no files -- "verify the toggle still
-            # works" is real work with no diff.  So the plan movement is
-            # reported alongside, as context rather than as permission.
-            reason = f"no git-visible change in {limit} consecutive iterations"
-            done, total = self.rundir.plan_progress()
-            start = getattr(self, "_plan_at_start", None)
-            if total and start is not None and done > start:
-                reason += f" (plan advanced {start}/{total} -> {done}/{total}, so this may be steps that need no code)"
-            elif total:
-                reason += f" (plan still at {done}/{total})"
-            return reason
-        return None
+        return policy.abort_reason(
+            iteration, started,
+            interrupted=self.interrupted,
+            stop_now_requested=self.rundir.stop_now_requested(),
+            stop_requested=self.rundir.stop_requested(),
+            plan_done=done,
+            plan_total=total,
+            max_iterations=self.max_iterations,
+            iteration_ceiling=self.iteration_ceiling,
+            elapsed_before=self.elapsed_before,
+            max_wall_hours=self.config["stop"]["max_wall_hours"],
+            no_diff_streak=self.no_diff_streak,
+            no_diff_iterations_limit=self.config["stop"]["no_diff_iterations"],
+            plan_at_start=getattr(self, "_plan_at_start", None),
+        )
 
     # -- the environment the worktree does not inherit ---------------------
 
@@ -1046,27 +1013,10 @@ class Run:
             f" | {result.tool_calls} tool calls{overflows} | {verdict}"
         )
 
-    # Outcomes where the agent ran to the end of its turn and produced nothing
-    # git-visible.  That is what the streak is for: three of these in a row is
-    # a run going nowhere, and `no-action` -- a clean turn that called no tool
-    # at all -- is the single clearest example of it.
-    #
-    # Everything else is excluded, because it is a failure the loop already
-    # answers somewhere else and counting it here stops a healthy run for
-    # something that was never about the work: `agent-error` on a broken
-    # stream backs off, `thrashing` splits the step, `timeout` and `stalled`
-    # killed the iteration, `interrupted` was the operator.  One run here
-    # stopped on "no git-visible change in 3 consecutive iterations" whose
-    # three iterations were agent-error, interrupted, agent-error -- not one
-    # completed attempt among them.
-    NO_PROGRESS_OUTCOMES = frozenset({"ok", "no-action", "truncated"})
-
     def _counts_as_no_progress(self, commit: str | None, uncommitted: bool) -> bool:
-        return (
-            self.last_outcome in self.NO_PROGRESS_OUTCOMES
-            and commit is None
-            and not uncommitted
-        )
+        """Whether this outcome should advance the no-diff streak -- see
+        `policy.counts_as_no_progress` and `policy.NO_PROGRESS_OUTCOMES`."""
+        return policy.counts_as_no_progress(self.last_outcome, commit, uncommitted)
 
     def _save_run_state(self) -> None:
         elapsed = self.elapsed_before

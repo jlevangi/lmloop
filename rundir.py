@@ -29,6 +29,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import runrecord
+
 # A carried context summary buys its place in the next prompt by replacing file
 # reads, so it can afford to be long -- but not unbounded.  12000 characters is
 # roughly 3k tokens, 5% of a 57344-token window, against the ~40 reads that
@@ -99,18 +101,8 @@ class RunDir:
             handle.write(json.dumps(record) + "\n")
 
     def read_events(self) -> list[dict]:
-        """The run's own event log, parsed.  Small: one line per lifecycle event."""
-        parsed = []
-        try:
-            text = self.log_path.read_text(errors="replace")
-        except OSError:
-            return []
-        for line in text.splitlines():
-            try:
-                parsed.append(json.loads(line))
-            except ValueError:
-                continue
-        return parsed
+        """The run's own event log, parsed -- see `runrecord.read_events`."""
+        return runrecord.read_events(self.path)
 
     # -- notes ------------------------------------------------------------
 
@@ -175,21 +167,8 @@ class RunDir:
         return problems
 
     def plan_progress(self) -> tuple[int, int]:
-        """(done, total) checkbox items in the plan.
-
-        Counted rather than trusted from prose: the agent reports progress in
-        its handoff, and a self-report is not evidence.  This is only for the
-        log and the status line -- git remains what decides whether the run is
-        getting anywhere.
-        """
-        done = total = 0
-        for line in self.read_plan().splitlines():
-            stripped = line.strip()
-            if stripped.startswith(("- [", "* [")):
-                total += 1
-                if stripped[3:4].lower() == "x":
-                    done += 1
-        return done, total
+        """(done, total) checkbox items in the plan -- see `runrecord.plan_progress`."""
+        return runrecord.plan_progress(self.read_plan())
 
     def current_step(self) -> str:
         """The first unchecked plan step -- what the next iteration is here for.
@@ -198,12 +177,12 @@ class RunDir:
         is ordered, so the earliest unfinished step is the one in play.  Anything
         that wants to talk about "the step that thrashed" has to agree with the
         prompt about which step that was, or it will name the wrong one.
+
+        Only the backtick pair bracketing the whole step is trimmed -- see
+        `runrecord.first_unchecked_step` for why this differs from the WebUI's
+        own reading of the same plan.
         """
-        for line in self.read_plan().splitlines():
-            stripped = line.strip()
-            if stripped.startswith(("- [", "* [")) and stripped[3:4].lower() != "x":
-                return stripped[5:].strip().strip("`")
-        return ""
+        return runrecord.first_unchecked_step(self.read_plan()).strip("`")
 
     # -- handoff ----------------------------------------------------------
 
@@ -388,30 +367,19 @@ class RunDir:
             self.pid_path.unlink(missing_ok=True)
 
     def holder(self) -> int:
-        """The pid of a live lmloop loop on this run, or 0.
-
-        Advisory, and deliberately conservative: it says yes only when the pid
-        is running *and* its command line still looks like lmloop, so a recycled
-        pid cannot lock a run out.  A stale file left by a killed loop reads as
-        0 and the next run simply overwrites it.
+        """The pid of a live lmloop loop on this run, or 0 -- see `runrecord.holder`.
 
         This exists because two loops on one run directory is not a harmless
         race.  The dashboard's "continue" spawned a resume beside a loop that
         was merely paused; both then held on the same PAUSE, and had it been
         cleared, both would have run iterations in the same worktree, writing
         the same status.json and committing over each other.
+
+        Reports 0 for our own pid on top of the shared check, so that a loop
+        never blocks itself.
         """
-        try:
-            pid = int(self.pid_path.read_text().strip())
-        except (OSError, ValueError):
-            return 0
-        if pid <= 0 or pid == os.getpid():
-            return 0
-        try:
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-        except OSError:
-            return 0  # gone, or a platform without /proc: do not block on it
-        return pid if b"lmloop" in cmdline else 0
+        pid = runrecord.holder(self.path)
+        return 0 if pid == os.getpid() else pid
 
     def heartbeat(self) -> None:
         """Restamp `status.json` without otherwise changing it.
@@ -435,9 +403,15 @@ class RunDir:
         now" from it means parsing to the end of a file that reaches megabytes.
         This is one small file holding only the present, so a phone script, a
         status bar, or a web wrapper can read it without understanding lmloop.
-        Written atomically because something is always reading it.
+        Written atomically because something is always reading it.  Also where
+        `schema_version` gets stamped -- see `runrecord.py`'s module docstring
+        -- since this is the one place every write of this file passes through.
         """
-        state = dict(state, updated_at=datetime.now(timezone.utc).isoformat())
+        state = dict(
+            state,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            schema_version=runrecord.SCHEMA_VERSION,
+        )
         temporary = self.status_path.with_suffix(".json.tmp")
         try:
             temporary.write_text(json.dumps(state, indent=2) + "\n")
@@ -479,7 +453,7 @@ class RunDir:
 
     def stop_requested(self) -> bool:
         """The run should end -- either at the boundary, or right now."""
-        return self.stop_path.exists() or self.stop_now_path.exists()
+        return runrecord.stop_requested(self.path)
 
     def stop_now_requested(self) -> bool:
         """The in-flight iteration should be cut short rather than finished.
@@ -492,10 +466,10 @@ class RunDir:
         for an iteration that is visibly wasting its hour, and cannot wait for
         it.  Neither discards anything: the partial tree is committed either way.
         """
-        return self.stop_now_path.exists()
+        return runrecord.stop_now_requested(self.path)
 
     def paused(self) -> bool:
-        return self.pause_path.exists()
+        return runrecord.paused(self.path)
 
 
 def _trim(text: str, limit: int = 88) -> str:

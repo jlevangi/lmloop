@@ -17,16 +17,15 @@ of that file and from whether the log records a completion -- never from the
 from __future__ import annotations
 
 import json
-import tomllib
-from datetime import datetime, timezone
 from pathlib import Path
 
+import config as config_module
 import eta
+import runrecord
 
-# status.json is rewritten every pi_runner.POLL_SECONDS (2s) while an iteration
-# runs.  Two minutes is far outside that, and comfortably inside the gap between
-# iterations where the loop is committing rather than polling.
-STALE_AFTER_SECONDS = 120
+# See `runrecord.STALE_AFTER_SECONDS`; kept as an attribute here too since it
+# is part of this module's own public surface.
+STALE_AFTER_SECONDS = runrecord.STALE_AFTER_SECONDS
 
 # Enough of a plan or handoff to render without shipping the whole file to a
 # phone on every poll.  The detail view fetches the rest.
@@ -49,15 +48,7 @@ def _read_text(path: Path, limit: int = 200_000) -> str:
 
 
 def _age_seconds(stamp: str | None) -> float | None:
-    if not isinstance(stamp, str):
-        return None
-    try:
-        written = datetime.fromisoformat(stamp)
-    except ValueError:
-        return None
-    if written.tzinfo is None:
-        written = written.replace(tzinfo=timezone.utc)
-    return max((datetime.now(timezone.utc) - written).total_seconds(), 0.0)
+    return runrecord.age_seconds(stamp)
 
 
 # -- discovery --------------------------------------------------------------
@@ -95,19 +86,13 @@ def _worktree_root(project: Path) -> Path:
 
     A project may relocate them with `[worktree] root`, and a dashboard that
     assumes the default silently shows no runs for exactly the projects whose
-    owner cared enough to configure them.
+    owner cared enough to configure them. Goes through `config.load` -- the
+    same defaults-then-global-then-project layering the CLI resolves this
+    with -- rather than reading the project's `.lmloop.toml` alone, so a root
+    relocated only in `~/.config/lmloop/config.toml` is not invisible here.
+    See `runrecord.worktree_root`.
     """
-    template = "{repo}/.worktrees/{run_id}"
-    try:
-        with (project / ".lmloop.toml").open("rb") as handle:
-            configured = (tomllib.load(handle).get("worktree") or {}).get("root")
-        if isinstance(configured, str) and configured:
-            template = configured
-    except (OSError, tomllib.TOMLDecodeError):
-        pass
-    # A placeholder rather than "": an empty run_id leaves a trailing slash,
-    # which Path normalises away, so .parent would climb one level too far.
-    return Path(template.format(repo=str(project), run_id="__run__")).parent
+    return runrecord.worktree_root(project, config_module.load(project))
 
 
 def _runs_under(root: Path) -> list[Path]:
@@ -165,7 +150,17 @@ def run_dirs(project: Path) -> list[Path]:
 
 
 def owner(project: Path, run_dir: Path) -> Path:
-    """Repository checkout whose worktree root contains ``run_dir``."""
+    """Repository checkout whose worktree root contains ``run_dir``.
+
+    A run that recorded its own `repoPath` (see `runrecord.resolved_owner`)
+    settles this outright: it is the run's own account of where it was
+    launched from, not a guess reconstructed from directory layout. Only a run
+    from before that field existed falls through to the walk over
+    `.pilot-bases` and every candidate's own `[worktree] root` template.
+    """
+    resolved = runrecord.resolved_owner(runrecord.latest_run_start(_events(run_dir)))
+    if resolved is not None:
+        return resolved
     bases = [project, *sorted((project / ".pilot-bases").glob("*"))]
     candidates = [checkout for base in bases if base.is_dir() for checkout in _checkout_tree(base)]
     # The deepest matching checkout owns a chained run; the repository root is
@@ -241,28 +236,13 @@ def find(roots: list[Path], project_id: str, run_id: str) -> Path | None:
 
 
 def _events(run_dir: Path) -> list[dict]:
-    """The run's own event log, parsed.  Small: one line per lifecycle event."""
-    parsed = []
-    for line in _read_text(run_dir / "lmloop.log").splitlines():
-        try:
-            parsed.append(json.loads(line))
-        except ValueError:
-            continue
-    return parsed
+    """The run's own event log, parsed -- see `runrecord.read_events`."""
+    return runrecord.read_events(run_dir)
 
 
 def _holder(run_dir: Path) -> int:
-    """The pid of a live lmloop loop on this run, or 0.  See rundir.holder."""
-    try:
-        pid = int((run_dir / "loop.pid").read_text().strip())
-    except (OSError, ValueError):
-        return 0
-    if pid <= 0:
-        return 0
-    try:
-        return pid if b"lmloop" in Path(f"/proc/{pid}/cmdline").read_bytes() else 0
-    except OSError:
-        return 0
+    """The pid of a live lmloop loop on this run, or 0.  See `runrecord.holder`."""
+    return runrecord.holder(run_dir)
 
 
 def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float | None]:
@@ -301,9 +281,9 @@ def _state(run_dir: Path, status: dict, events: list[dict]) -> tuple[str, float 
         # dashboard into offering "continue", which started a second loop beside
         # the first.  A live pid is the difference between quiet and gone.
         return "stale", age
-    if (run_dir / "STOP").exists() or (run_dir / "STOP-NOW").exists():
+    if runrecord.stop_requested(run_dir):
         return "stopping", age
-    if (run_dir / "PAUSE").exists():
+    if runrecord.paused(run_dir):
         return "paused", age
     return "running", age
 
@@ -330,18 +310,16 @@ def _current_step(text: str) -> str:
     This is the single most useful sentence about a live run, and it was
     previously only visible by opening the plan.  Markdown emphasis is stripped
     -- the agent writes `**Fix dark-mode.css conflict**` for itself, and a status
-    line should read as a sentence rather than as source.
+    line should read as a sentence rather than as source.  See
+    `runrecord.first_unchecked_step` for why this strips more than the
+    runner's own reading of the same plan does.
     """
     import re as _re
 
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("- [", "* [")) and stripped[3:4].lower() != "x":
-            step = stripped[5:].strip()
-            step = _re.sub(r"\*\*([^*]+)\*\*", r"\1", step)
-            step = step.replace("`", "")
-            return step[:160]
-    return ""
+    step = runrecord.first_unchecked_step(text)
+    step = _re.sub(r"\*\*([^*]+)\*\*", r"\1", step)
+    step = step.replace("`", "")
+    return step[:160]
 
 
 def _plan_name(text: str) -> str:
@@ -379,14 +357,7 @@ def _plan_name(text: str) -> str:
 
 
 def _plan_progress(text: str) -> tuple[int, int]:
-    done = total = 0
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("- [", "* [")):
-            total += 1
-            if stripped[3:4].lower() == "x":
-                done += 1
-    return done, total
+    return runrecord.plan_progress(text)
 
 
 def summarise(project: dict, run_dir: Path) -> dict:
@@ -475,8 +446,8 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "compactions": status.get("compactions"),
         "plan_done": done,
         "plan_total": total,
-        "paused": (run_dir / "PAUSE").exists(),
-        "stopping": (run_dir / "STOP").exists() or (run_dir / "STOP-NOW").exists(),
+        "paused": runrecord.paused(run_dir),
+        "stopping": runrecord.stop_requested(run_dir),
         "iterations_done": len(outcomes),
         "outcomes": outcomes[-12:],
         "commits": commits,

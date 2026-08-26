@@ -11,9 +11,11 @@ loop.
 |---|---|
 | `lmloop.py` | CLI. Subcommands, config overrides, and the narrow-terminal output for `status`/`list`. |
 | `loop.py` | The run lifecycle: worktree, iterate, gate, check, commit, stop. Owns the model-role decision. |
+| `policy.py` | Pure stop/budget/retry policy, extracted from `loop.Run`: no filesystem, no `self` — a function of its arguments, so it is testable without a worktree or an hour of wall clock. |
 | `pi_runner.py` | Runs one iteration of pi and reduces its event stream to an outcome. Supervises the timeout, stall and compaction clocks. |
 | `prompts.py` | Builds the iteration prompt. Every section here exists because an agent wasted tool calls re-deriving it. |
-| `rundir.py` | Everything a run leaves behind, plus the plan and handoff accessors. |
+| `rundir.py` | Everything a run leaves behind, plus the plan and handoff accessors. Delegates its reading half to `runrecord.py`. |
+| `runrecord.py` | The run-record contract shared by the runner and the WebUI: canonical readers for liveness, plan progress, control sentinels, and `run:start`-recorded worktree/branch/owner, plus the `schema_version` marker. Takes a bare run directory path, not a `RunDir`, so it works the same for a live worktree or an archived copy with none. |
 | `gitops.py` | Every git invocation. **No reset, no clean, no worktree removal** — grep it. |
 | `checks.py` | "Did the edit land intact", on the files git says changed, whatever the project configured. |
 | `models.py` | llama-swap preflight and context measurement. |

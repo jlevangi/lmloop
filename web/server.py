@@ -33,6 +33,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import config as config_module
+import runrecord
 from web import runs as runs_module
 from web.auth import AVAILABLE as AUTH_AVAILABLE, OIDC
 
@@ -527,6 +528,10 @@ class Handler(BaseHTTPRequestHandler):
                 {"error": f"this run has a live loop (pid {holder}); stop it first"}, 409
             )
 
+        # Correct regardless of `[worktree] root`: `.lmloop/runs/<id>` is a
+        # fixed relative layout under wherever the worktree actually is, so
+        # this needs no `runrecord.resolved_worktree` fallback the way branch
+        # resolution below does -- see runrecord.py's module docstring.
         worktree = run_dir.parents[2]
         target = runs_module.archive_target(project["id"], run_dir.name)
         if target.exists():
@@ -624,7 +629,8 @@ class Handler(BaseHTTPRequestHandler):
                           "of its worktree and the loss of its record are two "
                           "separate decisions"}, 400,
             )
-        branch = f"lmloop/{run_dir.name}"
+        start = runrecord.latest_run_start(runs_module._events(run_dir))
+        branch = runrecord.resolved_branch(run_dir, start)
         dropped = None
         if payload.get("branch"):
             # -D, not -d: the branch is usually unmerged, which is exactly the
@@ -642,7 +648,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def open_pr(self, project, run_dir, payload):
         """Push the run's branch and open a pull request for it."""
-        branch = f"lmloop/{run_dir.name}"
+        start = runrecord.latest_run_start(runs_module._events(run_dir))
+        branch = runrecord.resolved_branch(run_dir, start)
         repo = project["path"]
 
         def git(args, **kwargs):

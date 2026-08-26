@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -6,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import config as config_module
 from web import runs
 from web.server import Handler
 
@@ -205,6 +207,223 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue((self.archive / "project" / self.run_id / "prompt.md").is_file())
         self.assertTrue((self.run_dir / "prompt.md").is_file())
         self.assertNotIn("--force", run.call_args.args[0])
+
+
+class ResolvedMetadataTests(unittest.TestCase):
+    """Regression coverage for the audit finding that delete/PR reconstruct
+    `lmloop/<run-id>` instead of reading the branch `run:start` actually
+    recorded -- wrong for any project with a configured `[worktree] branch`
+    template. (`archive_run`'s `run_dir.parents[2]` is a different case: that
+    walk is always correct, since `.lmloop/runs/<id>` is a fixed relative
+    layout under whatever path the worktree happens to be at -- so it needed
+    no fix, only the branch guess did.) See lm-ka5.4 notes.
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.project = self.root / "project"
+        self.project.mkdir()
+        self.run_id = "custom-run"
+        self.worktree = self.project / ".worktrees" / self.run_id
+        self.run_dir = self.worktree / ".lmloop" / "runs" / self.run_id
+        self.run_dir.mkdir(parents=True)
+        self.branch = "custom/branch-name"
+        self.run_dir.joinpath("prompt.md").write_text("Keep this history\n")
+        self.run_dir.joinpath("status.json").write_text(json.dumps({
+            "phase": "completed", "updated_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        self.run_dir.joinpath("lmloop.log").write_text(
+            json.dumps({
+                "event": "run:start", "worktreePath": str(self.worktree),
+                "branch": self.branch, "repoPath": str(self.project),
+            }) + "\n" + json.dumps({"event": "run:complete", "commitCount": 1}) + "\n"
+        )
+        self.archive = self.root / "archive"
+        # Sanity: the naive branch guess this replaces must actually be wrong
+        # here, or the test would pass whether or not the fix exists.
+        assert f"lmloop/{self.run_id}" != self.branch
+
+    def test_delete_drops_the_persisted_branch_not_a_guessed_name(self):
+        target = self.archive / "project" / self.run_id
+        target.mkdir(parents=True)
+        for source in self.run_dir.iterdir():
+            (target / source.name).write_bytes(source.read_bytes())
+        handler = Handler.__new__(Handler)
+        with mock.patch.object(runs, "ARCHIVE_ROOT", self.archive), \
+             mock.patch("web.server.subprocess.run") as run, \
+             mock.patch.object(Handler, "json"):
+            handler.delete_run(
+                {"id": "project", "path": str(self.project)}, target, {"branch": True}
+            )
+        argv = run.call_args.args[0]
+        self.assertEqual(["git", "branch", "-D", self.branch], argv)
+
+    def test_open_pr_targets_the_persisted_branch_not_a_guessed_name(self):
+        handler = Handler.__new__(Handler)
+        verify = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch("web.server.subprocess.run", return_value=verify) as run, \
+             mock.patch.object(Handler, "json"):
+            handler.open_pr(
+                {"id": "project", "path": str(self.project)}, self.run_dir, {}
+            )
+        first_argv = run.call_args_list[0].args[0]
+        self.assertIn(self.branch, first_argv)
+
+    def test_owner_prefers_the_persisted_repo_path_over_the_heuristic(self):
+        """A run:start with `repoPath` is ground truth; the pilot-base/nested-
+        worktree walk in `owner()` only has to guess for runs that predate it.
+        """
+        # A layout the walk-based heuristic would misattribute if it ran: no
+        # `.pilot-bases` and no nested `.worktrees` chain lead back to
+        # `self.project` from this run_dir, so only the persisted repoPath
+        # can produce the right answer.
+        unrelated = self.root / "unrelated"
+        unrelated.mkdir()
+        self.assertEqual(self.project, runs.owner(unrelated, self.run_dir))
+
+
+class PlanReaderConsolidationTests(unittest.TestCase):
+    """`web.runs._plan_progress`/`_current_step` must keep reading a plan
+    exactly as before once they delegate their checkbox scan to
+    `runrecord.plan_progress`/`runrecord.first_unchecked_step`."""
+
+    def test_plan_progress_matches_rundir(self):
+        text = "- [x] one\n- [X] two\n- [ ] three\nnot a step\n"
+        self.assertEqual((2, 3), runs._plan_progress(text))
+
+    def test_current_step_strips_markdown_and_all_backticks_and_truncates(self):
+        text = "- [x] done\n- [ ] **fix `foo.py`** bug\n"
+        self.assertEqual("fix foo.py bug", runs._current_step(text))
+        long_step = "- [ ] " + "x" * 200
+        self.assertEqual(160, len(runs._current_step(long_step)))
+
+    def test_current_step_empty_plan_is_empty_string(self):
+        self.assertEqual("", runs._current_step(""))
+
+
+class WorktreeRootConsolidationTests(unittest.TestCase):
+    """`web.runs._worktree_root` used to read a project's own `.lmloop.toml`
+    directly with `tomllib`, bypassing `config.load`'s defaults-then-global-
+    then-project layering entirely.  A `[worktree] root` set only in
+    `~/.config/lmloop/config.toml` -- which is exactly how the CLI's own
+    `lmloop._discover_runs` resolves the same setting -- was invisible to the
+    dashboard, which would then report the project as having no runs at all.
+    """
+
+    def test_worktree_root_respects_a_global_config_override(self):
+        project = Path(tempfile.mkdtemp())
+        global_config = Path(tempfile.mkdtemp()) / "config.toml"
+        global_config.write_text('[worktree]\nroot = "{repo}/custom-trees/{run_id}"\n')
+        with mock.patch.object(config_module, "GLOBAL_CONFIG", global_config):
+            self.assertEqual(
+                project / "custom-trees", runs._worktree_root(project),
+            )
+
+    def test_worktree_root_still_defaults_with_no_config_at_all(self):
+        project = Path(tempfile.mkdtemp())
+        with mock.patch.object(config_module, "GLOBAL_CONFIG", project / "no-such-file"):
+            self.assertEqual(project / ".worktrees", runs._worktree_root(project))
+
+
+class EventLogCapTests(unittest.TestCase):
+    """`web.runs._events` used to read `lmloop.log` through the same
+    200_000-character cap used for previewing `plan.md`/`handoff.md` -- fine
+    for those, wrong for an append-only lifecycle log a long, many-iteration
+    run can grow past that size, since the cap was anchored to the *start* of
+    the file and so hid the most recent events, not the least useful ones.
+    `RunDir.read_events` (the runner's own reader) never had this cap.
+    """
+
+    def test_events_sees_a_run_complete_written_past_the_old_two_hundred_kb_mark(self):
+        run_dir = Path(tempfile.mkdtemp())
+        padding_line = json.dumps({"event": "iteration:end", "outcome": "ok", "pad": "x" * 500})
+        lines = [padding_line] * 500 + [json.dumps({"event": "run:complete", "commitCount": 3})]
+        log_text = "\n".join(lines) + "\n"
+        (run_dir / "lmloop.log").write_text(log_text)
+        self.assertGreater(len(log_text), 200_000)
+        self.assertIn("run:complete", [event["event"] for event in runs._events(run_dir)])
+
+
+class ControlSentinelConsolidationTests(unittest.TestCase):
+    """`_state`/`summarise` read STOP/STOP-NOW/PAUSE by checking file
+    existence directly, duplicating `RunDir.stop_requested`/`.paused`. Pins
+    that reading through `runrecord` still reflects exactly the files on disk.
+    """
+
+    def setUp(self):
+        self.run_dir = Path(tempfile.mkdtemp())
+        (self.run_dir / "status.json").write_text(json.dumps({
+            "phase": "working", "updated_at": datetime.now(timezone.utc).isoformat(),
+        }))
+        (self.run_dir / "lmloop.log").write_text("")
+
+    def summary(self):
+        return runs.summarise({"id": "p", "path": str(self.run_dir)}, self.run_dir)
+
+    def test_no_sentinels_present(self):
+        summary = self.summary()
+        self.assertFalse(summary["paused"])
+        self.assertFalse(summary["stopping"])
+        self.assertEqual("running", summary["state"])
+
+    def test_pause_sentinel_is_reflected(self):
+        (self.run_dir / "PAUSE").write_text("")
+        summary = self.summary()
+        self.assertTrue(summary["paused"])
+        self.assertEqual("paused", summary["state"])
+
+    def test_either_stop_sentinel_sets_stopping(self):
+        (self.run_dir / "STOP-NOW").write_text("")
+        summary = self.summary()
+        self.assertTrue(summary["stopping"])
+        self.assertEqual("stopping", summary["state"])
+
+
+class HolderCharacterizationTests(unittest.TestCase):
+    """Pins `runs._holder` before it delegates to the canonical reader.
+
+    lm-ka5.4 consolidates this with `rundir.RunDir.holder` (see
+    `RunDirCharacterizationTests` in test_lmloop.py) behind `runrecord.holder`.
+    Unlike RunDir's version, this one is read by a process that is never the
+    loop itself, so it has no self-pid exclusion -- that asymmetry is
+    intentional and must survive the consolidation.
+    """
+
+    def setUp(self):
+        self.run_dir = Path(tempfile.mkdtemp())
+
+    def test_no_pid_file_is_zero(self):
+        self.assertEqual(0, runs._holder(self.run_dir))
+
+    def test_garbage_content_is_zero(self):
+        (self.run_dir / "loop.pid").write_text("not-a-pid\n")
+        self.assertEqual(0, runs._holder(self.run_dir))
+
+    def test_dead_pid_is_zero(self):
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (self.run_dir / "loop.pid").write_text(f"{proc.pid}\n")
+        self.assertEqual(0, runs._holder(self.run_dir))
+
+    def test_live_pid_without_lmloop_in_cmdline_is_zero(self):
+        proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        try:
+            (self.run_dir / "loop.pid").write_text(f"{proc.pid}\n")
+            self.assertEqual(0, runs._holder(self.run_dir))
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_live_pid_with_lmloop_in_cmdline_is_reported(self):
+        proc = subprocess.Popen(
+            ["sleep", "--lmloop-tag=1", "300"], start_new_session=True,
+        )
+        try:
+            (self.run_dir / "loop.pid").write_text(f"{proc.pid}\n")
+            self.assertEqual(proc.pid, runs._holder(self.run_dir))
+        finally:
+            proc.kill()
+            proc.wait()
 
 
 if __name__ == "__main__":

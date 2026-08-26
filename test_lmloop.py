@@ -16,6 +16,7 @@ import harness
 import lmloop
 import pi_runner
 import prompts
+import runrecord
 from loop import Run
 from rundir import RunDir
 
@@ -30,6 +31,28 @@ class ResumeStateTests(unittest.TestCase):
             {"harness": "omp", "tools": "read,edit,bash"},
             lmloop._read_run_state(run_dir),
         )
+
+
+class DiscoverRunsConsolidationTests(unittest.TestCase):
+    """`lmloop._discover_runs` now delegates to `runrecord.worktree_root`/
+    `.discover_runs`; pins its externally observable (name, path) tuple shape
+    and sort order across the delegation."""
+
+    def test_discovers_runs_under_a_configured_worktree_root(self):
+        repo = Path(tempfile.mkdtemp())
+        cfg = config._merge(config.DEFAULTS, {"worktree": {"root": "{repo}/custom/{run_id}"}})
+        for run_id in ("b-run", "a-run"):
+            (repo / "custom" / run_id / ".lmloop" / "runs" / run_id).mkdir(parents=True)
+        found = lmloop._discover_runs(repo, cfg)
+        self.assertEqual(
+            [("a-run", repo / "custom" / "a-run" / ".lmloop" / "runs" / "a-run"),
+             ("b-run", repo / "custom" / "b-run" / ".lmloop" / "runs" / "b-run")],
+            found,
+        )
+
+    def test_no_worktree_root_at_all_is_an_empty_list_not_an_error(self):
+        repo = Path(tempfile.mkdtemp())
+        self.assertEqual([], lmloop._discover_runs(repo, config.load(repo)))
 
 
 class RunPolicyTests(unittest.TestCase):
@@ -182,6 +205,359 @@ class RunPolicyTests(unittest.TestCase):
         self.assertIn("After three failed", narrow)
         self.assertIn("Do not build an ad-hoc proxy", narrow)
         self.assertNotIn("Do not start a second step", wide)
+
+
+class AbortReasonAndBudgetCharacterizationTests(unittest.TestCase):
+    """Pins `Run._abort_reason`/`._budget` before lm-ka5.2 extracts their pure
+    arithmetic into `policy.py`. `budget_follows_plan` defaults to True (see
+    config.py DEFAULTS), so `_budget` is live on every unconfigured run, but
+    had no direct test coverage before this.
+    """
+
+    def make_run(self, cfg=None):
+        root = Path(tempfile.mkdtemp())
+        run = Run(root, cfg or config.load(root), "objective", run_id="test-run")
+        run.rundir.path.mkdir(parents=True)
+        return run
+
+    # -- _abort_reason ------------------------------------------------------
+
+    def test_interrupted_takes_precedence_over_a_pending_stop_sentinel(self):
+        run = self.make_run()
+        run.interrupted = True
+        run.rundir.stop_path.write_text("")
+        self.assertEqual("interrupted", run._abort_reason(2, time.monotonic()))
+
+    def test_stop_now_sentinel_is_reported_and_wins_over_plain_stop(self):
+        run = self.make_run()
+        run.rundir.stop_path.write_text("")
+        run.rundir.stop_now_path.write_text("")
+        self.assertEqual("STOP-NOW sentinel present", run._abort_reason(2, time.monotonic()))
+
+    def test_plain_stop_sentinel_is_reported_alone(self):
+        run = self.make_run()
+        run.rundir.stop_path.write_text("")
+        self.assertEqual("STOP sentinel present", run._abort_reason(2, time.monotonic()))
+
+    def test_plan_complete_is_not_reported_at_iteration_one(self):
+        """A run's very first iteration cannot have completed a plan it wrote
+        during that same iteration -- checked so the guard cannot fire before
+        the agent has done anything."""
+        run = self.make_run()
+        run.rundir.plan_path.write_text("- [x] only step\n")
+        self.assertIsNone(run._abort_reason(1, time.monotonic()))
+
+    def test_plan_complete_is_reported_from_iteration_two_on(self):
+        run = self.make_run()
+        run.rundir.plan_path.write_text("- [x] one\n- [x] two\n")
+        self.assertEqual("plan complete (2/2)", run._abort_reason(2, time.monotonic()))
+
+    def test_max_iterations_reached_below_the_hard_ceiling(self):
+        run = self.make_run()
+        run.max_iterations = 5
+        run.iteration_ceiling = 20
+        self.assertEqual(
+            "max iterations reached (5)", run._abort_reason(6, time.monotonic()),
+        )
+
+    def test_turn_ceiling_hit_when_max_iterations_meets_the_ceiling(self):
+        run = self.make_run()
+        run.max_iterations = 20
+        run.iteration_ceiling = 20
+        self.assertEqual("turn ceiling hit", run._abort_reason(21, time.monotonic()))
+
+    def test_no_diff_streak_notes_plan_advance_since_run_start(self):
+        run = self.make_run()
+        limit = run.config["stop"]["no_diff_iterations"]
+        run.rundir.plan_path.write_text("- [x] one\n- [ ] two\n")
+        run._plan_at_start = 0
+        run.no_diff_streak = limit
+        reason = run._abort_reason(3, time.monotonic())
+        self.assertIn("no git-visible change", reason)
+        self.assertIn("plan advanced 0/2 -> 1/2", reason)
+
+    def test_no_diff_streak_notes_no_advance_when_plan_is_unmoved(self):
+        run = self.make_run()
+        limit = run.config["stop"]["no_diff_iterations"]
+        run.rundir.plan_path.write_text("- [x] one\n- [ ] two\n")
+        run._plan_at_start = 1
+        run.no_diff_streak = limit
+        reason = run._abort_reason(3, time.monotonic())
+        self.assertIn("plan still at 1/2", reason)
+
+    def test_no_diff_streak_with_no_plan_at_all_has_no_plan_context(self):
+        run = self.make_run()
+        limit = run.config["stop"]["no_diff_iterations"]
+        run.no_diff_streak = limit
+        reason = run._abort_reason(3, time.monotonic())
+        self.assertIn("no git-visible change", reason)
+        self.assertNotIn("plan", reason.split("(")[0])  # no parenthetical at all
+
+    # -- _budget --------------------------------------------------------
+
+    def test_budget_ignores_the_plan_when_not_configured_to_follow_it(self):
+        run = self.make_run(config._merge(
+            config.DEFAULTS, {"stop": {"budget_follows_plan": False, "initial_turns": 6}},
+        ))
+        run.rundir.plan_path.write_text("- [ ] a\n- [ ] b\n- [ ] c\n- [ ] d\n")
+        self.assertEqual(run.iteration_floor, run._budget(50))
+
+    def test_budget_with_no_plan_yet_extends_one_past_the_current_iteration(self):
+        run = self.make_run(config._merge(
+            config.DEFAULTS, {"stop": {"budget_follows_plan": True, "initial_turns": 3}},
+        ))
+        self.assertEqual(4, run._budget(3))
+
+    def test_budget_follows_plan_spends_progress_and_adds_slack(self):
+        cfg = config._merge(config.DEFAULTS, {
+            "stop": {
+                "budget_follows_plan": True, "initial_turns": 1,
+                "hard_turn_ceiling": 999, "retry_allowance": 5,
+            },
+        })
+        run = self.make_run(cfg)
+        run.rundir.plan_path.write_text(
+            "- [x] one\n- [x] two\n- [x] three\n- [ ] four\n- [ ] five\n"
+        )
+        # spent = iteration - 1 = 6; remaining = total - done = 2; +5 slack = 13
+        self.assertEqual(13, run._budget(7))
+
+    def test_budget_never_shrinks_below_the_floor(self):
+        cfg = config._merge(config.DEFAULTS, {
+            "stop": {"budget_follows_plan": True, "initial_turns": 10, "hard_turn_ceiling": 999},
+        })
+        run = self.make_run(cfg)
+        run.rundir.plan_path.write_text("- [x] one\n")
+        self.assertEqual(10, run._budget(2))
+
+    def test_budget_is_capped_at_the_hard_ceiling(self):
+        cfg = config._merge(config.DEFAULTS, {
+            "stop": {
+                "budget_follows_plan": True, "initial_turns": 1,
+                "hard_turn_ceiling": 8, "retry_allowance": 5,
+            },
+        })
+        run = self.make_run(cfg)
+        run.rundir.plan_path.write_text(
+            "- [x] one\n- [x] two\n- [x] three\n- [ ] four\n- [ ] five\n"
+        )
+        self.assertEqual(8, run._budget(7))
+
+
+class RunDirCharacterizationTests(unittest.TestCase):
+    """Pins the run-record reader contract before it gets a canonical home.
+
+    lm-ka5.4 centralizes `RunDir.holder` and `web.runs._holder` behind one
+    reader in `runrecord.py`. These tests are written against the pre-refactor
+    implementation and must still pass unchanged afterwards -- that is what
+    proves the consolidation did not change behaviour.
+    """
+
+    def make_rundir(self) -> RunDir:
+        root = Path(tempfile.mkdtemp())
+        rd = RunDir(root, "run")
+        rd.path.mkdir(parents=True)
+        return rd
+
+    def test_holder_with_no_pid_file_is_zero(self):
+        rd = self.make_rundir()
+        self.assertEqual(0, rd.holder())
+
+    def test_holder_never_reports_its_own_pid(self):
+        rd = self.make_rundir()
+        rd.pid_path.write_text(f"{os.getpid()}\n")
+        self.assertEqual(0, rd.holder())
+
+    def test_holder_ignores_garbage_content(self):
+        rd = self.make_rundir()
+        rd.pid_path.write_text("not-a-pid\n")
+        self.assertEqual(0, rd.holder())
+
+    def test_holder_is_zero_for_a_dead_pid(self):
+        rd = self.make_rundir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        rd.pid_path.write_text(f"{proc.pid}\n")
+        self.assertEqual(0, rd.holder())
+
+    def test_holder_is_zero_for_a_live_pid_that_is_not_lmloop(self):
+        rd = self.make_rundir()
+        proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        try:
+            rd.pid_path.write_text(f"{proc.pid}\n")
+            self.assertEqual(0, rd.holder())
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_holder_reports_a_live_pid_whose_cmdline_contains_lmloop(self):
+        rd = self.make_rundir()
+        proc = subprocess.Popen(
+            ["sleep", "--lmloop-tag=1", "300"], start_new_session=True,
+        )
+        try:
+            rd.pid_path.write_text(f"{proc.pid}\n")
+            self.assertEqual(proc.pid, rd.holder())
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_claim_then_release_clears_the_pid_file(self):
+        rd = self.make_rundir()
+        rd.claim()
+        self.assertEqual(f"{os.getpid()}\n", rd.pid_path.read_text())
+        rd.release()
+        self.assertFalse(rd.pid_path.exists())
+
+    def test_release_does_not_clear_another_process_claim(self):
+        rd = self.make_rundir()
+        rd.pid_path.write_text("999999999\n")
+        rd.release()
+        self.assertEqual("999999999\n", rd.pid_path.read_text())
+
+    def test_read_events_skips_unparseable_lines_and_tolerates_a_missing_log(self):
+        rd = self.make_rundir()
+        self.assertEqual([], rd.read_events())
+        rd.log_path.write_text('{"event": "run:start"}\nnot json\n{"event": "run:complete"}\n')
+        self.assertEqual(
+            ["run:start", "run:complete"],
+            [event["event"] for event in rd.read_events()],
+        )
+
+    def test_plan_progress_counts_checked_boxes_case_insensitively(self):
+        rd = self.make_rundir()
+        rd.plan_path.write_text("- [x] one\n- [X] two\n- [ ] three\nnot a step\n")
+        self.assertEqual((2, 3), rd.plan_progress())
+
+    def test_current_step_is_the_first_unchecked_line(self):
+        rd = self.make_rundir()
+        rd.plan_path.write_text("- [x] done\n- [ ] `next one`\n- [ ] later\n")
+        self.assertEqual("next one", rd.current_step())
+
+    def test_current_step_keeps_interior_backticks(self):
+        """Unlike `web.runs._current_step`, which strips every backtick for a
+        human-facing label, RunDir's own reading is fed back to the model
+        verbatim and only trims the ones bracketing the whole step."""
+        rd = self.make_rundir()
+        rd.plan_path.write_text("- [ ] `fix `foo.py` bug`\n")
+        self.assertEqual("fix `foo.py` bug", rd.current_step())
+
+    def test_plan_problems_flags_a_step_duplicated_across_check_state(self):
+        rd = self.make_rundir()
+        rd.plan_path.write_text("- [ ] fix the thing\n- [x] fix the thing\n")
+        problems = rd.plan_problems()
+        self.assertEqual(1, len(problems))
+        self.assertIn("plan.md:2", problems[0])
+
+    def test_control_sentinels_reflect_the_files_on_disk(self):
+        rd = self.make_rundir()
+        self.assertFalse(rd.stop_requested())
+        self.assertFalse(rd.stop_now_requested())
+        self.assertFalse(rd.paused())
+        rd.pause_path.write_text("")
+        self.assertTrue(rd.paused())
+        rd.stop_path.write_text("")
+        self.assertTrue(rd.stop_requested())
+        self.assertFalse(rd.stop_now_requested())
+        rd.stop_now_path.write_text("")
+        self.assertTrue(rd.stop_now_requested())
+
+    def test_schema_version_defaults_a_missing_status_file_to_zero(self):
+        rd = self.make_rundir()
+        self.assertEqual(0, runrecord.schema_version(rd.path))
+
+    def test_schema_version_reads_a_stamped_value(self):
+        """A run's own status.json settles this -- written directly here,
+        standing in for a run whose schema_version predates or postdates
+        whatever `runrecord.SCHEMA_VERSION` happens to be when this runs."""
+        rd = self.make_rundir()
+        rd.status_path.write_text(json.dumps({"phase": "working", "schema_version": 3}))
+        self.assertEqual(3, runrecord.schema_version(rd.path))
+
+    def test_write_status_stamps_the_current_schema_version(self):
+        """Every write through `RunDir.write_status` -- the one choke point
+        every status.json write passes through -- declares which version of
+        the contract it was written under, so a future incompatible change
+        has something to check against for a run written before it landed."""
+        rd = self.make_rundir()
+        rd.write_status({"phase": "working"})
+        self.assertEqual(runrecord.SCHEMA_VERSION, runrecord.schema_version(rd.path))
+        self.assertGreater(runrecord.SCHEMA_VERSION, 0)
+        # A caller cannot override it by passing its own value: the writer's
+        # version is a fact about the writer, never a per-call decision.
+        rd.write_status({"phase": "working", "schema_version": 999})
+        self.assertEqual(runrecord.SCHEMA_VERSION, runrecord.schema_version(rd.path))
+
+    def test_status_age_matches_the_canonical_reader(self):
+        """lmloop.py's `_status_age` must delegate to `runrecord.age_seconds`."""
+        from datetime import datetime, timedelta, timezone
+
+        stamp = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+        state = {"updated_at": stamp}
+        age = lmloop._status_age(state)
+        self.assertAlmostEqual(90, age, delta=2)
+        self.assertAlmostEqual(runrecord.age_seconds(stamp), age, delta=0.01)
+        self.assertIsNone(lmloop._status_age({}))
+        self.assertIsNone(runrecord.age_seconds(None))
+
+    def test_stale_after_seconds_is_a_single_shared_constant(self):
+        import web.runs as web_runs
+
+        self.assertEqual(120, runrecord.STALE_AFTER_SECONDS)
+        self.assertEqual(runrecord.STALE_AFTER_SECONDS, lmloop.STALE_AFTER_SECONDS)
+        self.assertEqual(runrecord.STALE_AFTER_SECONDS, web_runs.STALE_AFTER_SECONDS)
+
+
+class RunStartMetadataTests(unittest.TestCase):
+    """The `run:start` event is the one place a run records where it lives.
+
+    web/server.py's archive, delete, and PR actions used to reconstruct the
+    worktree path (`run_dir.parents[2]`) and the branch name
+    (`f"lmloop/{run_dir.name}"`) instead of reading what the run itself wrote,
+    which is wrong for any project with a configured `[worktree] root` or
+    `[worktree] branch` template. These tests pin that `prepare()` and
+    `attach()` persist `repoPath`, `worktreePath`, and `branch` so a reader
+    never has to guess.
+    """
+
+    def make_repo(self) -> Path:
+        root = Path(tempfile.mkdtemp())
+        for args in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.email", "t@example.com"],
+            ["git", "config", "user.name", "t"],
+        ):
+            subprocess.run(args, cwd=root, check=True)
+        (root / "README").write_text("x\n")
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
+        return root
+
+    def test_prepare_persists_repo_worktree_and_branch(self):
+        repo = self.make_repo()
+        run = Run(repo, config.load(repo), "objective", run_id="test-run")
+        run.prepare()
+        start = next(
+            event for event in run.rundir.read_events() if event["event"] == "run:start"
+        )
+        self.assertEqual(str(repo), start["repoPath"])
+        self.assertEqual(str(run.worktree), start["worktreePath"])
+        self.assertEqual(run.branch, start["branch"])
+
+    def test_attach_persists_repo_worktree_and_branch(self):
+        repo = self.make_repo()
+        run = Run(repo, config.load(repo), "objective", run_id="test-run")
+        run.prepare()
+        run.rundir.release()
+
+        resumed = Run(repo, config.load(repo), "", run_id="test-run")
+        resumed.attach(1)
+        starts = [
+            event for event in resumed.rundir.read_events() if event["event"] == "run:start"
+        ]
+        self.assertEqual(str(repo), starts[-1]["repoPath"])
+        self.assertEqual(str(resumed.worktree), starts[-1]["worktreePath"])
+        self.assertEqual(resumed.branch, starts[-1]["branch"])
 
 
 class OmpHarnessTests(unittest.TestCase):

@@ -27,13 +27,26 @@ from loop import Run
 from rundir import RunDir
 
 
-# A process that stays alive *and* carries "lmloop" in its /proc cmdline, for
-# the one holder case that asserts a live loop is reported.  It used to be
-# `sleep --lmloop-tag=1 300`, which GNU sleep rejects outright as an
-# unrecognized option: the child was dead before the assertion ran, and the
-# test passed only by beating it to /proc.  A zombie's cmdline reads empty, so
-# `holder` saw no "lmloop", returned 0, and the suite failed intermittently.
-LMLOOP_LOOKALIKE = [sys.executable, "-c", "import time  # lmloop\ntime.sleep(300)"]
+# A process that really is an lmloop program, for the holder case that asserts a
+# live loop is reported.  A real one is `python3 /path/to/lmloop.py run ...`, so
+# a file of that name is what makes this a positive rather than a lookalike --
+# see `runrecord.is_lmloop_cmdline`, which matches the program and not the
+# substring.
+def spawn_fake_loop():
+    directory = Path(tempfile.mkdtemp())
+    script = directory / "lmloop.py"
+    script.write_text("import time\ntime.sleep(300)\n")
+    return subprocess.Popen([sys.executable, str(script)], start_new_session=True)
+
+
+# The other half of lm-j44: a process that merely *mentions* lmloop, which used
+# to be reported as the run's holder.  A `tail -f` on a run's log, an editor on
+# a source file, a monitoring shell -- all of them said yes.
+def spawn_mere_mention():
+    return subprocess.Popen(
+        [sys.executable, "-c", "import time  # lmloop\ntime.sleep(300)"],
+        start_new_session=True,
+    )
 
 
 class ResumeStateTests(unittest.TestCase):
@@ -465,12 +478,25 @@ class RunDirCharacterizationTests(unittest.TestCase):
             proc.kill()
             proc.wait()
 
-    def test_holder_reports_a_live_pid_whose_cmdline_contains_lmloop(self):
+    def test_holder_reports_a_live_pid_running_lmloop(self):
         rd = self.make_rundir()
-        proc = subprocess.Popen(LMLOOP_LOOKALIKE, start_new_session=True)
+        proc = spawn_fake_loop()
         try:
             rd.pid_path.write_text(f"{proc.pid}\n")
             self.assertEqual(proc.pid, rd.holder())
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_holder_ignores_a_process_that_merely_mentions_lmloop(self):
+        """lm-j44.  A monitoring shell whose script referenced run directories
+        was reported as the holder of an unrelated run, which keeps a dead run
+        reading as running instead of stale."""
+        rd = self.make_rundir()
+        proc = spawn_mere_mention()
+        try:
+            rd.pid_path.write_text(f"{proc.pid}\n")
+            self.assertEqual(0, rd.holder())
         finally:
             proc.kill()
             proc.wait()
@@ -2189,6 +2215,52 @@ class DiffShortstatTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True,
                        capture_output=True)
         gitops.diff_shortstat(repo, "HEAD")   # must not raise
+
+
+class LmloopCmdlineTests(unittest.TestCase):
+    """Which `/proc/<pid>/cmdline` belongs to a loop, per lm-j44.
+
+    It used to be `b"lmloop" in cmdline`, which said yes to anything that
+    merely mentioned it.  Matched as a program name now, against every shape
+    the loop is actually started in -- including the two that carry no run id,
+    which is why matching the run id was the wrong fix.
+    """
+
+    def test_a_clone_invocation_is_a_loop(self):
+        self.assertTrue(runrecord.is_lmloop_cmdline(
+            b"python3\x00/home/you/git/lmloop/lmloop.py\x00run\x00an objective\x00"))
+
+    def test_an_installed_invocation_is_a_loop(self):
+        self.assertTrue(runrecord.is_lmloop_cmdline(
+            b"/home/you/.local/bin/lmloop\x00run\x00an objective\x00"))
+
+    def test_the_dashboard_is_a_loop_process_too(self):
+        self.assertTrue(runrecord.is_lmloop_cmdline(b"/home/you/.local/bin/lmloop-web\x00"))
+
+    def test_resume_is_recognised(self):
+        self.assertTrue(runrecord.is_lmloop_cmdline(
+            b"python3\x00/opt/lmloop/lmloop.py\x00resume\x002026-01-01-thing-abc\x00"))
+
+    def test_a_tail_on_a_path_containing_lmloop_is_not(self):
+        self.assertFalse(runrecord.is_lmloop_cmdline(
+            b"tail\x00-f\x00/home/you/git/lmloop/.lmloop/runs/x/lmloop.log\x00"))
+
+    def test_a_monitoring_shell_is_not(self):
+        """The one the bug was observed with."""
+        self.assertFalse(runrecord.is_lmloop_cmdline(
+            b"bash\x00-c\x00watch -n5 cat /home/you/git/lmloop/runs/x/status.json\x00"))
+
+    def test_a_flag_that_mentions_it_is_not(self):
+        self.assertFalse(runrecord.is_lmloop_cmdline(b"sleep\x00--lmloop-tag=1\x00300\x00"))
+
+    def test_an_empty_cmdline_is_not(self):
+        """A zombie reads empty, and a zombie holds nothing."""
+        self.assertFalse(runrecord.is_lmloop_cmdline(b""))
+        self.assertFalse(runrecord.is_lmloop_cmdline(b"\x00\x00"))
+
+    def test_a_name_that_merely_starts_the_same_is_not(self):
+        self.assertFalse(runrecord.is_lmloop_cmdline(b"/usr/bin/lmloopy\x00run\x00"))
+        self.assertFalse(runrecord.is_lmloop_cmdline(b"/usr/bin/notlmloop\x00"))
 
 
 if __name__ == "__main__":

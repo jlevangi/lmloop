@@ -13,13 +13,26 @@ from web import runs
 from web.server import Handler
 
 
-# A process that stays alive *and* carries "lmloop" in its /proc cmdline, for
-# the one holder case that asserts a live loop is reported.  It used to be
-# `sleep --lmloop-tag=1 300`, which GNU sleep rejects outright as an
-# unrecognized option: the child was dead before the assertion ran, and the
-# test passed only by beating it to /proc.  A zombie's cmdline reads empty, so
-# `holder` saw no "lmloop", returned 0, and the suite failed intermittently.
-LMLOOP_LOOKALIKE = [sys.executable, "-c", "import time  # lmloop\ntime.sleep(300)"]
+# A process that really is an lmloop program, for the holder case that asserts a
+# live loop is reported.  A real one is `python3 /path/to/lmloop.py run ...`, so
+# a file of that name is what makes this a positive rather than a lookalike --
+# see `runrecord.is_lmloop_cmdline`, which matches the program and not the
+# substring.
+def spawn_fake_loop():
+    directory = Path(tempfile.mkdtemp())
+    script = directory / "lmloop.py"
+    script.write_text("import time\ntime.sleep(300)\n")
+    return subprocess.Popen([sys.executable, str(script)], start_new_session=True)
+
+
+# The other half of lm-j44: a process that merely *mentions* lmloop, which used
+# to be reported as the run's holder.  A `tail -f` on a run's log, an editor on
+# a source file, a monitoring shell -- all of them said yes.
+def spawn_mere_mention():
+    return subprocess.Popen(
+        [sys.executable, "-c", "import time  # lmloop\ntime.sleep(300)"],
+        start_new_session=True,
+    )
 
 
 class NestedPilotDiscoveryTests(unittest.TestCase):
@@ -424,11 +437,23 @@ class HolderCharacterizationTests(unittest.TestCase):
             proc.kill()
             proc.wait()
 
-    def test_live_pid_with_lmloop_in_cmdline_is_reported(self):
-        proc = subprocess.Popen(LMLOOP_LOOKALIKE, start_new_session=True)
+    def test_a_live_pid_running_lmloop_is_reported(self):
+        proc = spawn_fake_loop()
         try:
             (self.run_dir / "loop.pid").write_text(f"{proc.pid}\n")
             self.assertEqual(proc.pid, runs._holder(self.run_dir))
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_a_process_that_merely_mentions_lmloop_is_not_the_holder(self):
+        """lm-j44.  Errs safe for archiving -- a false holder refuses to remove
+        a worktree -- but not for `_state`, where it keeps a dead run showing
+        as running or paused instead of stale."""
+        proc = spawn_mere_mention()
+        try:
+            (self.run_dir / "loop.pid").write_text(f"{proc.pid}\n")
+            self.assertEqual(0, runs._holder(self.run_dir))
         finally:
             proc.kill()
             proc.wait()

@@ -135,7 +135,39 @@ def holder(run_dir: Path) -> int:
         cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return 0  # gone, or a platform without /proc: do not block on it
-    return pid if b"lmloop" in cmdline else 0
+    return pid if is_lmloop_cmdline(cmdline) else 0
+
+
+# What the loop is actually called, however it was started:
+#
+#     python3 /home/you/git/lmloop/lmloop.py run "..."     from a clone
+#     /home/you/.local/bin/lmloop run "..."                installed
+#     /home/you/.local/bin/lmloop-web                      the dashboard
+#
+# Matched as a program name rather than as a substring.  `b"lmloop" in cmdline`
+# said yes to anything that merely *mentioned* it -- a `tail -f` on a path with
+# `lmloop` in it, an editor open on a source file, a monitoring shell whose
+# script referenced run directories.  That errs safe for archiving, where a
+# false holder refuses to remove a worktree, and unsafe for `_state`, where it
+# keeps a dead run reading as running instead of stale -- which is the exact
+# condition the stale check exists to catch.
+#
+# Deliberately NOT matched against the run id, which was the first idea: the id
+# is derived from the objective *after* launch, so the ordinary
+# `lmloop run "objective"` carries no id in its argv at all and would stop
+# being recognised as its own run's holder.  Only `resume` and `--detach`'s
+# child name one.
+_PROGRAM_NAMES = frozenset({b"lmloop", b"lmloop.py", b"lmloop-web"})
+
+
+def is_lmloop_cmdline(cmdline: bytes) -> bool:
+    """Does this `/proc/<pid>/cmdline` belong to an lmloop process?"""
+    for argument in cmdline.split(b"\0"):
+        if not argument:
+            continue
+        if argument.rsplit(b"/", 1)[-1] in _PROGRAM_NAMES:
+            return True
+    return False
 
 
 def age_seconds(stamp: str | None) -> float | None:

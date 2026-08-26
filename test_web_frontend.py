@@ -255,6 +255,48 @@ class ContextPressureTests(unittest.TestCase):
         self.assertIn("row.pressure", APP)
 
 
+def thinking_levels():
+    """Every thinking level `lmloop run --thinking` names, from its own help.
+
+    The only place the list is written down.  `config` takes the value as an
+    opaque string and each agent decides what it accepts, so there is no
+    constant to read -- which is exactly why the sheet was able to fall two
+    behind without anything saying so.
+    """
+    found = re.findall(r'help="thinking level: ([^"]+)"',
+                       (ROOT / "lmloop.py").read_text())
+    assert found, "the --thinking help moved or was reworded"
+    return [{level.strip() for level in line.split(",")} for line in found]
+
+
+class ThinkingVocabularyTests(unittest.TestCase):
+    """The new-run sheet offered five of the seven levels the CLI documents.
+
+    `xhigh` and `max` were missing, so a run started from the dashboard could
+    not reach a level a run started from a terminal could -- on a catalogue
+    where 21 models advertise `xhigh` and 14 advertise `max`.
+    """
+
+    def test_the_cli_names_the_levels_this_test_thinks_it_does(self):
+        """A guard on the guard: finding none would pass everything."""
+        levels = thinking_levels()
+        self.assertGreaterEqual(len(levels), 2, "run and resume both take it")
+        self.assertIn("xhigh", levels[0])
+
+    def test_run_and_resume_agree_about_them(self):
+        first, *rest = thinking_levels()
+        for other in rest:
+            self.assertEqual(first, other)
+
+    def test_the_sheet_offers_every_one_of_them(self):
+        offered = set(re.findall(r'<option value="([a-z]*)"', HTML))
+        missing = thinking_levels()[0] - offered
+        self.assertEqual(set(), missing,
+                         f"levels the dashboard cannot reach: {sorted(missing)}")
+        # "" is the sheet's own: it means "send no --thinking at all".
+        self.assertIn("", offered)
+
+
 class RunFieldContractTests(unittest.TestCase):
     """Every `run.<field>` the dashboard reads is one the API really serves.
 

@@ -1,8 +1,9 @@
 # lmloop — notes for agents working on this repo
 
 A loop that hands one objective to a local model, works on it for hours in a git
-worktree, and commits what it actually did. ~2,600 lines, Python 3.11+, standard
-library only, no build step.
+worktree, and commits what it actually did. ~9,600 lines of Python and ~2,200
+of frontend, plus ~6,800 of tests. Python 3.11+, standard library only, no
+build step.
 
 **Read `docs/design.md` before changing behaviour.** Most of what looks arbitrary
 in this codebase is load-bearing and was paid for with a failed run.

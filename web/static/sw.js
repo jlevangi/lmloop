@@ -12,7 +12,7 @@
  * which cached an app shell AND intercepted fetches) gets evicted from phones
  * that still have it installed.
  */
-const SHELL = "lmloop-shell-v4";
+const SHELL = "lmloop-shell-v5";
 const ASSETS = [
   "/",
   "/static/app.js",

@@ -1,4 +1,6 @@
+import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,9 +22,38 @@ class PwaResumeRecoveryTests(unittest.TestCase):
         self.assertIn('window.addEventListener("online", resumePolling)', app)
         self.assertIn('void poll().finally(schedule)', app)
 
-    def test_shell_version_was_bumped_for_new_client_logic(self):
+    # The shell as it stands, and the version it is cached under.  `sw.js`
+    # serves the shell from cache and refreshes it in the background, so an
+    # installed PWA shows the *previous* build for one more launch unless
+    # `SHELL` changes -- and `sw.js` says so in its own header.
+    #
+    # Pinning the version alone, which is what this test used to do, cannot
+    # notice: it fails when somebody bumps the number and passes when they
+    # change the shell and forget.  A digest of the shell itself fails on
+    # exactly the case that matters.  It caught its first one immediately --
+    # three shell files changed in this session's own work with no bump.
+    SHELL_VERSION = "lmloop-shell-v5"
+    SHELL_DIGEST = "fcb141e5966776107bf67924dc585e0ab2eec149c6b7a6c95373b7379ed27212"
+
+    def test_the_shell_version_covers_the_shell_as_it_stands(self):
+        static = Path(__file__).parent / "web" / "static"
+        worker = (static / "sw.js").read_text()
+        self.assertIn(f'const SHELL = "{self.SHELL_VERSION}"', worker)
+        digest = hashlib.sha256()
+        for name in ("index.html", "app.js", "style.css"):
+            digest.update((static / name).read_bytes())
+        self.assertEqual(
+            self.SHELL_DIGEST, digest.hexdigest(),
+            "the cached shell changed: bump SHELL in web/static/sw.js and record "
+            "the new digest here, or an installed PWA serves the old build",
+        )
+
+    def test_every_asset_the_worker_precaches_is_one_this_test_covers(self):
+        """A guard on the guard: a fourth shell file would be uncovered."""
         worker = (Path(__file__).parent / "web" / "static" / "sw.js").read_text()
-        self.assertIn('const SHELL = "lmloop-shell-v4"', worker)
+        listed = set(re.findall(r'"(/[^"]*)"', worker.split("const ASSETS = [")[1].split("]")[0]))
+        self.assertEqual({"/", "/static/app.js", "/static/style.css",
+                          "/static/icon-192.png", "/manifest.json"}, listed)
 from web.server import Handler
 
 

@@ -8,11 +8,16 @@ plain values before calling in here, the same "inject collaborators" shape
 makes a stop decision testable without a worktree, a harness, or an hour of
 wall-clock time actually passing.
 
-`Run._abort_reason` and `Run._budget` keep their exact original call
-signatures (`(iteration, started)` and `(iteration)`), gather `self.*` into
-these functions, and return exactly what they return -- see their docstrings
-in `loop.py` for the reasoning behind each rule; this module is where the
-arithmetic that reasoning produced actually lives.
+`Run._abort_reason`, `Run._budget`, `Run._transport_failure`, and the delay
+half of `Run._backoff` keep their exact original call signatures, gather
+`self.*` into these functions, and return exactly what they returned before
+-- see their docstrings in `loop.py` for the reasoning behind each rule; this
+module is where the arithmetic and classification that reasoning produced
+actually lives. `Run._backoff` itself stays in `loop.py`: it owns
+`self._errors` across calls and makes a real network check
+(`_server_is_up`) and a real sleep, neither of which belongs in a pure
+function -- only "given this many consecutive failures, how long or give
+up" moved here.
 """
 
 from __future__ import annotations
@@ -132,3 +137,75 @@ def abort_reason(
             reason += f" (plan still at {plan_done}/{plan_total})"
         return reason
     return None
+
+
+# What the agent says when the model server went away underneath it, rather
+# than when the model did something wrong.  pi retries these itself a few
+# times; these are the ones that outlast its retries, which means the server
+# was gone for minutes -- a restart, a reload, a swap -- not a blip.
+TRANSPORT = (
+    "stream ended without finish_reason",
+    "connection refused",
+    "connection reset",
+    "connection error",
+    "remote end closed",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    # What pi actually reports when llama-swap stops answering mid-stream.
+    # Observed: the server was shut down 23 minutes into an iteration and
+    # the agent surfaced "Request timed out." -- which matched none of the
+    # phrases above, so the loop recorded a genuine agent-error and charged
+    # the run an iteration for a machine that was switched off.
+    #
+    # Safe as a bare phrase because of what it is tested against: lmloop's
+    # own clocks produce the outcomes `timeout` and `stalled`, never
+    # `agent-error`, so a timeout reported *inside* an agent-error is the
+    # agent timing out on the model -- which is the transport, by
+    # definition.
+    "timed out",
+    # llama-swap attaches this to a temporarily poisoned upstream after a
+    # context overflow.  The observed failure said reset after 30s, then
+    # returned the same stale token-count error with a shrinking
+    # retry-after-ms on six fresh two-message requests.  Treating each as a
+    # model failure burned six iterations in 26 seconds.  This marker means
+    # exactly what the transport asks us to do: back off and retry.
+    "retry-after-ms=",
+    "no route to host",
+    "name or service not known",
+)
+
+
+def transport_failure(outcome: str, commit: str | None, detail: str | None) -> str:
+    """The detail, if this iteration died of the server rather than itself.
+
+    An iteration that ends this way has produced nothing and learned
+    nothing, and charging it against `max_iterations` spends one of a very
+    small number on an event that had nothing to do with the work.
+
+    Only when it left no commit.  If the agent got far enough to change
+    files, the iteration is worth keeping whatever killed it, and redoing it
+    would mean redoing work that is already in git.
+    """
+    if outcome != "agent-error" or commit:
+        return ""
+    lowered = (detail or "").lower()
+    return detail if any(marker in lowered for marker in TRANSPORT) else ""
+
+
+def backoff_delay(error_count: int) -> int | None:
+    """Seconds to wait before retrying after a server-side failure that was
+    not "the server is not there" (that case waits indefinitely instead --
+    see `Run._wait_for_server`), or None to give up.
+
+    `error_count` is the number of consecutive such failures including this
+    one -- `Run._backoff` increments `self._errors` before calling this, and
+    resets it to 0 when the server is confirmed back, so three separate
+    outages across one run never combine into a false give-up.
+
+    1m, 2m, 4m, then give up: a bad build or a model stuck failing every
+    request is not worth six hours against, unlike a genuinely absent server.
+    """
+    if error_count > 3:
+        return None
+    return 60 * 2 ** (error_count - 1)

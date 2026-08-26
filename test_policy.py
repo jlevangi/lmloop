@@ -101,5 +101,37 @@ class CountsAsNoProgressTests(unittest.TestCase):
         self.assertFalse(policy.counts_as_no_progress("ok", None, True))
 
 
+class TransportFailureTests(unittest.TestCase):
+    def test_a_matching_agent_error_with_no_commit_is_transport(self):
+        self.assertEqual(
+            "connection reset",
+            policy.transport_failure("agent-error", None, "connection reset"),
+        )
+
+    def test_case_insensitive_matching(self):
+        self.assertEqual(
+            "Bad Gateway", policy.transport_failure("agent-error", None, "Bad Gateway"),
+        )
+
+    def test_a_non_agent_error_outcome_is_never_transport(self):
+        self.assertEqual("", policy.transport_failure("timeout", None, "connection reset"))
+
+    def test_a_commit_means_the_work_is_kept_not_retried(self):
+        self.assertEqual("", policy.transport_failure("agent-error", "abc123", "connection reset"))
+
+    def test_a_genuine_model_failure_has_no_transport_marker(self):
+        self.assertEqual(
+            "", policy.transport_failure("agent-error", None, "request exceeds the available context size"),
+        )
+
+
+class BackoffDelayTests(unittest.TestCase):
+    def test_delay_doubles_each_time_then_gives_up_after_three(self):
+        self.assertEqual(60, policy.backoff_delay(1))
+        self.assertEqual(120, policy.backoff_delay(2))
+        self.assertEqual(240, policy.backoff_delay(3))
+        self.assertIsNone(policy.backoff_delay(4))
+
+
 if __name__ == "__main__":
     unittest.main()

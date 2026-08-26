@@ -1185,59 +1185,13 @@ class Run:
         # iteration wrote is gated, checked and committed on the way out.
         self.screen.log("  stop requested; ending this iteration now and committing what it has")
 
-    # What the agent says when the model server went away underneath it, rather
-    # than when the model did something wrong.  pi retries these itself a few
-    # times; these are the ones that outlast its retries, which means the server
-    # was gone for minutes -- a restart, a reload, a swap -- not a blip.
-    TRANSPORT = (
-        "stream ended without finish_reason",
-        "connection refused",
-        "connection reset",
-        "connection error",
-        "remote end closed",
-        "bad gateway",
-        "service unavailable",
-        "gateway timeout",
-        # What pi actually reports when llama-swap stops answering mid-stream.
-        # Observed: the server was shut down 23 minutes into an iteration and
-        # the agent surfaced "Request timed out." -- which matched none of the
-        # phrases above, so the loop recorded a genuine agent-error and charged
-        # the run an iteration for a machine that was switched off.
-        #
-        # Safe as a bare phrase because of what it is tested against: lmloop's
-        # own clocks produce the outcomes `timeout` and `stalled`, never
-        # `agent-error`, so a timeout reported *inside* an agent-error is the
-        # agent timing out on the model -- which is the transport, by
-        # definition.
-        "timed out",
-        # llama-swap attaches this to a temporarily poisoned upstream after a
-        # context overflow.  The observed failure said reset after 30s, then
-        # returned the same stale token-count error with a shrinking
-        # retry-after-ms on six fresh two-message requests.  Treating each as a
-        # model failure burned six iterations in 26 seconds.  This marker means
-        # exactly what the transport asks us to do: back off and retry.
-        "retry-after-ms=",
-        "no route to host",
-        "name or service not known",
-    )
-
     def _transport_failure(self) -> str:
-        """The detail, if this iteration died of the server rather than itself.
-
-        An iteration that ends this way has produced nothing and learned
-        nothing, and charging it against `max_iterations` spends one of a very
-        small number on an event that had nothing to do with the work.  Observed
-        here: fifty minutes of generation ended by a llama-server being swapped
-        for a faster build mid-stream.
-
-        Only when it left no commit.  If the agent got far enough to change
-        files, the iteration is worth keeping whatever killed it, and redoing it
-        would mean redoing work that is already in git.
+        """The detail, if this iteration died of the server rather than itself
+        -- see `policy.transport_failure`.  Observed here: fifty minutes of
+        generation ended by a llama-server being swapped for a faster build
+        mid-stream.
         """
-        if self.last_outcome != "agent-error" or self.last_commit:
-            return ""
-        detail = (self.last_detail or "").lower()
-        return self.last_detail if any(t in detail for t in self.TRANSPORT) else ""
+        return policy.transport_failure(self.last_outcome, self.last_commit, self.last_detail)
 
     def _server_is_up(self) -> bool:
         """Does llama-swap answer at all?  Free, and never triggers a swap."""
@@ -1315,9 +1269,9 @@ class Run:
         if not hasattr(self, "_errors"):
             self._errors = 0
         self._errors += 1
-        if self._errors > 3:
+        delay = policy.backoff_delay(self._errors)
+        if delay is None:
             return False
-        delay = 60 * 2 ** (self._errors - 1)
         self.rundir.event("backoff:start", iteration=iteration, seconds=delay, detail=detail)
         self.screen.log(f"    {detail}; retrying in {delay // 60}m")
         return self._sleep_interruptibly(delay)

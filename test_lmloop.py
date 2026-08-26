@@ -344,6 +344,62 @@ class AbortReasonAndBudgetCharacterizationTests(unittest.TestCase):
         self.assertEqual(8, run._budget(7))
 
 
+class BackoffCharacterizationTests(unittest.TestCase):
+    """Pins `Run._backoff`'s delay schedule and give-up threshold before
+    lm-ka5.2 extracts the pure "how long, or give up" decision into
+    `policy.backoff_delay`. No prior test touched this at all: `_errors` and
+    its 1m/2m/4m/give-up progression were only ever exercised live, against
+    a real llama-swap outage.
+
+    `_server_is_up` and `_sleep_interruptibly` are mocked so no real network
+    call or sleep happens; `_backoff` only reaches the delay/give-up branch
+    at all when the server answers, so `_server_is_up` is held True
+    throughout -- a down server takes the separate `_wait_for_server` path,
+    not this one.
+    """
+
+    def make_run(self):
+        root = Path(tempfile.mkdtemp())
+        run = Run(root, config.load(root), "objective", run_id="test-run")
+        run.rundir.path.mkdir(parents=True)
+        return run
+
+    def test_delay_doubles_each_consecutive_failure_then_gives_up(self):
+        run = self.make_run()
+        with mock.patch.object(run, "_server_is_up", return_value=True), \
+             mock.patch.object(run, "_sleep_interruptibly", return_value=True) as sleep:
+            self.assertTrue(run._backoff(1, "boom"))
+            self.assertEqual(60, sleep.call_args.args[0])
+            self.assertTrue(run._backoff(1, "boom"))
+            self.assertEqual(120, sleep.call_args.args[0])
+            self.assertTrue(run._backoff(1, "boom"))
+            self.assertEqual(240, sleep.call_args.args[0])
+            # The fourth consecutive failure gives up rather than backing off
+            # a fourth time.
+            self.assertFalse(run._backoff(1, "boom"))
+
+    def test_a_recovered_server_resets_the_error_count(self):
+        """`_wait_for_server`'s `self._errors = 0` on recovery means a run
+        that survives several separate outages never trips the give-up
+        threshold on their combined count."""
+        run = self.make_run()
+        with mock.patch.object(run, "_server_is_up", return_value=True), \
+             mock.patch.object(run, "_sleep_interruptibly", return_value=True) as sleep:
+            run._backoff(1, "boom")
+            run._backoff(1, "boom")
+            run._backoff(1, "boom")
+            run._errors = 0  # what a recovered server does mid-run
+            self.assertTrue(run._backoff(1, "boom"))
+            self.assertEqual(60, sleep.call_args.args[0])
+
+    def test_an_unreachable_server_waits_instead_of_backing_off(self):
+        run = self.make_run()
+        with mock.patch.object(run, "_server_is_up", return_value=False), \
+             mock.patch.object(run, "_wait_for_server", return_value=True) as wait:
+            self.assertTrue(run._backoff(3, "server down"))
+            wait.assert_called_once_with(3, "server down")
+
+
 class RunDirCharacterizationTests(unittest.TestCase):
     """Pins the run-record reader contract before it gets a canonical home.
 

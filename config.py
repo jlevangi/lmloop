@@ -4,12 +4,34 @@ The predecessor reads one global config and nothing else, which is why its dashb
 rewrite ``~/.predecessor/config.yml`` in place just to choose a model for a run.  A
 project-local file removes that whole class of hack: per-repo gate commands and
 worktree placement live with the repo they describe.
+
+## Why TOML and not YAML
+
+Asked for as `config.yaml`, and answered no, deliberately.  Python's standard
+library reads TOML (`tomllib`, 3.11+) and does not read YAML.  The ways out were:
+add PyYAML as a dependency, keep TOML, or accept YAML only when PyYAML happens
+to be installed.
+
+TOML, because the alternatives cost more than the syntax is worth.  A dependency
+would end "standard library only, no build step", which is what lets this be
+installed by cloning it and is why a run can start on a machine that has nothing
+but Python.  Optional YAML is worse than either: the same file would be read on
+one machine and rejected on another, and the failure would arrive as a config
+that silently does not exist.  Hand-writing a parser is not on the table -- YAML
+has enough edges that a partial one is a liability, and this file would own it
+forever.
+
+The gap is small for ten sections of scalars, and TOML's `[section]` maps
+exactly onto the shape below.  Worth revisiting if lmloop ever grows a
+dependency for another reason; not worth acquiring one for this.
 """
 
 from __future__ import annotations
 
 import difflib
+import os
 import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -32,7 +54,12 @@ DEFAULTS: dict = {
         # a fork with its own binary and its own browser, task and LSP tools --
         # and it is never selected implicitly.
         "harness": "pi",
-        "model": "llama-swap/local-fast",
+        # No default, on purpose.  This shipped as `llama-swap/local-fast`, one
+        # person's model name on one person's server -- it does not exist even
+        # on the machine it was written for any more, so the default could only
+        # fail, and it failed *late*: after a worktree, a branch, a prompt and a
+        # preflight.  Empty fails immediately, saying what to set.
+        "model": "",
         # Every extension in ~/.pi/agent/settings.json adds tool definitions,
         # and those escape whatever budget a harness compacts to.  On a 57344
         # declared window this allowlist is the cheapest lever that works.
@@ -341,6 +368,72 @@ def _suggest(name: str, known) -> str:
     return f"; did you mean `{close[0]}`?" if close else ""
 
 
+def secret(value: str) -> str:
+    """Resolve a secret a config points at rather than contains.
+
+    A config file gets copied into a repo, pasted into an issue, and read by the
+    agent the loop is driving -- an agent whose whole job is reading files and
+    which will happily quote one back.  So a credential belongs somewhere else,
+    and this is how a config says where:
+
+        token = "env:NTFY_TOKEN"          from the environment
+        token = "file:~/.config/ntfy"     from a file
+        token = "!pass show ntfy"         from a command's output
+        token = "hunter2"                 literally, still allowed
+
+    The `!command` spelling is omp's, already in use in `~/.omp/agent/models.yml`
+    for exactly this; matching it means one convention rather than two.
+
+    A reference that cannot be resolved comes back empty rather than raising: an
+    unreachable notification token should cost one line at the end of a run,
+    which is what `_announce` already does with a failure, not the run itself.
+    Never returns the reference as though it were the value -- sending the
+    literal `env:NTFY_TOKEN` as a bearer token would look like an auth failure
+    from a server nobody can see.
+    """
+    if not isinstance(value, str) or not value:
+        return ""
+    if value.startswith("env:"):
+        return os.environ.get(value[4:].strip(), "")
+    if value.startswith("file:"):
+        try:
+            return Path(value[5:].strip()).expanduser().read_text().strip()
+        except OSError:
+            return ""
+    if value.startswith("!"):
+        try:
+            done = subprocess.run(
+                value[1:].strip(), shell=True, capture_output=True,
+                text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return done.stdout.strip() if done.returncode == 0 else ""
+    return value
+
+
+def require_model(config: dict) -> None:
+    """Refuse to start a run with no model, before anything is built.
+
+    Separate from `override_agent`, which settles the *allowlist* and is called
+    from places that have no business caring what model is set.  Called where a
+    run actually begins, so this lands before a worktree, a branch, a prompt and
+    a preflight rather than after them.
+    """
+    if config["agent"].get("model"):
+        return
+    agent_name = config["agent"].get("harness", "pi")
+    raise SystemExit(
+        "lmloop: no model set.  Put one in .lmloop.toml:\n"
+        "\n"
+        "  [agent]\n"
+        '  model = "<provider>/<name>"\n'
+        "\n"
+        f"  `lmloop models` lists what {agent_name} can reach; "
+        "--model overrides it for one run."
+    )
+
+
 def validate(raw: dict, source: Path) -> list[str]:
     """Everything wrong with one config file, as lines somebody can act on.
 
@@ -459,7 +552,10 @@ def sample() -> str:
 # a separate binary with its own browser, task and LSP tools, never selected
 # implicitly.  See docs/operations.md for installing it beside pi.
 harness = "pi"
-model = "llama-swap/local-wide-agent"
+# Required; there is no default.  `lmloop models` lists what your agent can
+# reach.  Point it directly at a local server rather than through a router --
+# a router reports what a model advertises, not how the weights were loaded.
+model = "llama-swap/<your-model>"
 # This list is pi's.  omp has no `ls` and rejects names it does not have rather
 # than ignoring them, so under `harness = "omp"` either comment this line out --
 # which gets omp's own default, "read,write,edit,bash,grep,glob" -- or replace

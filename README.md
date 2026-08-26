@@ -322,6 +322,28 @@ mistyped.
   in the commit message and the next iteration's prompt but commits regardless,
   which is usually what you want; a gate that could not be run never blocks a
   commit, whatever that setting says.
+- `[agent] model` — **required; there is no default.** It shipped as
+  `llama-swap/local-fast`, which is one person's model name on one person's
+  server, so the default could only fail — and it failed after a worktree, a
+  branch and a preflight had already been built. `lmloop models` lists what
+  your agent can reach.
+
+- **Secrets are pointed at, not pasted in.** Any value that carries a
+  credential — `[notify] token` today — accepts a reference instead:
+
+  ```toml
+  [notify]
+  token = "env:NTFY_TOKEN"        # from the environment
+  token = "file:~/.config/ntfy"   # from a file
+  token = "!pass show ntfy"       # from a command's output
+  ```
+
+  A literal still works. This matters more than it looks: the config file gets
+  copied into a repo and is readable by the agent the loop is driving — an
+  agent whose whole job is reading files and which will happily quote one back.
+  An unresolvable reference reads as empty rather than being sent as the
+  literal string.
+
 - `[models] local_providers` — which model-id prefixes mean "served by the
   local llama-swap", and so get a real *measured* window instead of whatever
   the agent's catalogue claims. Defaults to what

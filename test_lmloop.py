@@ -375,7 +375,11 @@ class BackoffCharacterizationTests(unittest.TestCase):
 
     def make_run(self):
         root = Path(tempfile.mkdtemp())
-        run = Run(root, config.load(root), "objective", run_id="test-run")
+        cfg = config.load(root)
+        # There is no default model any more, and `_backoff`'s wait branch is
+        # only for a run whose model is served locally -- see lm-cpz.
+        cfg["agent"]["model"] = "llama-swap/local-fast"
+        run = Run(root, cfg, "objective", run_id="test-run")
         run.rundir.path.mkdir(parents=True)
         return run
 
@@ -1938,9 +1942,94 @@ class ConfigValidationTests(unittest.TestCase):
         with mock.patch.object(config, "GLOBAL_CONFIG", root / "absent.toml"), \
              mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
             loaded = config.load(root, strict=False)
-        self.assertEqual("llama-swap/local-fast", loaded["agent"]["model"])
+        self.assertEqual("", loaded["agent"]["model"])
         self.assertIn("ignoring config problems", stderr.getvalue())
         self.assertIn("did you mean `model`?", stderr.getvalue())
+
+
+class SecretIndirectionTests(unittest.TestCase):
+    """A config points at a secret rather than holding one.
+
+    The file gets copied into a repo, pasted into an issue, and read by the
+    agent the loop is driving -- an agent whose whole job is reading files and
+    which will happily quote one back.
+    """
+
+    def test_a_plain_value_is_still_itself(self):
+        self.assertEqual("hunter2", config.secret("hunter2"))
+
+    def test_env_reads_the_environment(self):
+        with mock.patch.dict(os.environ, {"LMLOOP_TEST_TOKEN": "from-env"}):
+            self.assertEqual("from-env", config.secret("env:LMLOOP_TEST_TOKEN"))
+
+    def test_a_missing_variable_is_empty_not_the_reference(self):
+        """Sending the literal `env:NOPE` as a bearer token would look like an
+        auth failure from a server nobody can see."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual("", config.secret("env:NOPE"))
+
+    def test_file_reads_the_first_line_and_strips_it(self):
+        path = Path(tempfile.mkdtemp()) / "token"
+        path.write_text("  from-file  \n")
+        self.assertEqual("from-file", config.secret(f"file:{path}"))
+
+    def test_a_missing_file_is_empty(self):
+        self.assertEqual("", config.secret("file:/nonexistent/nowhere"))
+
+    def test_a_command_contributes_its_output(self):
+        """`!command` is omp's spelling, already used in its models.yml."""
+        self.assertEqual("from-command", config.secret("!echo from-command"))
+
+    def test_a_failing_command_is_empty_rather_than_its_error(self):
+        self.assertEqual("", config.secret("!exit 1"))
+
+    def test_nothing_is_nothing(self):
+        self.assertEqual("", config.secret(""))
+        self.assertEqual("", config.secret(None))
+
+    def test_the_notification_token_goes_through_it(self):
+        import notify
+        with mock.patch.dict(os.environ, {"LMLOOP_TEST_TOKEN": "resolved"}), \
+             mock.patch.object(notify.urllib.request, "urlopen") as opened:
+            opened.return_value.__enter__ = lambda s: s
+            opened.return_value.__exit__ = lambda *a: None
+            opened.return_value.status = 200
+            notify.send({"url": "https://ntfy.example", "topic": "t",
+                         "token": "env:LMLOOP_TEST_TOKEN"}, {"repo": "r"})
+        request = opened.call_args.args[0]
+        self.assertEqual("Bearer resolved", request.headers["Authorization"])
+
+
+class RequireModelTests(unittest.TestCase):
+    """There is no default model any more.
+
+    It shipped as `llama-swap/local-fast` -- one person's model name on one
+    person's server, which does not exist even on the machine it was written
+    for.  A default that can only fail should fail immediately and say what to
+    set, not after a worktree, a branch, a prompt and a preflight.
+    """
+
+    def test_a_config_with_a_model_passes(self):
+        config.require_model({"agent": {"model": "provider/name"}})
+
+    def test_a_config_without_one_says_what_to_set(self):
+        with self.assertRaises(SystemExit) as caught:
+            config.require_model({"agent": {"model": "", "harness": "omp"}})
+        message = str(caught.exception)
+        self.assertIn("no model set", message)
+        self.assertIn("[agent]", message)
+        self.assertIn("lmloop models", message)
+        self.assertIn("omp", message, "name the agent whose catalogue to list")
+
+    def test_the_shipped_default_is_empty(self):
+        self.assertEqual("", config.DEFAULTS["agent"]["model"])
+
+    def test_settling_the_allowlist_does_not_require_a_model(self):
+        """`override_agent` answers a question about tool names; it is called
+        in places that have no business caring what model is set."""
+        cfg = {"agent": {"harness": "pi", "model": "", "tools": "read"}}
+        with mock.patch.object(config.shutil, "which", return_value="/usr/bin/pi"):
+            config.override_agent(cfg)  # must not raise
 
 
 if __name__ == "__main__":

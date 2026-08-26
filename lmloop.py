@@ -114,6 +114,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Agent and allowlist together, and after everything else: which tool names
     # are valid is a question only the selected agent can answer.
     config_module.override_agent(config, args.agent or "", args.tools or "")
+    config_module.require_model(config)
 
     objective = args.objective
     if objective == "-":
@@ -320,6 +321,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
             if isinstance(state.get(key), str) and state[key]:
                 config["agent"][key] = state[key]
     config_module.override_agent(config, args.agent or "")
+    config_module.require_model(config)
 
     run = Run(repo, config, objective="", max_iterations=None, run_id=run_id)
     # A leftover STOP -- or the STOP-NOW that accompanies a hard stop -- would

@@ -21,6 +21,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import config
+
 TIMEOUT_SECONDS = 10
 
 
@@ -96,7 +98,13 @@ def send(settings: dict, run: dict) -> str:
     request = urllib.request.Request(
         target,
         data=body.encode("utf-8"),
-        headers=_headers(title, tags, priority, click, settings.get("token", "")),
+        # Resolved here rather than at load: a config may point at the token
+        # instead of holding it (`env:`, `file:`, `!command` -- see
+        # `config.secret`), and resolving early would put the real value into
+        # every config dict the process passes around, including the ones the
+        # dashboard renders.
+        headers=_headers(title, tags, priority, click,
+                         config.secret(settings.get("token", ""))),
         method="POST",
     )
     try:

@@ -291,7 +291,7 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 .pip { width: 16px; height: 3px; border-radius: 1px; background: var(--line); }
 .pip.ok { background: var(--ok); }
 .pip.thrashing, .pip.truncated, .pip[class*="no-action"] { background: var(--warn); }
-.pip.stalled, .pip.timeout, .pip[class*="error"] { background: var(--bad); }
+.pip.stalled, .pip[class*="timeout"], .pip[class*="error"] { background: var(--bad); }
 
 /* ── Run view ───────────────────────────────────────────────────────── */
 #view-run { padding-top: 18px; display: grid; gap: 14px; }

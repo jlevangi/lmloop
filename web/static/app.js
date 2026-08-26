@@ -549,7 +549,8 @@ function planWindow(steps) {
 
 const OUTCOME_CLASS = {
   ok: "ok", thrashing: "warn", truncated: "warn", "no-action": "warn",
-  stalled: "bad", timeout: "bad", "agent-error": "bad", interrupted: "",
+  stalled: "bad", timeout: "bad", "tool-timeout": "bad", "agent-error": "bad",
+  interrupted: "",
 };
 
 function iterationTable(rows) {

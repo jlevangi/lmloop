@@ -146,37 +146,44 @@ def gate_check(config: dict, repo: Path):
 def extensions_check(harness_module, config: dict):
     """Name what is loaded into the agent, because it decides what a run can do.
 
-    Extensions are invisible from lmloop and not all of them are inert. One
-    installed here hooks every tool call out to an approval daemon, and during
-    a real run it answered for the agent: `[SECURITY] Blocked command: git (max
-    mode) (rule: command_blocklist)`. The iteration spent its time working
-    around a `git` it was never going to be allowed to run, and nothing in the
-    run's own record said why.
+    What is loaded is invisible from lmloop and not all of it is inert. During
+    a real run something here answered for the agent -- `[SECURITY] Blocked
+    command: git (max mode) (rule: command_blocklist)` -- and the iteration
+    spent its time working around a `git` it was never going to be allowed to
+    run, with nothing in the run's own record saying why. It is
+    `@vtstech/pi-security`, which blocks `git` in a mode it *defaults* to when
+    nobody has chosen one.
+
+    That took two wrong answers to find, and both are the reason this check now
+    asks the adapter rather than reading a directory itself. The first blamed
+    pi, whose bundle contains none of those strings. The second blamed
+    `moshi-hooks.ts`, which was the only third-party file in the extensions
+    directory -- and cannot block anything: it spawns a detached notifier whose
+    output is discarded. The thing that actually gates tool calls was never in
+    that directory at all. It is a package named in pi's `settings.json`, which
+    this check could not see.
 
     An unattended loop cannot answer an approval prompt and cannot argue with a
-    denial, so anything that gates tool calls is worth naming before a run
-    rather than after. Reported rather than judged: `model-catalog.js` is an
-    extension too, and lmloop would not work without it.
+    denial, so anything able to gate a tool call is worth naming before a run
+    rather than after. Reported rather than judged: `model-catalog.js` is
+    loaded this way too, and lmloop does not work without it.
     """
     name = config["agent"].get("harness", "pi")
     try:
-        directory = harness_module.get(name).config_dir
+        adapter = harness_module.get(name)
     except SystemExit:
         return ("agent extensions", OK, "unknown agent")
-    if not directory:
+    if not adapter.config_dir:
         return ("agent extensions", OK, f"lmloop does not know where {name} keeps them")
-    folder = Path(directory) / "extensions"
-    if not folder.is_dir():
-        return ("agent extensions", OK, "none installed")
-    loaded = sorted(
-        path.name for path in folder.iterdir()
-        if path.suffix in (".js", ".ts", ".mjs") and not path.name.endswith(".bak")
-    )
+    loaded = adapter.loaded_extensions()
     if not loaded:
         return ("agent extensions", OK, "none installed")
+    # One line, deliberately: `display.out` re-flows whatever it is given to the
+    # terminal width, so a newline embedded here becomes a run of spaces rather
+    # than a break. Wrapping belongs to the thing that knows the width.
     return ("agent extensions", OK,
-            f"{len(loaded)} loaded into {name}: {', '.join(loaded)}"
-            " (each can gate what a run may do)")
+            f"{len(loaded)} loaded into {name} (each can gate what a run may do): "
+            + ", ".join(loaded))
 
 
 def notify_check(config_module, config: dict):

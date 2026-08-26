@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -215,19 +216,31 @@ class WholeRunTests(unittest.TestCase):
 class ExtensionsCheckTests(unittest.TestCase):
     """What is loaded into the agent, which decides what a run may do.
 
-    One extension installed on the machine this was written on hooks every
-    tool call out to an approval daemon, and during a real run it answered for
-    the agent: `[SECURITY] Blocked command: git (max mode)`. Nothing in the
-    run's record said why.
+    Something on the machine this was written on answered for the agent during
+    a real run -- `[SECURITY] Blocked command: git (max mode)` -- and nothing
+    in the run's record said why. It is `@vtstech/pi-security`, and it is not
+    in the extensions directory: it is a package named in pi's `settings.json`,
+    which this check could not see, so it reported two files that cannot block
+    anything and stayed silent about the one that does.
     """
 
-    def with_extensions(self, *names):
+    def with_extensions(self, *names, packages=None):
         directory = Path(tempfile.mkdtemp())
         (directory / "extensions").mkdir()
         for name in names:
             (directory / "extensions" / name).write_text("//\n")
+        if packages is not None:
+            (directory / "settings.json").write_text(json.dumps({"packages": packages}))
         adapter = harness.get("pi")
         return mock.patch.object(type(adapter), "config_dir", directory)
+
+    def with_captured_settings(self):
+        """The real `settings.json` from the machine this was found on."""
+        directory = Path(tempfile.mkdtemp())
+        (directory / "extensions").mkdir()
+        (directory / "settings.json").write_text(
+            (Path(__file__).parent / "testdata" / "pi-settings.json").read_text())
+        return mock.patch.object(type(harness.get("pi")), "config_dir", directory)
 
     def test_installed_extensions_are_named(self):
         with self.with_extensions("model-catalog.js", "moshi-hooks.ts"):
@@ -263,6 +276,38 @@ class ExtensionsCheckTests(unittest.TestCase):
     def test_an_unknown_agent_does_not_raise(self):
         _, status, _ = doctor.extensions_check(harness, {"agent": {"harness": "nonesuch"}})
         self.assertEqual(doctor.OK, status)
+
+    def test_a_package_that_can_block_git_is_named(self):
+        """The whole point. Captured rather than written: this is the file the
+        check was blind to, exactly as it is on disk."""
+        with self.with_captured_settings():
+            _, status, detail = doctor.extensions_check(
+                harness, {"agent": {"harness": "pi"}})
+        self.assertEqual(doctor.OK, status)
+        self.assertIn("npm:@vtstech/pi-security", detail)
+
+    def test_files_and_packages_are_counted_together(self):
+        with self.with_extensions("model-catalog.js", packages=["npm:a", "npm:b"]):
+            _, _, detail = doctor.extensions_check(harness, {"agent": {"harness": "pi"}})
+        self.assertIn("3 loaded", detail)
+        for item in ("model-catalog.js", "npm:a", "npm:b"):
+            self.assertIn(item, detail)
+
+    def test_an_agent_with_no_package_list_is_unaffected(self):
+        """omp keeps a `config.yml`, which this project has no parser for and
+        needs none: its extensions are files like anybody else's."""
+        self.assertEqual([], harness.get("omp").loaded_packages())
+
+    def test_a_settings_file_that_is_not_what_it_should_be_is_not_fatal(self):
+        """doctor exists to report a broken setup, not to become one."""
+        for content in ("", "not json", "[]", '{"packages": "everything"}'):
+            with self.subTest(content=content):
+                directory = Path(tempfile.mkdtemp())
+                (directory / "settings.json").write_text(content)
+                with mock.patch.object(type(harness.get("pi")), "config_dir", directory):
+                    _, status, _ = doctor.extensions_check(
+                        harness, {"agent": {"harness": "pi"}})
+                self.assertEqual(doctor.OK, status)
 
     def test_it_never_judges_an_extension(self):
         """`model-catalog.js` is an extension too, and lmloop would not work

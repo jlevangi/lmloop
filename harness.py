@@ -168,6 +168,40 @@ class Harness:
         """
         return []
 
+    def loaded_extensions(self) -> list[str]:
+        """Everything loaded into this agent that could gate what a run does.
+
+        Not one kind of thing.  pi loads files from `<config_dir>/extensions`
+        *and* npm packages named in its `settings.json`, and reporting only the
+        first is how `@vtstech/pi-security` stayed invisible: it blocks `git`
+        outright in a mode it defaults to when nobody has chosen one, and
+        `lmloop doctor` named two inert files in its place while a real run
+        spent iterations working around a `git` it was never going to be
+        allowed to run.
+
+        Reported, not judged.  `model-catalog.js` is an extension too and
+        lmloop does not work without it; which of these should be loaded during
+        an unattended run is the operator's call, and they can only make it if
+        something says what is there.
+        """
+        if not self.config_dir:
+            return []
+        folder = Path(self.config_dir) / "extensions"
+        files = sorted(
+            path.name for path in folder.iterdir()
+            if path.suffix in (".js", ".ts", ".mjs") and not path.name.endswith(".bak")
+        ) if folder.is_dir() else []
+        return files + self.loaded_packages()
+
+    def loaded_packages(self) -> list[str]:
+        """Packages this agent loads by name rather than by file.
+
+        Empty for an agent that has no such list -- omp keeps a `config.yml`,
+        which is YAML, which this project has no parser for and does not need
+        one for: omp's extensions are files like anybody else's.
+        """
+        return []
+
     def declared_windows(self) -> dict[str, tuple[int, int]]:
         """`(context, max_output)` per full model selector, from this agent's
         own catalogue.  Empty when the agent cannot be asked.
@@ -243,6 +277,24 @@ class PiHarness(Harness):
             if len(parts) >= 2 and _PROVIDER.fullmatch(parts[0]):
                 models.append(f"{parts[0]}/{parts[1]}")
         return models
+
+    def loaded_packages(self):
+        """pi's `settings.json` names npm packages it loads at startup.
+
+        A separate mechanism from the extensions directory and just as able to
+        gate a tool call -- `@vtstech/pi-security` arrives this way.
+        """
+        settings = Path(self.config_dir) / "settings.json"
+        try:
+            loaded = json.loads(settings.read_text())
+        except (OSError, ValueError):
+            return []
+        if not isinstance(loaded, dict):
+            return []
+        return sorted(
+            name for name in loaded.get("packages") or []
+            if isinstance(name, str) and name
+        )
 
     # pi's own provider config: the authority for models lmloop does not
     # measure itself, because it is the same file pi reads when it builds the

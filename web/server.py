@@ -408,83 +408,12 @@ class Handler(BaseHTTPRequestHandler):
         return self.json({"error": "not found"}, 404)
 
     def create_project(self, payload):
-        """Make a new repository and hand it back ready to be run against.
-
-        lmloop otherwise only works on code that already exists, which means an
-        idea has to be turned into a git repository by hand before the loop can
-        touch it.  This closes that gap: a name and an objective are enough to
-        get from nothing to a working run.
-
-        The name is the only untrusted path component in the system, so it is
-        matched against a strict pattern rather than sanitised -- rejecting a
-        bad name is always right, and guessing what someone meant by `../` is
-        never right.
-        """
-        name = str(payload.get("name", "")).strip()
-        objective = str(payload.get("objective", "")).strip()
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
-            return self.json({
-                "error": "name must be 1-64 characters of letters, digits, dot, dash or underscore"
-            }, 400)
-        if name in (".", "..") or name.startswith("."):
-            return self.json({"error": "name may not start with a dot"}, 400)
-
-        root = self.config["roots"][0]
-        target = (root / name).resolve()
-        if not str(target).startswith(str(root.resolve()) + os.sep):
-            return self.json({"error": "name escapes the project root"}, 400)
-        if target.exists():
-            return self.json({"error": f"{name} already exists"}, 409)
-
-        try:
-            target.mkdir(parents=True)
-            # A repository with no commits has no HEAD, and a worktree cannot be
-            # branched off nothing -- so the first commit is part of creating the
-            # project, not something the agent has to remember to do.
-            readme = f"# {name}\n"
-            if objective:
-                readme += f"\n{objective}\n"
-            (target / "README.md").write_text(readme)
-            for argv in (
-                ["git", "init", "-q"],
-                ["git", "add", "-A"],
-                ["git", "-c", "commit.gpgsign=false", "commit", "-qm",
-                 f"Start {name}"],
-            ):
-                done = subprocess.run(argv, cwd=target, capture_output=True, text=True, timeout=60)
-                if done.returncode != 0:
-                    return self.json({"error": (done.stderr or done.stdout).strip()[-400:]}, 500)
-        except OSError as error:
-            return self.json({"error": str(error)}, 500)
-
-        return self.json({"id": name, "name": name, "path": str(target), "runs": 0})
+        status, reply = service.create_project(payload, self.config)
+        return self.json(reply, status)
 
     def start_run(self, payload):
-        project_id = str(payload.get("project", ""))
-        objective = str(payload.get("objective", "")).strip()
-        if not objective:
-            return self.json({"error": "an objective is required"}, 400)
-        match = [p for p in runs_module.projects(self.config["roots"]) if p["id"] == project_id]
-        if not match:
-            return self.json({"error": "no such project"}, 400)
-
-        argv = [self.config["python"], LMLOOP, "run", objective, "--detach"]
-        for flag, key, default in (
-            ("--model", "model", self.config["default_model"]),
-            ("--thinking", "thinking", self.config["default_thinking"]),
-        ):
-            value = str(payload.get(key) or default).strip()
-            if value:
-                argv += [flag, value]
-        iterations = payload.get("max_iterations") or self.config["default_max_iterations"]
-        argv += ["--max-iterations", str(int(iterations))]
-
-        result = subprocess.run(
-            argv, cwd=match[0]["path"], capture_output=True, text=True, timeout=60
-        )
-        if result.returncode != 0:
-            return self.json({"error": (result.stderr or result.stdout).strip()[-800:]}, 500)
-        return self.json({"started": result.stdout.strip()})
+        status, reply = service.start_run(payload, self.config, LMLOOP)
+        return self.json(reply, status)
 
     def control(self, project, run_dir, action, payload):
         """Route one control action.

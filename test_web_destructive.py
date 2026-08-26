@@ -508,5 +508,170 @@ class ControlTests(unittest.TestCase):
                 called.assert_called_once()
 
 
+class CreateProjectTests(unittest.TestCase):
+    """The only untrusted path component in the system.
+
+    A project name arrives from a browser and becomes a directory. It is
+    matched against a strict pattern rather than sanitised, because rejecting a
+    bad name is always right and guessing what somebody meant by `../` never
+    is. None of that was covered until the lm-ka5.5 split went looking.
+    """
+
+    def setUp(self):
+        self.roots = Path(tempfile.mkdtemp())
+        self.handler = Recording({
+            "roots": [self.roots], "read_only": False, "python": "python3",
+        })
+
+    def create(self, name, objective=""):
+        return self.handler.create_project({"name": name, "objective": objective})
+
+    def test_an_ordinary_name_is_created_as_a_git_repository(self):
+        self.create("my-project", "do the thing")
+        self.assertEqual(200, self.handler.status)
+        target = self.roots / "my-project"
+        self.assertTrue((target / ".git").is_dir())
+        self.assertIn("do the thing", (target / "README.md").read_text())
+
+    def test_it_starts_with_a_commit_so_a_worktree_can_branch_off_it(self):
+        """A repository with no commits has no HEAD, and a worktree cannot be
+        branched off nothing."""
+        self.create("my-project")
+        head = subprocess.run(["git", "rev-parse", "HEAD"],
+                              cwd=self.roots / "my-project", capture_output=True)
+        self.assertEqual(0, head.returncode)
+
+    def test_a_name_that_climbs_out_of_the_root_is_refused(self):
+        """Checked by what was created, not by probing outside the root --
+        anything may already exist out there, and a test that looks would be
+        asserting about the machine rather than about the guard."""
+        for name in ("../escape", "../../etc", "a/../../b", "/absolute"):
+            with self.subTest(name=name):
+                before = sorted(path.name for path in self.roots.iterdir())
+                self.create(name)
+                self.assertEqual(400, self.handler.status)
+                self.assertEqual(before,
+                                 sorted(path.name for path in self.roots.iterdir()))
+
+    def test_a_symlinked_name_that_resolves_outside_the_root_is_refused(self):
+        """The only way to reach the root-escape guard.
+
+        No name that satisfies the pattern can climb out with `../` -- it has
+        to start alphanumeric and cannot contain a separator -- so the guard
+        looks redundant until you notice `resolve()` follows symlinks. An entry
+        inside the root pointing outside it is the case it defends, and the one
+        a `../` test can never reach.
+        """
+        outside = Path(tempfile.mkdtemp()) / "elsewhere"
+        outside.mkdir()
+        (self.roots / "innocent").symlink_to(outside)
+        self.create("innocent")
+        self.assertEqual(400, self.handler.status)
+        self.assertIn("escapes", self.handler.payload["error"])
+        self.assertEqual([], list(outside.iterdir()), "nothing written through it")
+
+    def test_a_name_with_a_separator_is_refused(self):
+        for name in ("a/b", "a\\b"):
+            with self.subTest(name=name):
+                self.create(name)
+                self.assertEqual(400, self.handler.status)
+
+    def test_a_dotfile_name_is_refused(self):
+        for name in (".", "..", ".hidden", ".git"):
+            with self.subTest(name=name):
+                self.create(name)
+                self.assertEqual(400, self.handler.status)
+
+    def test_an_empty_or_overlong_name_is_refused(self):
+        self.create("")
+        self.assertEqual(400, self.handler.status)
+        self.create("x" * 65)
+        self.assertEqual(400, self.handler.status)
+
+    def test_a_name_of_exactly_the_limit_is_allowed(self):
+        self.create("x" * 64)
+        self.assertEqual(200, self.handler.status)
+
+    def test_an_existing_project_is_never_overwritten(self):
+        (self.roots / "taken").mkdir()
+        (self.roots / "taken" / "precious.txt").write_text("somebody's work\n")
+        self.create("taken")
+        self.assertEqual(409, self.handler.status)
+        self.assertEqual("somebody's work\n",
+                         (self.roots / "taken" / "precious.txt").read_text())
+
+    def test_nothing_is_created_when_the_name_is_refused(self):
+        before = sorted(p.name for p in self.roots.iterdir())
+        self.create("../escape")
+        self.assertEqual(before, sorted(p.name for p in self.roots.iterdir()))
+
+
+class StartRunTests(unittest.TestCase):
+    """Launching a run from the dashboard. Also uncovered until now."""
+
+    def setUp(self):
+        self.roots = Path(tempfile.mkdtemp())
+        (self.roots / "project").mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=self.roots / "project",
+                       check=True, capture_output=True)
+        self.handler = Recording({
+            "roots": [self.roots], "read_only": False, "python": "python3",
+            "default_model": "", "default_thinking": "low",
+            "default_max_iterations": 20,
+        })
+
+    def start(self, payload, returncode=0, stdout="run-id-here"):
+        with mock.patch.object(server.subprocess, "run") as ran:
+            ran.return_value = mock.Mock(returncode=returncode, stdout=stdout, stderr="")
+            self.handler.start_run(payload)
+        return ran
+
+    def test_an_objective_is_required(self):
+        ran = self.start({"project": "project", "objective": "   "})
+        self.assertEqual(400, self.handler.status)
+        ran.assert_not_called()
+
+    def test_an_unknown_project_is_refused_without_launching(self):
+        ran = self.start({"project": "nonesuch", "objective": "do it"})
+        self.assertEqual(400, self.handler.status)
+        ran.assert_not_called()
+
+    def test_a_run_is_started_detached(self):
+        """The dashboard cannot hold a process for hours, so the run has to
+        outlive the request that asked for it."""
+        ran = self.start({"project": "project", "objective": "do it"})
+        argv = ran.call_args.args[0]
+        self.assertIn("run", argv)
+        self.assertIn("do it", argv)
+        self.assertIn("--detach", argv)
+
+    def test_the_configured_defaults_are_applied(self):
+        ran = self.start({"project": "project", "objective": "do it"})
+        argv = ran.call_args.args[0]
+        self.assertIn("--thinking", argv)
+        self.assertIn("low", argv)
+        self.assertIn("20", argv)
+
+    def test_the_payload_overrides_the_defaults(self):
+        ran = self.start({"project": "project", "objective": "do it",
+                          "model": "p/m", "thinking": "high", "max_iterations": 3})
+        argv = ran.call_args.args[0]
+        self.assertIn("p/m", argv)
+        self.assertIn("high", argv)
+        self.assertIn("3", argv)
+
+    def test_an_empty_default_model_adds_no_flag(self):
+        """There is no shipped default model any more; the dashboard must not
+        invent one -- see config.require_model."""
+        ran = self.start({"project": "project", "objective": "do it"})
+        self.assertNotIn("--model", ran.call_args.args[0])
+
+    def test_a_launch_that_fails_reports_why(self):
+        self.start({"project": "project", "objective": "do it"},
+                   returncode=1, stdout="lmloop: no model set")
+        self.assertEqual(500, self.handler.status)
+        self.assertIn("no model set", self.handler.payload["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

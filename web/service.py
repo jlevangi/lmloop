@@ -18,12 +18,95 @@ that can lose something, in one place, testable directly.
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import runrecord
 from web import runs as runs_module
+
+
+def create_project(payload: dict, config: dict) -> tuple[int, dict]:
+    """Make a new repository and hand it back ready to be run against.
+
+    lmloop otherwise only works on code that already exists, which means an
+    idea has to be turned into a git repository by hand before the loop can
+    touch it.  This closes that gap: a name and an objective are enough to
+    get from nothing to a working run.
+
+    The name is the only untrusted path component in the system, so it is
+    matched against a strict pattern rather than sanitised -- rejecting a
+    bad name is always right, and guessing what someone meant by `../` is
+    never right.
+    """
+    name = str(payload.get("name", "")).strip()
+    objective = str(payload.get("objective", "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
+        return 400, {
+            "error": "name must be 1-64 characters of letters, digits, dot, dash or underscore"
+        }
+    if name in (".", "..") or name.startswith("."):
+        return 400, {"error": "name may not start with a dot"}
+
+    root = config["roots"][0]
+    target = (root / name).resolve()
+    if not str(target).startswith(str(root.resolve()) + os.sep):
+        return 400, {"error": "name escapes the project root"}
+    if target.exists():
+        return 409, {"error": f"{name} already exists"}
+
+    try:
+        target.mkdir(parents=True)
+        # A repository with no commits has no HEAD, and a worktree cannot be
+        # branched off nothing -- so the first commit is part of creating the
+        # project, not something the agent has to remember to do.
+        readme = f"# {name}\n"
+        if objective:
+            readme += f"\n{objective}\n"
+        (target / "README.md").write_text(readme)
+        for argv in (
+            ["git", "init", "-q"],
+            ["git", "add", "-A"],
+            ["git", "-c", "commit.gpgsign=false", "commit", "-qm",
+             f"Start {name}"],
+        ):
+            done = subprocess.run(argv, cwd=target, capture_output=True, text=True, timeout=60)
+            if done.returncode != 0:
+                return 500, {"error": (done.stderr or done.stdout).strip()[-400:]}
+    except OSError as error:
+        return 500, {"error": str(error)}
+
+    return 200, {"id": name, "name": name, "path": str(target), "runs": 0}
+
+
+def start_run(payload: dict, config: dict, lmloop_path: str) -> tuple[int, dict]:
+    project_id = str(payload.get("project", ""))
+    objective = str(payload.get("objective", "")).strip()
+    if not objective:
+        return 400, {"error": "an objective is required"}
+    match = [p for p in runs_module.projects(config["roots"]) if p["id"] == project_id]
+    if not match:
+        return 400, {"error": "no such project"}
+
+    argv = [config["python"], lmloop_path, "run", objective, "--detach"]
+    for flag, key, default in (
+        ("--model", "model", config["default_model"]),
+        ("--thinking", "thinking", config["default_thinking"]),
+    ):
+        value = str(payload.get(key) or default).strip()
+        if value:
+            argv += [flag, value]
+    iterations = payload.get("max_iterations") or config["default_max_iterations"]
+    argv += ["--max-iterations", str(int(iterations))]
+
+    result = subprocess.run(
+        argv, cwd=match[0]["path"], capture_output=True, text=True, timeout=60
+    )
+    if result.returncode != 0:
+        return 500, {"error": (result.stderr or result.stdout).strip()[-800:]}
+    return 200, {"started": result.stdout.strip()}
 
 
 def control(project: dict, run_dir: Path, action: str, payload: dict,

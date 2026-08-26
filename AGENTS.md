@@ -46,7 +46,10 @@ in this codebase is load-bearing and was paid for with a failed run.
   its compaction events are `auto_compaction_*`, its `edit` takes a patch script
   rather than a path, it lists models with a `models` subcommand where pi uses
   `--list-models` (the flag is an outright error, so an adapter that inherits
-  pi's spelling prints one where a catalogue belongs), and it *rejects* `--tools`
+  pi's spelling prints one where a catalogue belongs — and `omp models` prints a
+  box-drawing table, so an adapter that inherits pi's *parser* offers
+  `9router/(97)` and `llama-swap/(7)` as the catalogue instead; `--json`, and
+  `Harness.catalogue`, exist for that), and it *rejects* `--tools`
   names it does not know instead of ignoring them — which is one of the few ways
   `--mode json` exits non-zero. It also keeps its own config directory,
   `~/.omp/agent`, so a reader pointed at `~/.pi/agent` answers for pi's models

@@ -236,3 +236,41 @@ def failure_reason(error: BaseException) -> str:
     detail = " ".join(str(error).split())
     named = f"crashed: {type(error).__name__}" + (f": {detail}" if detail else "")
     return named[:197] + "..." if len(named) > 200 else named
+
+
+# How full a prompt may get before the next tool result is likely to tip the
+# iteration into a compaction.  Measured rather than chosen: on a 24,576-token
+# window, iterations that ended in an overflow were sitting at 19,644, 19,921
+# and 20,599 input tokens beforehand -- 80% and up -- while ones that finished
+# cleanly sat far below it.
+CONTEXT_PRESSURE = 0.75
+
+
+def context_pressure(input_tokens: int, window: int) -> float:
+    """How much of the usable window this iteration's prompt took, 0.0 if unknown.
+
+    `window` is `Run.window`, which is 0 for a model nobody has measured -- and
+    a ratio against zero would be an invented number rather than a missing one.
+    """
+    if window <= 0 or input_tokens <= 0:
+        return 0.0
+    return input_tokens / window
+
+
+def context_warning(input_tokens: int, window: int) -> str:
+    """What to say when an iteration is running out of room, or "".
+
+    Worth saying because the alternative is finding out afterwards, by reading
+    token counts by hand: nothing in a run reports the one number that predicts
+    a compaction, and a compaction costs the agent everything it had read.
+
+    Names the model rather than blaming the work, because the fix is usually a
+    wider profile and not a smaller objective -- and on a machine where a wider
+    one is not available, knowing that is still the difference between choosing
+    to live with it and not knowing why iterations keep starting over.
+    """
+    used = context_pressure(input_tokens, window)
+    if used < CONTEXT_PRESSURE:
+        return ""
+    return (f"prompt used {used:.0%} of the {window}-token window "
+            f"({input_tokens} tokens); the next tool result is likely to overflow it")

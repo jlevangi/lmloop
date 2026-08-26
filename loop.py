@@ -1005,6 +1005,9 @@ class Run:
             learnings.append("no plan written; the objective was never broken down")
         for defect in self.defects[:6]:
             learnings.append(f"structural check: {defect}")
+        pressure = policy.context_warning(result.input_tokens, self.window)
+        if pressure:
+            learnings.append(pressure)
         if result.compactions:
             learnings.append(
                 f"context overflowed {result.compactions}x; every overflow costs the"
@@ -1025,6 +1028,12 @@ class Run:
             # Any git-visible change clears it, whatever killed the iteration.
             self.no_diff_streak = 0
 
+        if pressure:
+            self.screen.log(f"    {pressure}")
+            self.rundir.event(
+                "context:pressure", iteration=number,
+                inputTokens=result.input_tokens, window=self.window,
+            )
         self._save_run_state()
         self.rundir.event(
             "iteration:end",

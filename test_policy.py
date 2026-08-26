@@ -210,5 +210,49 @@ class NoPlanBudgetTests(unittest.TestCase):
         )
 
 
+class ContextPressureTests(unittest.TestCase):
+    """Saying an iteration is running out of room, before it runs out.
+
+    lmloop recorded `context_window` and `input_tokens` and never compared
+    them, so the one number that predicts a compaction was in the run's own
+    files and reported nowhere. On a 24,576-token profile, iterations that
+    ended in an overflow were sitting at 19,644, 19,921 and 20,599 input
+    tokens beforehand; finding that out took reading token counts by hand
+    afterwards (lm-oit).
+    """
+
+    def test_a_comfortable_prompt_says_nothing(self):
+        self.assertEqual("", policy.context_warning(12000, 24576))
+
+    def test_a_prompt_near_the_limit_says_so(self):
+        said = policy.context_warning(20599, 24576)
+        self.assertIn("84%", said)
+        self.assertIn("24576", said)
+        self.assertIn("20599", said)
+
+    def test_the_threshold_is_where_the_measurements_put_it(self):
+        window = 24576
+        self.assertEqual("", policy.context_warning(int(window * 0.74), window))
+        self.assertNotEqual("", policy.context_warning(int(window * 0.76), window))
+
+    def test_the_same_prompt_is_fine_on_a_wider_profile(self):
+        """Which is the whole point: the fix is usually a wider model, not a
+        smaller objective."""
+        self.assertNotEqual("", policy.context_warning(20599, 24576))
+        self.assertEqual("", policy.context_warning(20599, 106496))
+
+    def test_an_unmeasured_model_invents_nothing(self):
+        """`Run.window` is 0 for a model nobody has measured, and a ratio
+        against zero would be an invented number rather than a missing one."""
+        self.assertEqual("", policy.context_warning(20599, 0))
+        self.assertEqual(0.0, policy.context_pressure(20599, 0))
+
+    def test_a_prompt_nobody_counted_invents_nothing_either(self):
+        self.assertEqual("", policy.context_warning(0, 24576))
+
+    def test_the_ratio_is_plain_arithmetic(self):
+        self.assertAlmostEqual(0.5, policy.context_pressure(100, 200))
+
+
 if __name__ == "__main__":
     unittest.main()

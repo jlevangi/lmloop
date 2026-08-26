@@ -24,7 +24,8 @@ exercising that allowlist rather than poking a hole in it.
                                  are the two outcomes that write nothing)
      "append": "\ndef fake():\n    return 1\n",
      "handoff": "what I did",    written to .lmloop/runs/<id>/handoff.md
-     "delay": 0}                 seconds to sleep before finishing
+     "delay": 0,                 seconds to sleep before finishing
+     "input_tokens": 1234}       what to claim the prompt cost
 
 Defaults to a scenario that appends one function and succeeds.
 """
@@ -40,6 +41,9 @@ DEFAULT = {
     "append": "the fake agent was here\n",
     "handoff": "Appended a line. Nothing was thought about.",
     "delay": 0,
+    # What to claim the prompt cost, for exercising the context-pressure
+    # warning without a model big enough to actually fill a window.
+    "input_tokens": 1234,
 }
 
 
@@ -134,7 +138,11 @@ def main():
         "role": "assistant",
         "content": [{"type": "text", "text": "done"}],
         "stopReason": stop,
-        "usage": {"input": 1234, "output": 56, "totalTokens": 1290},
+        "usage": {
+            "input": int(plan["input_tokens"]),
+            "output": 56,
+            "totalTokens": int(plan["input_tokens"]) + 56,
+        },
     }
     if plan["outcome"] == "error":
         message["errorMessage"] = "the fake agent was told to fail"

@@ -293,6 +293,46 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 1 if stale else 0
 
 
+def cmd_attach(args: argparse.Namespace) -> int:
+    """Watch a detached run, and drive its controls, without owning it.
+
+    Not `resume`: that starts a loop, and this deliberately starts nothing.
+    Attaching twice is fine, attaching to a finished run says so, and Ctrl-C
+    detaches -- the run was left running on purpose.
+    """
+    import attach as attach_module
+
+    repo = gitops.repo_root(Path.cwd())
+    runs = _discover_runs(repo, config_module.load(repo, strict=False))
+    if not runs:
+        print("no runs for this repo")
+        return 1
+    run_id = args.run_id or runs[-1][0]
+    match = [path for name, path in runs if name == run_id]
+    if not match:
+        raise SystemExit(f"lmloop: no run {run_id} under this repo")
+    run_dir = match[0]
+
+    holder = runrecord.holder(run_dir)
+    display.out(f"lmloop {run_id}")
+    display.out(f"  loop    {'pid ' + str(holder) if holder else 'not running'}")
+    display.out(f"  dir     {run_dir}")
+    display.out()
+
+    screen = display.Screen()
+    keys = display.Keys(RunDir(run_dir.parents[2], run_id), screen)
+    try:
+        return attach_module.watch(run_dir, run_id, screen, keys)
+    except KeyboardInterrupt:
+        # Detaching, not stopping.  The whole point of this command is a run
+        # somebody deliberately left running, so the one thing it must never do
+        # is end it on the way out.
+        screen.close()
+        display.out("\n  detached; the run keeps going")
+        display.out(f"  lmloop attach {run_id}   to come back")
+        return 0
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     repo = gitops.repo_root(Path.cwd())
     config = config_module.load(repo)
@@ -571,6 +611,11 @@ def main(argv: list[str] | None = None) -> int:
     web.add_argument("--read-only", action="store_true", help="serve the views, refuse every control")
     web.add_argument("--env", help="env file to load (default ~/.config/lmloop/web.env)")
     web.set_defaults(func=cmd_web)
+
+    attach = sub.add_parser(
+        "attach", help="watch a detached run and drive its controls")
+    attach.add_argument("run_id", nargs="?", help="which run; defaults to the most recent")
+    attach.set_defaults(func=cmd_attach)
 
     doctor = sub.add_parser(
         "doctor", help="check git, config, agent, model, server and storage")

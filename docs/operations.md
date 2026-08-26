@@ -8,6 +8,7 @@ lmloop run "a broad objective"           # decomposed by the agent, not by you
 lmloop run "..." --model llama-swap/local-wide --thinking low
 lmloop run "..." --detach                # background; prints the run id
 lmloop resume <run-id> --iterations 12   # extend its saved ceiling by 12 turns
+lmloop attach <run-id>                   # watch a detached run, and steer it
 lmloop list                              # runs for this repo
 lmloop status                            # what the newest run is doing now
 ```
@@ -36,6 +37,35 @@ the iteration is visibly going nowhere. `STOP-NOW` is for when it is: pi is
 killed where it stands and the partial tree is committed as `interrupted`.
 Neither discards anything, so the choice is only about what you are willing to
 wait for. `SIGINT` is `STOP-NOW`; a second `SIGINT` exits without committing.
+
+## Watching a detached run
+
+`--detach` starts a run in its own session and prints a log path. `lmloop
+attach` is the screen back:
+
+```bash
+lmloop attach              # the most recent run for this repo
+lmloop attach <run-id>     # a particular one
+```
+
+Same moving status line as a foreground run, the lifecycle events as they
+happen, and the same `p`/`r`/`q`/`Q` keys. **Ctrl-C detaches; the run keeps
+going** — it was left running on purpose, and ending it on the way out is the
+one thing that would make this dangerous rather than useful.
+
+It works because the controls were already files. Nothing talks to the loop
+process: it reads `status.json` and `lmloop.log` and writes the same
+`PAUSE`/`STOP`/`STOP-NOW` sentinels the keys have always written. So attaching
+twice at once is fine, attaching from a second terminal is fine, and a viewer
+never claims the run or writes its status.
+
+Attaching shows what happens *from now*. Replaying forty iterations of a run
+you have been watching for hours is not a view of it; the history is in
+`notes.md` and the log. It opens by saying where the run has got to, then
+follows.
+
+Exit status distinguishes the two things you might have meant: `0` if the run
+finished while you were watching, `1` if it was already over when you attached.
 
 ## Run ids, and re-running the same objective
 

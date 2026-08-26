@@ -41,8 +41,11 @@ in this codebase is load-bearing and was paid for with a failed run.
   `OmpHarness` is for.
 - **omp is not pi with a different name.** It has no `--session-id` (exit 2),
   its compaction events are `auto_compaction_*`, its `edit` takes a patch script
-  rather than a path, and it *rejects* `--tools` names it does not know instead
-  of ignoring them — which is one of the few ways `--mode json` exits non-zero.
+  rather than a path, it lists models with a `models` subcommand where pi uses
+  `--list-models` (the flag is an outright error, so an adapter that inherits
+  pi's spelling prints one where a catalogue belongs), and it *rejects* `--tools`
+  names it does not know instead of ignoring them — which is one of the few ways
+  `--mode json` exits non-zero.
 - **omp's browser cannot carry a query-string credential.** It takes an HTTP CDP
   discovery endpoint, rejects `ws://`, and drops `?token=` on both the paths it
   uses to reach one. `browser.py` says so before a run rather than after.

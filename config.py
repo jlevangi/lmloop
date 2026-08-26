@@ -281,8 +281,12 @@ def resolve_tools(harness_name: str, tools: str, strict: bool = True) -> str:
         if strict:
             raise
         return tools
-    if agent_name == "omp" and tools == DEFAULTS["agent"]["tools"]:
-        return harness.OMP_DEFAULT_TOOLS
+    # Only when the operator never chose: an allowlist they typed is theirs,
+    # even if this agent will reject half of it -- `unknown_tools` below is
+    # where they get told, rather than here where it would be silently
+    # replaced.
+    if adapter.default_tools and tools == DEFAULTS["agent"]["tools"]:
+        return adapter.default_tools
     unknown = adapter.unknown_tools(tools)
     if unknown and strict:
         raise SystemExit(

@@ -70,6 +70,16 @@ class Harness:
     # The `--tools` names this agent will accept, when it is fussy about it.
     # Empty means it takes whatever it is given; see `unknown_tools`.
     known_tools: frozenset[str] = frozenset()
+    # The tool allowlist to use when the operator never chose one.  Empty means
+    # "the shipped default in `config.DEFAULTS` already suits this agent" --
+    # true for pi, whose names that default was written from, and for opencode,
+    # which takes no allowlist at all.  omp rejects names it does not have
+    # rather than ignoring them, so it needs its own; see `unknown_tools`.
+    default_tools: str = ""
+    # The name of this agent's browser tool, if it has one.  Empty means it does
+    # not, and `Run.probe_browser` then has nothing to preflight.  A name rather
+    # than a flag because the preflight also has to find it in the allowlist.
+    browser_tool: str = ""
     # Environment variables this agent needs, on top of `env.BASE_ALLOW`.
     # Trailing `*` is a prefix.  The adapter owns these because nothing else
     # can: `PI_CODING_AGENT_DIR` relocates pi's whole config directory and is
@@ -99,6 +109,15 @@ class Harness:
         wanted = [name.strip() for name in tools.split(",") if name.strip()]
         return [name for name in wanted if name not in self.known_tools]
 
+    def list_models_argv(self) -> list[str]:
+        """How to ask this agent what models it can reach, or `[]` if it cannot.
+
+        `lmloop models` used to shell out to `pi --list-models` whatever agent
+        was configured, so an omp or opencode setup was shown pi's catalogue --
+        or pi's error, on a machine where pi is not installed at all.
+        """
+        return []
+
     def compaction_summary(self, event: dict) -> str:
         """The summary the agent wrote for itself when its context overflowed.
 
@@ -123,6 +142,9 @@ class PiHarness(Harness):
     # config directory -- models.json, sessions, settings -- and is how a run
     # is pointed at a scratch config instead of the operator's own.
     env_passthrough = ("PI_*",)
+
+    def list_models_argv(self):
+        return [self.binary, "--list-models"]
     interesting = (
         '"tool_execution_start"', '"message_end"', '"agent_end"', '"compaction_start"',
     )
@@ -350,6 +372,15 @@ class OmpHarness(PiHarness):
     compaction_marker = b'"auto_compaction_end"'
     compaction_event = "auto_compaction_start"
     known_tools = OMP_TOOLS
+    default_tools = OMP_DEFAULT_TOOLS
+    browser_tool = "browser"
+
+    def list_models_argv(self):
+        # Not pi's `--list-models`, which omp rejects outright: `Error: unknown
+        # flag: --list-models`.  It has a `models` subcommand instead.  Verified
+        # against omp v17.4.0 -- inheriting pi's spelling printed that error
+        # where a catalogue belonged.
+        return [self.binary, "models"]
 
     def argv(self, *, model, tools, thinking, session_dir, session_id):
         # `session_id` is accepted and dropped; see 1. above.

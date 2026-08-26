@@ -20,7 +20,7 @@ loop.
 | `checks.py` | "Did the edit land intact", on the files git says changed, whatever the project configured. |
 | `models.py` | llama-swap preflight and context measurement. |
 | `browser.py` | Whether omp's browser tool can attach to the CDP endpoint it was given. Redacts before it reports. |
-| `harness.py` | What lmloop needs from an agent: an argv, and what its events mean. One small adapter per agent. |
+| `harness.py` | What lmloop needs from an agent: an argv, what its events mean, and the capabilities the rest of the system used to hardcode by name — default tool allowlist, browser tool, model-listing argv, environment namespace. One small adapter per agent. |
 | `config.py` | Defaults → global TOML → the repo's `.lmloop.toml`. |
 | `env.py` | What the agent and the gate see of the host environment. An allowlist by default, plus a credential-name filter a blunt prefix rule cannot get past. Pure functions of their arguments; no `os.environ`. |
 | `display.py` | The status line and its width arithmetic. Load-bearing; see design.md. |

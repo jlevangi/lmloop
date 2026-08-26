@@ -26,6 +26,7 @@ import config as config_module
 import display
 import eta
 import gitops
+import harness
 import models as models_module
 import runrecord
 from loop import Run
@@ -375,8 +376,29 @@ def cmd_models(args: argparse.Namespace) -> int:
     if not cache:
         print("  (none -- run `lmloop models --detect` while a model is loaded)")
 
-    print("\navailable to pi:")
-    result = subprocess.run(["pi", "--list-models"], capture_output=True, text=True)
+    # Whichever agent is actually configured, not always pi: an omp or
+    # opencode setup was being shown pi's catalogue, or pi's "command not
+    # found" on a machine that never had it.
+    agent_name = "pi"
+    try:
+        agent_name = config_module.load(gitops.repo_root(Path.cwd()))["agent"]["harness"]
+    except SystemExit:
+        pass
+    try:
+        adapter = harness.get(agent_name)
+    except SystemExit as error:
+        print(f"\n{error}")
+        return 0
+    argv = adapter.list_models_argv()
+    if not argv:
+        print(f"\n{agent_name} cannot list its models")
+        return 0
+    print(f"\navailable to {agent_name}:")
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as error:
+        print(f"  could not run {argv[0]}: {error}")
+        return 0
     print(result.stdout.strip() or result.stderr.strip())
     return 0
 

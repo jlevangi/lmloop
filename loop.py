@@ -452,8 +452,9 @@ class Run:
     def probe_browser(self) -> None:
         """Say once, at the start, whether the agent's browser can attach.
 
-        Only omp has one, and only when the allowlist lets it through, so this
-        is silent for every other configuration.  It is never fatal: an
+        Only an agent that declares a `browser_tool` has one, and only when the
+        allowlist lets it through, so this is silent for every other
+        configuration.  It is never fatal: an
         iteration whose browser is unreachable still reads, edits, gates and
         commits.  What it saves is the shape of failure where the agent spends
         an hour discovering, one tool call at a time, that the tab it was asked
@@ -461,13 +462,14 @@ class Run:
         model for it.
         """
         agent = self.config["agent"]
-        if self.harness_name != "omp":
+        tool = harness.get(self.harness_name).browser_tool
+        if not tool:
             return
-        # An empty allowlist is not "no tools" -- omp reads it as all of them,
-        # browser included -- so it is the one case where finding no `browser`
-        # in the list still means the browser is on.
+        # An empty allowlist is not "no tools" -- an agent with a browser reads
+        # it as all of them, browser included -- so it is the one case where
+        # finding no browser tool in the list still means the browser is on.
         enabled = [name.strip() for name in agent.get("tools", "").split(",") if name.strip()]
-        if enabled and "browser" not in enabled:
+        if enabled and tool not in enabled:
             return
         cdp_url = agent.get("browser_cdp_url", "")
         if not cdp_url:

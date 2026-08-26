@@ -1631,5 +1631,151 @@ class ProbeEnvTests(unittest.TestCase):
         self.assertIn("and 57 more", said)
 
 
+class HarnessCapabilityTests(unittest.TestCase):
+    """The adapter interface, per lm-ka5.3.
+
+    Each of these replaced a provider-name check in code that has no business
+    knowing agent names: `agent_name == "omp"` chose the tool defaults,
+    `harness_name != "omp"` decided whether to preflight a browser, and
+    `lmloop models` shelled out to `pi --list-models` whatever was configured.
+    """
+
+    def adapters(self):
+        return [harness.get(name) for name in ("pi", "omp", "opencode")]
+
+    def test_every_bundled_adapter_declares_the_whole_interface(self):
+        for adapter in self.adapters():
+            self.assertIsInstance(adapter.name, str, adapter)
+            self.assertIsInstance(adapter.binary, str, adapter)
+            self.assertIsInstance(adapter.default_tools, str, adapter)
+            self.assertIsInstance(adapter.browser_tool, str, adapter)
+            self.assertIsInstance(adapter.env_passthrough, tuple, adapter)
+            self.assertIsInstance(adapter.list_models_argv(), list, adapter)
+
+    def test_only_omp_declares_a_browser(self):
+        self.assertEqual("browser", harness.get("omp").browser_tool)
+        self.assertEqual("", harness.get("pi").browser_tool)
+        self.assertEqual("", harness.get("opencode").browser_tool)
+
+    def test_only_omp_overrides_the_default_tool_allowlist(self):
+        """pi's names are what `config.DEFAULTS` was written from, and opencode
+        takes no allowlist at all, so neither needs its own."""
+        self.assertEqual(harness.OMP_DEFAULT_TOOLS, harness.get("omp").default_tools)
+        self.assertEqual("", harness.get("pi").default_tools)
+        self.assertEqual("", harness.get("opencode").default_tools)
+
+    def test_model_listing_is_the_adapters_to_declare(self):
+        self.assertEqual(["pi", "--list-models"], harness.get("pi").list_models_argv())
+        # Not pi's flag, though omp is a pi fork: omp rejects `--list-models`
+        # outright and has a `models` subcommand.  Verified against v17.4.0.
+        self.assertEqual(["omp", "models"], harness.get("omp").list_models_argv())
+        self.assertEqual([], harness.get("opencode").list_models_argv())
+
+    def test_each_adapter_claims_its_own_environment_namespace(self):
+        self.assertEqual(("PI_*",), harness.get("pi").env_passthrough)
+        self.assertEqual(("OPENCODE_*",), harness.get("opencode").env_passthrough)
+        self.assertIn("OMP_*", harness.get("omp").env_passthrough)
+        self.assertIn("PI_*", harness.get("omp").env_passthrough)
+
+
+class ThirdPartyAdapterTests(unittest.TestCase):
+    """lm-ka5.3's acceptance in one test class: an adapter nobody shipped goes
+    through the core paths without any of them being edited to know its name.
+
+    `Impostor` is defined here, registered for the length of a test, and never
+    mentioned anywhere in the codebase.
+    """
+
+    class Impostor(harness.Harness):
+        name = "impostor"
+        binary = "impostor-cli"
+        default_tools = "peer,poke"
+        browser_tool = "looking-glass"
+        env_passthrough = ("IMPOSTOR_*",)
+
+        def list_models_argv(self):
+            return [self.binary, "models", "--json"]
+
+        def argv(self, *, model, tools, thinking, session_dir, session_id):
+            return [self.binary, "--model", model]
+
+        def classify(self, event):
+            return None
+
+    @contextlib.contextmanager
+    def registered(self):
+        adapter = self.Impostor()
+        harness._HARNESSES[adapter.name] = adapter
+        try:
+            yield adapter
+        finally:
+            del harness._HARNESSES[adapter.name]
+
+    def test_its_tool_defaults_are_honoured_without_config_knowing_it(self):
+        with self.registered():
+            self.assertEqual(
+                "peer,poke",
+                config.resolve_tools("impostor", config.DEFAULTS["agent"]["tools"]),
+            )
+
+    def test_an_allowlist_the_operator_typed_is_still_left_alone(self):
+        with self.registered():
+            self.assertEqual("read,edit", config.resolve_tools("impostor", "read,edit"))
+
+    def test_its_environment_namespace_reaches_the_agent(self):
+        with self.registered():
+            root = Path(tempfile.mkdtemp())
+            cfg = config.load(root)
+            cfg["agent"]["harness"] = "impostor"
+            run = Run(root, cfg, "objective", run_id="test-run")
+            run.rundir.path.mkdir(parents=True)
+            host = {"PATH": "/bin", "IMPOSTOR_HOME": "/i", "PI_CODING_AGENT_DIR": "/p"}
+            with mock.patch.dict(os.environ, host, clear=True):
+                kept = run.env()
+        self.assertIn("IMPOSTOR_HOME", kept)
+        self.assertNotIn("PI_CODING_AGENT_DIR", kept, "another agent's namespace")
+
+    def test_its_browser_is_preflighted_under_its_own_tool_name(self):
+        with self.registered():
+            root = Path(tempfile.mkdtemp())
+            cfg = config.load(root)
+            cfg["agent"]["harness"] = "impostor"
+            cfg["agent"]["tools"] = "peer,looking-glass"
+            cfg["agent"]["browser_cdp_url"] = "http://127.0.0.1:9222"
+            run = Run(root, cfg, "objective", run_id="test-run")
+            run.rundir.path.mkdir(parents=True)
+            run.screen = mock.MagicMock()
+            with mock.patch.object(loop.browser, "preflight",
+                                   return_value=(True, "attached")) as preflight:
+                run.probe_browser()
+        preflight.assert_called_once_with("http://127.0.0.1:9222")
+
+    def test_a_browser_left_out_of_its_allowlist_is_not_preflighted(self):
+        with self.registered():
+            root = Path(tempfile.mkdtemp())
+            cfg = config.load(root)
+            cfg["agent"]["harness"] = "impostor"
+            cfg["agent"]["tools"] = "peer"
+            cfg["agent"]["browser_cdp_url"] = "http://127.0.0.1:9222"
+            run = Run(root, cfg, "objective", run_id="test-run")
+            run.rundir.path.mkdir(parents=True)
+            run.screen = mock.MagicMock()
+            with mock.patch.object(loop.browser, "preflight") as preflight:
+                run.probe_browser()
+        preflight.assert_not_called()
+
+    def test_an_agent_with_no_browser_is_never_preflighted(self):
+        root = Path(tempfile.mkdtemp())
+        cfg = config.load(root)
+        cfg["agent"]["harness"] = "pi"
+        cfg["agent"]["browser_cdp_url"] = "http://127.0.0.1:9222"
+        run = Run(root, cfg, "objective", run_id="test-run")
+        run.rundir.path.mkdir(parents=True)
+        run.screen = mock.MagicMock()
+        with mock.patch.object(loop.browser, "preflight") as preflight:
+            run.probe_browser()
+        preflight.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

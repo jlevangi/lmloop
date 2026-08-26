@@ -122,12 +122,6 @@ def budgets() -> dict:
     return merged
 
 
-# Kept as module attributes because callers and tests read them by name; both
-# now come from `budgets()` rather than being written down a second time.
-HEADROOM = budgets()["headroom"]
-OUTPUT_OVERRIDE = budgets()["output_override"]
-
-
 def local_providers() -> list[str]:
     """Model-id prefixes served by the local server; empty if there is none.
 

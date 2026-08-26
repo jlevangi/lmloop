@@ -166,10 +166,6 @@ DEFAULTS: dict = {
     "worktree": {
         "root": "{repo}/.worktrees/{run_id}",
         "branch": "lmloop/{run_id}",
-        # Worktrees are never removed automatically.  The predecessor deletes the worktree
-        # of any run that produced no commits, taking the only record of why it
-        # produced none with it.
-        "keep": "always",
         # Untracked paths to link from the repo into the worktree.
         #
         # `git worktree add` materialises tracked files and nothing else, so a
@@ -467,6 +463,18 @@ def require_model(config: dict) -> None:
     )
 
 
+# Settings that no longer do anything but are not mistakes.  A config that
+# still sets one keeps working and is not told off for it -- the same courtesy
+# `[stop] max_iterations` gets, and for the same reason: somebody wrote it when
+# it meant something.
+#
+# `[worktree] keep` only ever had one sane value.  Worktrees are never removed
+# automatically -- that is invariant 1, not a policy a setting can vary -- so
+# the option was a choice between "always" and something the loop would refuse
+# to do. Nothing has read it for as long as the audit can see.
+RETIRED = {("worktree", "keep")}
+
+
 def validate(raw: dict, source: Path) -> list[str]:
     """Everything wrong with one config file, as lines somebody can act on.
 
@@ -493,6 +501,8 @@ def validate(raw: dict, source: Path) -> list[str]:
             problems.append(f"{source}: `{section}` should be a `[{section}]` section")
             continue
         for key, value in values.items():
+            if (section, key) in RETIRED:
+                continue
             if key not in DEFAULTS[section]:
                 problems.append(
                     f"{source}: `[{section}] {key}` is not a setting"
@@ -629,7 +639,6 @@ planner_thinking = ""
 [worktree]
 root   = "{repo}/.worktrees/{run_id}"
 branch = "lmloop/{run_id}"
-keep   = "always"
 # Untracked paths symlinked from the repo into the worktree, so the agent has
 # the environment and not just the source.  Missing ones are skipped.  Add
 # ".env" here if the project needs it to run -- it is not a default, because it

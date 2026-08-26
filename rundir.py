@@ -123,12 +123,6 @@ class RunDir:
         except OSError:
             return ""
 
-    def plan_mtime(self) -> float:
-        try:
-            return self.plan_path.stat().st_mtime
-        except OSError:
-            return 0.0
-
     def plan_problems(self) -> list[str]:
         """Corruption in the plan itself, which nothing else can see.
 

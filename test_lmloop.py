@@ -2335,5 +2335,90 @@ class HungToolCallTests(unittest.TestCase):
         self.assertGreaterEqual(config.DEFAULTS["iteration"]["tool_seconds"], 900)
 
 
+class DeletedSymbolTests(unittest.TestCase):
+    """What lm-ka5.7 removed, and the evidence it was safe to.
+
+    Each of these was a definition with no call site anywhere but its own
+    module. The tests are here so a future re-addition is a decision rather
+    than an accident: if one of these comes back, it should come back with a
+    caller.
+    """
+
+    def test_gitops_has_no_unused_branch_helpers(self):
+        """`current_branch` and `is_clean` were read by nothing. The branch a
+        run uses is recorded at `run:start` and read from there -- see
+        `runrecord.resolved_branch`, which exists because guessing it was a
+        bug."""
+        self.assertFalse(hasattr(gitops, "current_branch"))
+        self.assertFalse(hasattr(gitops, "is_clean"))
+
+    def test_rundir_has_no_plan_mtime(self):
+        """Plan progress is counted from the checkboxes, never from a
+        timestamp; `handoff_mtime` is the one that survived because
+        `Run.iterate` really does compare it before and after."""
+        self.assertFalse(hasattr(RunDir, "plan_mtime"))
+        self.assertTrue(hasattr(RunDir, "handoff_mtime"), "this one has a caller")
+
+    def test_models_has_no_module_level_budget_aliases(self):
+        """Their own comment said "callers and tests read them by name". By the
+        time this was checked, nothing did -- `budgets()` is layered now (file,
+        then config) and a value frozen at import could only disagree with it."""
+        self.assertFalse(hasattr(models, "HEADROOM"))
+        self.assertFalse(hasattr(models, "OUTPUT_OVERRIDE"))
+        self.assertIn("headroom", models.budgets(), "the policy itself stays")
+
+    def test_the_web_run_lookup_is_gone(self):
+        """`web.runs.find` had no caller; the server resolves a run through
+        `run_dirs` and `archive_target` directly."""
+        from web import runs as runs_module
+        self.assertFalse(hasattr(runs_module, "find"))
+
+
+class RetiredSettingTests(unittest.TestCase):
+    """A setting that no longer does anything is not a mistake."""
+
+    def test_worktree_keep_is_no_longer_a_setting(self):
+        self.assertNotIn("keep", config.DEFAULTS["worktree"])
+
+    def test_a_config_that_still_sets_it_is_not_told_off(self):
+        """Somebody wrote it when it meant something -- the same courtesy
+        `[stop] max_iterations` gets."""
+        self.assertEqual([], config.validate({"worktree": {"keep": "always"}}, Path("f")))
+
+    def test_a_real_typo_near_it_is_still_caught(self):
+        problems = config.validate({"worktree": {"kep": "always"}}, Path("f"))
+        self.assertEqual(1, len(problems))
+
+    def test_it_is_gone_from_the_shipped_sample(self):
+        import tomllib
+        self.assertNotIn("keep", tomllib.loads(config.sample())["worktree"])
+
+    def test_nothing_automatically_removes_a_worktree_anyway(self):
+        """Which is why the setting only ever had one sane value: invariant 1,
+        not a policy a setting can vary.
+
+        AGENTS.md describes `gitops.py` as "every git invocation -- no reset,
+        no clean, no worktree removal -- grep it". This is that grep, so the
+        claim is checked rather than asserted in prose.
+        """
+        import ast
+
+        source = Path(__file__).parent.joinpath("gitops.py").read_text()
+        tree = ast.parse(source)
+        # The module docstring says "grep this file for reset and you should
+        # find only this docstring", so it is the one place the words are
+        # allowed -- and dropping it is what turns a prose claim into a check.
+        body = tree.body[1:] if ast.get_docstring(tree) else tree.body
+        literals = {
+            node.value for statement in body
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        for forbidden in ("reset", "clean", "remove", "prune", "--hard", "-D"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, literals,
+                                 f"gitops must not invoke git {forbidden}")
+
+
 if __name__ == "__main__":
     unittest.main()

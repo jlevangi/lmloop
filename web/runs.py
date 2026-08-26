@@ -218,20 +218,6 @@ def is_archived(run_dir: Path) -> bool:
         return False
 
 
-def find(roots: list[Path], project_id: str, run_id: str) -> Path | None:
-    for project in projects(roots):
-        if project["id"] != project_id:
-            continue
-        for run_dir in run_dirs(Path(project["path"])):
-            if run_dir.name == run_id:
-                return run_dir
-    # Archived runs have no project on disk to walk, so they are looked up
-    # directly -- and only after the live ones, so a re-run that reuses a name
-    # always wins over the archived copy of its predecessor.
-    target = archive_target(project_id, run_id)
-    return target if target.is_dir() else None
-
-
 # -- reading ----------------------------------------------------------------
 
 

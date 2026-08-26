@@ -41,14 +41,6 @@ def head_commit(cwd: Path) -> str:
     return git(["rev-parse", "HEAD"], cwd)
 
 
-def current_branch(cwd: Path) -> str:
-    return git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
-
-
-def is_clean(cwd: Path) -> bool:
-    return not git(["status", "--porcelain"], cwd)
-
-
 def branch_exists(repo: Path, branch: str) -> bool:
     """Read-only.  Asked before naming a new run, never before removing one."""
     return bool(

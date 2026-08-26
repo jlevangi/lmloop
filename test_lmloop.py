@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import io
 import json
@@ -2418,6 +2419,102 @@ class RetiredSettingTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, literals,
                                  f"gitops must not invoke git {forbidden}")
+
+
+class DestructiveGitTests(unittest.TestCase):
+    """Where in this project something can be destroyed, and nowhere else.
+
+    `gitops.py` holds every git invocation the loop makes and contains no
+    destructive one at all -- invariant 1. But the dashboard has always needed
+    four that file will never hold: removing a worktree when a run is archived,
+    dropping a branch when an archived run is deleted, and pushing and opening
+    a pull request when asked.
+
+    Those used to be bare `subprocess.run` calls spread through
+    `web/server.py`, which meant the invariant was enforced in a file the
+    destructive calls did not go through. They live in `web/workspace.py` now,
+    and this is the check that keeps it true: every `git`/`gh` argv in the
+    project is found by parsing, not grepping, so a comment mentioning `reset`
+    costs nothing and a real `git reset` cannot hide behind one.
+    """
+
+    #: Subcommands and flags that can lose work or leave the machine.
+    DESTRUCTIVE = {"reset", "clean", "rm", "prune", "push", "-D", "--hard",
+                   "--force", "-f"}
+    #: The only files allowed to contain one.
+    ALLOWED = {"web/workspace.py"}
+
+    def sources(self):
+        root = Path(__file__).parent
+        for path in sorted(root.rglob("*.py")):
+            relative = path.relative_to(root)
+            parts = set(relative.parts)
+            if parts & {".claude", "build", "__pycache__", "tools"}:
+                continue
+            if relative.name.startswith("test_"):
+                continue
+            yield relative, path.read_text()
+
+    def argv_lists(self, source):
+        """Every list literal handed to `subprocess.run`/`Popen` as its argv."""
+        found = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            name = getattr(target, "attr", getattr(target, "id", ""))
+            if name not in ("run", "Popen") or not node.args:
+                continue
+            first = node.args[0]
+            if not isinstance(first, ast.List):
+                continue
+            found.append([
+                element.value for element in first.elts
+                if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            ])
+        return found
+
+    def test_only_one_file_may_run_a_destructive_or_outward_command(self):
+        offenders = {}
+        for relative, source in self.sources():
+            if str(relative) in self.ALLOWED:
+                continue
+            for argv in self.argv_lists(source):
+                if not argv or argv[0] not in ("git", "gh"):
+                    continue
+                bad = sorted(set(argv) & self.DESTRUCTIVE)
+                if bad:
+                    offenders.setdefault(str(relative), []).append((argv[:3], bad))
+        self.assertEqual({}, offenders,
+                         "destructive git outside web/workspace.py")
+
+    def test_gitops_runs_no_git_subcommand_that_can_lose_work(self):
+        """Stricter than the rule above: this file may not hold one at all,
+        not even the ones the dashboard is allowed."""
+        source = Path(__file__).parent.joinpath("gitops.py").read_text()
+        for argv in self.argv_lists(source):
+            with self.subTest(argv=argv[:3]):
+                self.assertFalse(set(argv) & self.DESTRUCTIVE, argv)
+
+    def test_the_allowed_file_really_does_hold_them(self):
+        """So the rule cannot be satisfied by the operations quietly moving
+        somewhere the check does not look, or disappearing."""
+        source = Path(__file__).parent.joinpath("web", "workspace.py").read_text()
+        subcommands = {tuple(argv[:2]) for argv in self.argv_lists(source)}
+        for expected in (("git", "worktree"), ("git", "branch"),
+                         ("git", "push"), ("gh", "pr")):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, subcommands)
+
+    def test_the_worktree_removal_is_never_forced(self):
+        """Git's refusal is load-bearing: it declines while the worktree still
+        holds files nobody has accounted for, which is exactly the case where
+        removing it would discard an agent's work."""
+        source = Path(__file__).parent.joinpath("web", "workspace.py").read_text()
+        for argv in self.argv_lists(source):
+            if argv[:2] == ["git", "worktree"]:
+                self.assertNotIn("--force", argv)
+                self.assertNotIn("-f", argv)
 
 
 if __name__ == "__main__":

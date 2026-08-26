@@ -29,6 +29,7 @@ from pathlib import Path
 import config as config_module
 import runrecord
 from web import runs as runs_module
+from web import workspace
 
 
 def create_project(payload: dict, config: dict) -> tuple[int, dict]:
@@ -193,10 +194,7 @@ def archive_run(project: dict, run_dir: Path) -> tuple[int, dict]:
                 linked.symlink_to(destination)
 
     try:
-        result = subprocess.run(
-            ["git", "worktree", "remove", str(worktree)],
-            cwd=project["path"], capture_output=True, text=True, timeout=60,
-        )
+        result = workspace.remove_worktree(project["path"], worktree)
     except subprocess.TimeoutExpired:
         restore_source()
         return 500, {
@@ -300,10 +298,7 @@ def delete_run(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
     if payload.get("branch"):
         # -D, not -d: the branch is usually unmerged, which is exactly the case
         # the caller is saying they do not want kept.
-        result = subprocess.run(
-            ["git", "branch", "-D", branch],
-            cwd=project["path"], capture_output=True, text=True, timeout=30,
-        )
+        result = workspace.delete_branch(project["path"], branch)
         dropped = branch if result.returncode == 0 else None
     try:
         shutil.rmtree(run_dir)
@@ -331,7 +326,7 @@ def open_pr(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
     if ahead in ("", "0"):
         return 400, {"error": f"{branch} has no commits beyond {base}"}
 
-    pushed = git(["push", "-u", "origin", branch], timeout=180)
+    pushed = workspace.push_branch(repo, branch)
     if pushed.returncode != 0:
         return 500, {
             "error": f"push failed: {(pushed.stderr or pushed.stdout).strip()[-300:]}"
@@ -349,19 +344,12 @@ def open_pr(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
         + "Produced by lmloop. The run's plan, handoff and per-iteration "
         + f"record are in `.lmloop/runs/{run_dir.name}/`.\n"
     )
-    made = subprocess.run(
-        ["gh", "pr", "create", "--head", branch, "--base", base,
-         "--title", title, "--body", body],
-        cwd=repo, capture_output=True, text=True, timeout=120,
-    )
+    made = workspace.create_pull_request(repo, branch, base, title, body)
     if made.returncode != 0:
         message = (made.stderr or made.stdout).strip()
         # An existing PR is not a failure -- it is the answer to "where is the
         # PR for this run", so hand back the link rather than an error.
-        existing = subprocess.run(
-            ["gh", "pr", "view", branch, "--json", "url", "-q", ".url"],
-            cwd=repo, capture_output=True, text=True, timeout=60,
-        )
+        existing = workspace.view_pull_request(repo, branch)
         if existing.returncode == 0 and existing.stdout.strip():
             return 200, {"url": existing.stdout.strip(), "existing": True}
         return 500, {"error": f"gh pr create failed: {message[-400:]}"}

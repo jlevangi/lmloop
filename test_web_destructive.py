@@ -287,6 +287,30 @@ class DeleteTests(unittest.TestCase):
             self.handler.delete_run(self.project, self.archived, {"branch": True})
         self.assertIn("custom/elsewhere", ran.call_args.args[0])
 
+    def test_an_unmerged_branch_is_still_deleted(self):
+        """The case `-D` exists for, and the usual one: a run's branch is
+        almost never merged when somebody deletes its archived record. `-d`
+        would refuse, and the caller would report a failure nobody can act on.
+        """
+        branch = f"lmloop/{self.run_dir.name}"
+        # Commit on the branch so it is genuinely unmerged, which the fixture's
+        # freshly-created branch is not.
+        subprocess.run(["git", "checkout", "-q", branch], cwd=self.repo,
+                       check=True, capture_output=True)
+        (self.repo / "only-on-the-branch.txt").write_text("work\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "unmerged work"], cwd=self.repo,
+                       check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=self.repo,
+                       check=True, capture_output=True)
+
+        self.handler.delete_run(self.project, self.archived, {"branch": True})
+        self.assertEqual(branch, self.handler.payload["branch_deleted"])
+        gone = subprocess.run(["git", "rev-parse", "--verify", branch],
+                              cwd=self.repo, capture_output=True)
+        self.assertNotEqual(0, gone.returncode)
+
     def test_a_branch_that_will_not_delete_does_not_stop_the_removal(self):
         with mock.patch.object(server.subprocess, "run",
                                return_value=mock.Mock(returncode=1)):
@@ -338,6 +362,23 @@ class OpenPrTests(unittest.TestCase):
         self.assertEqual(500, self.handler.status)
         self.assertFalse([c for c in calls if c and c[0] == "gh"],
                          "gh must not run after a failed push")
+
+    def test_the_run_s_own_branch_is_what_gets_pushed(self):
+        """Pushing the wrong branch would put somebody else's commits on the
+        remote under this run's name."""
+        branch = self.commit_on_branch()
+        seen = {}
+        real = subprocess.run
+
+        def fake(argv, **kwargs):
+            if argv[:2] == ["git", "push"]:
+                seen["argv"] = argv
+                return mock.Mock(returncode=1, stdout="", stderr="stop here")
+            return real(argv, **kwargs)
+
+        with mock.patch.object(server.subprocess, "run", side_effect=fake):
+            self.handler.open_pr(self.project, self.run_dir, {})
+        self.assertIn(branch, seen["argv"])
 
     def test_an_existing_pull_request_is_an_answer_not_an_error(self):
         self.commit_on_branch()

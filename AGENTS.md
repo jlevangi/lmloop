@@ -11,7 +11,10 @@ in this codebase is load-bearing and was paid for with a failed run.
 
 1. **Nothing is ever discarded.** No `git reset --hard`, no `git clean`, no
    automatic worktree removal, anywhere. A run that produced nothing still has
-   to be diagnosable.
+   to be diagnosable. The dashboard's operator-initiated removals live in
+   `web/workspace.py` and nowhere else; a test parses every `git`/`gh` argv in
+   the project to keep that true, so a comment mentioning `reset` costs nothing
+   and a real one cannot hide behind one.
 2. **Git is the only witness.** Not iteration counts, not the agent's summary,
    not tool-call counts — the write counter under-counts by design.
 3. **The handoff is a file the agent writes,** never a message the loop parses.

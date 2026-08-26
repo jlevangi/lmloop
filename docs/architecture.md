@@ -16,7 +16,7 @@ loop.
 | `prompts.py` | Builds the iteration prompt. Every section here exists because an agent wasted tool calls re-deriving it. |
 | `rundir.py` | Everything a run leaves behind, plus the plan and handoff accessors. Delegates its reading half to `runrecord.py`. |
 | `runrecord.py` | The run-record contract shared by the runner and the WebUI: canonical readers for liveness, plan progress, control sentinels, and `run:start`-recorded worktree/branch/owner, plus the `schema_version` marker. Takes a bare run directory path, not a `RunDir`, so it works the same for a live worktree or an archived copy with none. |
-| `gitops.py` | Every git invocation. **No reset, no clean, no worktree removal** — grep it. |
+| `gitops.py` | Every git invocation the loop makes. **No reset, no clean, no worktree removal** — and a test parses the argv lists to keep it so, across the whole project, with `web/workspace.py` as the one exception. |
 | `checks.py` | "Did the edit land intact", on the files git says changed, whatever the project configured. |
 | `models.py` | Local-provider preflight and context measurement, plus the per-agent catalogue cache for models it cannot measure. Which provider is "local" is a setting, not a literal. |
 | `browser.py` | Whether omp's browser tool can attach to the CDP endpoint it was given. Redacts before it reports. |
@@ -35,6 +35,8 @@ loop.
 |---|---|
 | `web/server.py` | stdlib `ThreadingHTTPServer`, routing, static, the API. |
 | `web/runs.py` | Finds and reads runs across projects. Reads `status.json` rather than replaying history. |
+| `web/service.py` | What the dashboard does, separated from how it was asked: each operation takes plain arguments and returns `(status, payload)`. No HTTP. |
+| `web/workspace.py` | The only code in the project that removes a worktree, deletes a branch, or reaches off the machine. Few, named and greppable; the guards that permit each one stay in `service.py`. |
 | `web/auth.py` | Who may drive the dashboard: `none` (loopback), `proxy` (identity from a trusted ingress), `oidc` (any issuer). Each mode answers `session_for`; `trusted` is what the network-bind refusal asks. The only place a third-party import appears, and only `oidc` needs it. |
 | `web/static/` | Vanilla JS and CSS, no build step. Hash-routed views, keyed row patching. |
 

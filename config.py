@@ -190,6 +190,26 @@ DEFAULTS: dict = {
         "command": "",
         "blocks_commit": False,
     },
+    "env": {
+        # What the agent and the gate see of the host environment.  The default
+        # is an allowlist, because the alternative -- and what this was until
+        # lm-ka5.9 -- hands every credential in the operator's shell to a
+        # process that is about to run arbitrary commands and commit files.
+        # See env.py for what the base list covers and why it is broad.
+        #
+        # "all" restores the old behaviour for anyone who has looked at this and
+        # wants their whole environment anyway.
+        "inherit": "allowlist",
+        # Extra names to pass, exact or with a trailing `*`.  This is also the
+        # opt-in for credentials the harness genuinely needs in the environment
+        # rather than in its own config file, e.g. "ANTHROPIC_API_KEY": naming
+        # one here is an explicit decision and exempts it from the
+        # credential-name filter.  That exemption takes the exact name -- a
+        # `*` entry still adds variables but never opts a credential in.
+        "pass": [],
+        # Names to withhold whatever else allowed them.  Wins over everything.
+        "block": [],
+    },
     "stop": {
         # The point of the project is a big objective worked down over many
         # short iterations, so the iteration cap is not the safety rail -- it
@@ -396,6 +416,22 @@ older_than_days = 0       # 0 = including the run that just finished
 [gate]
 command       = ""        # e.g. "python -m compileall -q backend"
 blocks_commit = false     # record the result; commit either way
+
+[env]
+# What the agent -- and the gate -- see of your environment.  The default is an
+# allowlist: enough to run a process and a build, plus the harness's own
+# namespace (PI_*, OMP_*, OPENCODE_*).  Everything else is left behind,
+# including every credential in your shell, for the same reason ".env" is not a
+# default under [worktree] link.  A name that looks like a credential is
+# dropped even where a prefix rule allowed it, so NODE_* does not bring
+# NODE_AUTH_TOKEN with it.  See env.py for the full base list.
+inherit = "allowlist"     # "all" restores the pre-allowlist behaviour
+# Extra names, exact or with a trailing "*".  Also the opt-in for a credential
+# the harness needs in the environment rather than in its own config file --
+# that opt-in takes the exact name, so "AWS_*" adds variables but never hands
+# over AWS_SECRET_ACCESS_KEY.
+pass  = []                # e.g. ["ANTHROPIC_API_KEY"]
+block = []                # withheld whatever else allowed them; wins over all
 
 [stop]
 # The budget follows the plan: one iteration per step plus retry_allowance

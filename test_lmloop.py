@@ -1487,5 +1487,149 @@ class FinalisationCharacterizationTests(unittest.TestCase):
         self.assertEqual([s for s in self.STEPS if s != "save_state"], seen)
 
 
+class RunEnvironmentTests(unittest.TestCase):
+    """`Run.env` is what the agent process *and* the gate command get, so this
+    is the one place a host credential could reach either.  See `env.py`."""
+
+    HOST = {
+        "PATH": "/usr/bin",
+        "HOME": "/home/dev",
+        "AWS_SECRET_ACCESS_KEY": "leak",
+        "GITHUB_TOKEN": "leak",
+        "PI_CODING_AGENT_DIR": "/scratch/pi",
+        "OMP_THREADS": "8",
+        "OPENCODE_HOME": "/oc",
+        "SOMEONES_UNRELATED_VAR": "x",
+    }
+
+    def make_run(self, harness_name="pi"):
+        root = Path(tempfile.mkdtemp())
+        cfg = config.load(root)
+        cfg["agent"]["harness"] = harness_name
+        run = Run(root, cfg, "objective", run_id="test-run")
+        run.rundir.path.mkdir(parents=True)
+        run.screen = mock.MagicMock()
+        return run
+
+    def env_of(self, run):
+        with mock.patch.dict(os.environ, self.HOST, clear=True):
+            return run.env()
+
+    def test_unrelated_host_credentials_never_reach_the_agent(self):
+        kept = self.env_of(self.make_run())
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", kept)
+        self.assertNotIn("GITHUB_TOKEN", kept)
+
+    def test_the_essentials_still_reach_it(self):
+        kept = self.env_of(self.make_run())
+        self.assertEqual("/usr/bin", kept["PATH"])
+        self.assertEqual("/home/dev", kept["HOME"])
+
+    def test_the_bytecode_redirect_survives_the_allowlist(self):
+        """It is an override, not something inherited -- and losing it puts
+        `__pycache__` into the agent's next commit."""
+        run = self.make_run()
+        kept = self.env_of(run)
+        self.assertEqual(str(run.rundir.path / "pycache"), kept["PYTHONPYCACHEPREFIX"])
+
+    def test_each_harness_gets_its_own_namespace_and_not_its_siblings(self):
+        pi = self.env_of(self.make_run("pi"))
+        self.assertIn("PI_CODING_AGENT_DIR", pi)
+        self.assertNotIn("OPENCODE_HOME", pi)
+
+        omp = self.env_of(self.make_run("omp"))
+        self.assertIn("OMP_THREADS", omp)
+        self.assertIn("PI_CODING_AGENT_DIR", omp, "omp is a pi fork and reads PI_* too")
+
+        opencode = self.env_of(self.make_run("opencode"))
+        self.assertIn("OPENCODE_HOME", opencode)
+        self.assertNotIn("PI_CODING_AGENT_DIR", opencode)
+
+    def test_an_operator_can_opt_a_credential_in(self):
+        run = self.make_run()
+        run.config["env"]["pass"] = ["GITHUB_TOKEN"]
+        kept = self.env_of(run)
+        self.assertEqual("leak", kept["GITHUB_TOKEN"])
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", kept)
+
+    def test_an_operator_can_have_the_old_behaviour_back(self):
+        run = self.make_run()
+        run.config["env"]["inherit"] = "all"
+        self.assertIn("AWS_SECRET_ACCESS_KEY", self.env_of(run))
+
+    def test_block_holds_even_against_inherit_all(self):
+        run = self.make_run()
+        run.config["env"]["inherit"] = "all"
+        run.config["env"]["block"] = ["AWS_*"]
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", self.env_of(run))
+
+
+class ProbeEnvTests(unittest.TestCase):
+    """The one-line notice that stops a withheld credential looking like a
+    model failure an hour later."""
+
+    def make_run(self):
+        root = Path(tempfile.mkdtemp())
+        run = Run(root, config.load(root), "objective", run_id="test-run")
+        run.rundir.path.mkdir(parents=True)
+        run.screen = mock.MagicMock()
+        return run
+
+    def probe(self, run, host):
+        with mock.patch.dict(os.environ, host, clear=True):
+            run.probe_env()
+
+    def test_withheld_credentials_are_named_in_the_event_log(self):
+        run = self.make_run()
+        self.probe(run, {"PATH": "/bin", "GITHUB_TOKEN": "x", "AWS_SECRET_ACCESS_KEY": "y"})
+        events = [e for e in run.rundir.read_events() if e.get("event") == "env:withheld"]
+        self.assertEqual(1, len(events))
+        self.assertEqual(2, events[0]["count"])
+        self.assertEqual(["AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"], events[0]["names"])
+
+    def test_the_values_are_never_recorded(self):
+        run = self.make_run()
+        self.probe(run, {"GITHUB_TOKEN": "ghp_realsecret"})
+        self.assertNotIn("ghp_realsecret", run.rundir.log_path.read_text())
+        said = " ".join(str(c.args[0]) for c in run.screen.log.call_args_list)
+        self.assertNotIn("ghp_realsecret", said)
+
+    def test_it_says_how_to_opt_one_in(self):
+        run = self.make_run()
+        self.probe(run, {"GITHUB_TOKEN": "x"})
+        said = " ".join(str(c.args[0]) for c in run.screen.log.call_args_list)
+        self.assertIn("GITHUB_TOKEN", said)
+        self.assertIn("[env] pass", said)
+
+    def test_a_clean_environment_says_nothing(self):
+        run = self.make_run()
+        self.probe(run, {"PATH": "/bin", "HOME": "/h"})
+        self.assertEqual([], [e for e in run.rundir.read_events()
+                              if e.get("event") == "env:withheld"])
+        run.screen.log.assert_not_called()
+
+    def test_it_says_nothing_when_the_operator_chose_to_inherit_everything(self):
+        run = self.make_run()
+        run.config["env"]["inherit"] = "all"
+        self.probe(run, {"GITHUB_TOKEN": "x"})
+        run.screen.log.assert_not_called()
+
+    def test_a_credential_that_was_opted_in_is_not_reported_as_withheld(self):
+        run = self.make_run()
+        run.config["env"]["pass"] = ["GITHUB_TOKEN"]
+        self.probe(run, {"GITHUB_TOKEN": "x"})
+        run.screen.log.assert_not_called()
+
+    def test_a_shell_full_of_credentials_does_not_flood_the_header(self):
+        run = self.make_run()
+        host = {f"THING_{n}_TOKEN": "x" for n in range(60)}
+        self.probe(run, host)
+        event = [e for e in run.rundir.read_events() if e.get("event") == "env:withheld"][0]
+        self.assertEqual(60, event["count"])
+        self.assertEqual(40, len(event["names"]))
+        said = " ".join(str(c.args[0]) for c in run.screen.log.call_args_list)
+        self.assertIn("and 57 more", said)
+
+
 if __name__ == "__main__":
     unittest.main()

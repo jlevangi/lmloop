@@ -26,8 +26,10 @@ from pathlib import Path
 import browser
 import checks
 import display
+import env as envpolicy
 import eta
 import gitops
+import harness
 import models
 import policy
 import prompts
@@ -188,6 +190,7 @@ class Run:
         self.rundir.claim()
         self.publish_sessions()
         self.linked = self.link_environment()
+        self.probe_env()
         self.probe_gate(base)
         self.probe_browser()
         self.rundir.event(
@@ -228,6 +231,7 @@ class Run:
                 f"  or stop it first:       touch {self.rundir.stop_path}"
             )
         self.rundir.claim()
+        self.probe_env()
         done = max(
             (int(path.stem.split("-")[1]) for path in self.rundir.path.glob("iteration-*-prompt.md")),
             default=0,
@@ -396,6 +400,12 @@ class Run:
     def env(self) -> dict:
         """The environment for anything that runs inside the worktree.
 
+        An allowlist by default rather than a copy of the operator's shell --
+        see `envpolicy` for what survives and why.  This is the environment for
+        the agent *and* for the gate, deliberately: a gate is a shell string
+        from config, run in the same worktree, and there is no reading of it
+        under which it needs the credentials the agent is not trusted with.
+
         Nothing that merely *ran* during an iteration should end up in the
         commit.  Python writes bytecode next to the source by default, so both
         the gate and any `python` the agent invokes through its bash tool leave
@@ -403,7 +413,41 @@ class Run:
         cache into the run directory -- already excluded from git -- keeps the
         commit to what the agent actually wrote.
         """
-        return dict(os.environ, PYTHONPYCACHEPREFIX=str(self.rundir.path / "pycache"))
+        settings = self.config.get("env", {})
+        return envpolicy.build(
+            os.environ,
+            inherit=settings.get("inherit", "allowlist"),
+            harness_names=harness.get(self.harness_name).env_passthrough,
+            allow=tuple(settings.get("pass", ())),
+            block=tuple(settings.get("block", ())),
+            overrides={"PYTHONPYCACHEPREFIX": str(self.rundir.path / "pycache")},
+        )
+
+    def probe_env(self) -> None:
+        """Say once what the agent will *not* be able to see.
+
+        A harness that needed a credential fails a long way from the cause -- an
+        auth error mid-iteration, a provider that simply returns nothing -- and
+        an operator has no reason to connect that to an allowlist they never
+        set.  Two lines at the start turn a lost hour into a five-second fix.
+
+        Names only, never values: this goes into the event log, and a run's own
+        record gets read by people who were not at the machine it ran on.
+        """
+        settings = self.config.get("env", {})
+        if settings.get("inherit", "allowlist") == "all":
+            return
+        missing = envpolicy.withheld(os.environ, self.env())
+        if not missing:
+            return
+        # Capped: a shell carrying forty of these would otherwise push the run
+        # header off the screen, and the count is the part that matters.
+        self.rundir.event("env:withheld", names=missing[:40], count=len(missing))
+        shown = ", ".join(missing[:3])
+        more = f", and {len(missing) - 3} more" if len(missing) > 3 else ""
+        self.screen.log(f"  env     withholding {len(missing)} credential-shaped"
+                        f" variable(s): {shown}{more}")
+        self.screen.log("          add names to [env] pass if the agent needs them")
 
     def probe_browser(self) -> None:
         """Say once, at the start, whether the agent's browser can attach.

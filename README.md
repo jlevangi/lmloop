@@ -307,6 +307,27 @@ which is easier to trust than a cron job quietly rewriting run directories at
   in the commit message and the next iteration's prompt but commits regardless,
   which is usually what you want; a gate that could not be run never blocks a
   commit, whatever that setting says.
+- `[env] inherit`, `pass`, `block` — what the agent and the gate see of your
+  environment. The default is `inherit = "allowlist"`: enough to run a process
+  and a build (a PATH, a HOME, a locale, TLS trust, proxies, the usual
+  toolchain variables), plus the harness's own namespace — `PI_*` for pi,
+  `OMP_*` as well for omp, `OPENCODE_*` for opencode. Everything else is left
+  behind, including every credential in your shell, because an agent runs
+  arbitrary commands and commits files and there is no reading under which it
+  needs your cloud session token. On top of that, a name that *looks* like a
+  credential is dropped even where a prefix rule allowed it, so `NODE_*` can be
+  inherited without `NODE_AUTH_TOKEN` going with it.
+
+  If a harness genuinely needs one in the environment rather than in its own
+  config file, name it exactly: `pass = ["ANTHROPIC_API_KEY"]`. The exemption
+  takes the exact name — a `pass` entry ending in `*` still adds variables, but
+  never opts a credential in, because nobody typing `AWS_*` for `AWS_REGION`
+  means to include the secret key. `block` wins over everything.
+  `inherit = "all"` restores the pre-allowlist behaviour wholesale.
+
+  A run says at the start which credential-shaped variables it is withholding —
+  names only, never values — so a harness that needed one fails in the first
+  line of the run rather than as an unexplained auth error an hour in.
 - `[planning] pre_write_file_limit` and `steps_per_iteration` control work-unit
   size. Defaults remain conservative (three files, one plan step), but a model
   with a measured large context can be allowed broader coherent turns without

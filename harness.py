@@ -70,6 +70,13 @@ class Harness:
     # The `--tools` names this agent will accept, when it is fussy about it.
     # Empty means it takes whatever it is given; see `unknown_tools`.
     known_tools: frozenset[str] = frozenset()
+    # Environment variables this agent needs, on top of `env.BASE_ALLOW`.
+    # Trailing `*` is a prefix.  The adapter owns these because nothing else
+    # can: `PI_CODING_AGENT_DIR` relocates pi's whole config directory and is
+    # meaningless to opencode, and a list kept anywhere else would have to know
+    # every agent's private namespace.  Credential-shaped names still need an
+    # explicit `[env] pass` entry -- a prefix here is not an opt-in for one.
+    env_passthrough: tuple[str, ...] = ()
 
     def argv(self, *, model, tools, thinking, session_dir, session_id) -> list[str]:
         raise NotImplementedError
@@ -112,6 +119,10 @@ class PiHarness(Harness):
 
     name = "pi"
     binary = "pi"
+    # `PI_CODING_AGENT_DIR` is the one that matters: it relocates pi's whole
+    # config directory -- models.json, sessions, settings -- and is how a run
+    # is pointed at a scratch config instead of the operator's own.
+    env_passthrough = ("PI_*",)
     interesting = (
         '"tool_execution_start"', '"message_end"', '"agent_end"', '"compaction_start"',
     )
@@ -204,6 +215,7 @@ class OpencodeHarness(Harness):
 
     name = "opencode"
     binary = "opencode"
+    env_passthrough = ("OPENCODE_*",)
     interesting = ('"tool_use"', '"step_finish"')
     activity = (b'"text"', b'"tool_use"', b'"step_')
 
@@ -327,6 +339,9 @@ class OmpHarness(PiHarness):
 
     name = "omp"
     binary = "omp"
+    # omp is a pi fork and reads pi's variables too, so this adds to the
+    # inherited `PI_*` rather than replacing it.
+    env_passthrough = ("PI_*", "OMP_*")
     interesting = (
         '"tool_execution_start"', '"message_end"', '"agent_end"',
         '"auto_compaction_start"',

@@ -21,12 +21,12 @@ class LocalProviderTests(unittest.TestCase):
     turn the whole local path off.
     """
 
-    def with_provider(self, name):
-        policy = dict(models._FALLBACK, local_provider=name)
+    def with_provider(self, *names):
+        policy = dict(models._FALLBACK, local_providers=[n for n in names if n])
         return mock.patch.object(models, "budgets", return_value=policy)
 
     def test_the_default_is_llama_swap(self):
-        self.assertEqual("llama-swap", models._FALLBACK["local_provider"])
+        self.assertEqual(["llama-swap"], models._FALLBACK["local_providers"])
 
     def test_a_model_from_the_local_provider_is_local(self):
         with self.with_provider("llama-swap"):
@@ -53,8 +53,8 @@ class LocalProviderTests(unittest.TestCase):
 
 
 class PreflightTests(unittest.TestCase):
-    def with_provider(self, name):
-        policy = dict(models._FALLBACK, local_provider=name)
+    def with_provider(self, *names):
+        policy = dict(models._FALLBACK, local_providers=[n for n in names if n])
         return mock.patch.object(models, "budgets", return_value=policy)
 
     def test_a_router_model_is_not_preflighted(self):
@@ -100,8 +100,8 @@ class PreflightTests(unittest.TestCase):
 
 
 class DeclaredWindowTests(unittest.TestCase):
-    def with_provider(self, name):
-        policy = dict(models._FALLBACK, local_provider=name)
+    def with_provider(self, *names):
+        policy = dict(models._FALLBACK, local_providers=[n for n in names if n])
         return mock.patch.object(models, "budgets", return_value=policy)
 
     def test_a_model_with_no_provider_is_unknown(self):
@@ -208,6 +208,68 @@ class HarnessWindowsCacheTests(unittest.TestCase):
             models.forget_harness_windows()
             models.harness_windows("pi")
         self.assertEqual(2, adapter.declared_windows.call_count)
+
+
+class RouterQualifiedLocalModelTests(unittest.TestCase):
+    """One local server arrives under as many names as there are ways to reach
+    it, and lmloop has to recognise all of them.
+
+    Measured on a real setup: pi reaches llama-swap directly as
+    `llama-swap/Qwen3.8-27B`, while omp and opencode reach the same box through
+    a router as `9router/pc-llama-swap/Qwen3.8-27B`.  Recognising only the
+    first meant the other two were treated as remote, so lmloop believed the
+    router's advertised 262144 for weights actually loaded with
+    `--ctx-size 131072` -- the exact failure `models.py` documents.
+    """
+
+    def with_providers(self, *names):
+        policy = dict(models._FALLBACK, local_providers=list(names))
+        return mock.patch.object(models, "budgets", return_value=policy)
+
+    def test_a_router_qualified_id_is_local_when_declared(self):
+        with self.with_providers("llama-swap", "9router/pc-llama-swap"):
+            self.assertTrue(models.is_local("9router/pc-llama-swap/Qwen3.8-27B"))
+
+    def test_the_bare_model_name_survives_a_multi_segment_prefix(self):
+        """The measured cache is keyed on what `/running` reports -- the name
+        alone -- so the whole prefix comes off, not just the first segment."""
+        with self.with_providers("llama-swap", "9router/pc-llama-swap"):
+            self.assertEqual("Qwen3.8-27B",
+                             models.local_name("9router/pc-llama-swap/Qwen3.8-27B"))
+            self.assertEqual("Qwen3.8-27B", models.local_name("llama-swap/Qwen3.8-27B"))
+
+    def test_every_spelling_of_one_model_declares_the_same_window(self):
+        with self.with_providers("llama-swap", "9router/pc-llama-swap"), \
+             mock.patch.object(models, "load_cache", return_value={"Qwen3.8-27B": 131072}):
+            direct = models.declared_window("llama-swap/Qwen3.8-27B")
+            routed = models.declared_window("9router/pc-llama-swap/Qwen3.8-27B")
+        self.assertEqual(direct, routed)
+        self.assertEqual(131072, sum(direct), "the split must land on the real window")
+
+    def test_a_sibling_under_the_same_router_is_still_remote(self):
+        """`9router/pc-llama-swap` being local must not make all of 9router
+        local -- a genuine cloud model behind the same router is not."""
+        with self.with_providers("llama-swap", "9router/pc-llama-swap"):
+            self.assertFalse(models.is_local("9router/ag/claude-sonnet-4-6"))
+
+    def test_a_prefix_only_matches_on_a_segment_boundary(self):
+        with self.with_providers("llama-swap"):
+            self.assertFalse(models.is_local("llama-swap-remote/Qwen3.8-27B"))
+            self.assertFalse(models.is_local("llama-swap"))
+
+    def test_the_older_single_string_key_still_works(self):
+        """A budgets file written before this was a list keeps working."""
+        policy = dict(models._FALLBACK)
+        policy.pop("local_providers")
+        policy["local_provider"] = "llama-swap"
+        with mock.patch.object(models, "budgets", return_value=policy):
+            self.assertEqual(["llama-swap"], models.local_providers())
+            self.assertTrue(models.is_local("llama-swap/x"))
+
+    def test_an_empty_list_turns_the_local_path_off(self):
+        with self.with_providers():
+            self.assertFalse(models.is_local("llama-swap/Qwen3.8-27B"))
+            self.assertEqual("", models.local_name("llama-swap/Qwen3.8-27B"))
 
 
 if __name__ == "__main__":

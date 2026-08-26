@@ -102,17 +102,26 @@ append, and the one thing in it that must match exactly: the provider has to be
 named `llama-swap`, because everything below keys off that prefix.
 
 That file is YAML, and lmloop is standard library only, so nothing here reads
-it. The consequence is confined to one case: a **cloud** model under omp has no
-declared window, so `Run.window` is 0, the dashboard gauge is blank and thrash
-escalation cannot rank it. Local models are unaffected — their windows are
-measured from the llama-server command line, not declared by anyone.
+it — and nothing needs to. omp is asked instead: `omp models --json` returns the
+same catalogue as structured output, which is how a cloud model under omp gets a
+declared window without anyone hand-writing a YAML parser.
+
+Its discovery reports ids without windows, though, so omp guesses unless the
+provider block declares them. It guessed 262144 for a `Qwen3.8-27B` loaded with
+`--ctx-size 131072` — and omp compacts against its own number, not lmloop's, so
+the guess is the one that matters. `docs/operations.md` has the block.
 
 ## Models lmloop does not measure
 
 `declared_window` only measures llama-swap, because only llama-swap will tell it
-how the weights were actually loaded. For every other provider it reads pi's own
-`~/.pi/agent/models.json` -- the same file pi reads when it builds the request,
-so the two agree by construction.
+how the weights were actually loaded. For every other provider it asks *the agent
+that will run the request* for its catalogue — `Harness.declared_windows`, cached
+once per process. pi parses its own `~/.pi/agent/models.json`; omp is asked via
+`omp models --json`; opencode has no catalogue command and reports nothing.
+Asking the agent rather than one fixed file is what makes the numbers agree by
+construction: before this, omp was answered out of pi's `models.json`, which
+listed four models where omp knew ninety-seven, so every other one came back
+with no window at all.
 
 Before that, `declared_window` returned `None` for anything non-llama-swap, and
 a `None` window is a zero window: `Run.window` fell to 0, the dashboard's gauge

@@ -302,12 +302,64 @@ harness = "omp"
 model   = "llama-swap/<model>"
 ```
 
-Two things this does not solve. `PI_CODING_AGENT_DIR` relocates that whole
-directory if you want a config isolated from your interactive omp. And omp's
-`models.yml` is YAML, which lmloop — standard library only — cannot read, so a
-**cloud** model under omp has no declared window: the dashboard gauge stays
-blank and thrash escalation cannot rank it. Local models are unaffected, because
-their windows are measured rather than declared.
+`PI_CODING_AGENT_DIR` relocates that whole directory if you want a config
+isolated from your interactive omp.
+
+Discovery finds the models but not their windows — `openai-models-list` returns
+ids and nothing else, so omp guesses. Measured on one box, it guessed 262144 for
+a `Qwen3.8-27B` actually loaded with `--ctx-size 131072`, and omp compacts
+against its own number, not lmloop's. Declare them, matching what
+`lmloop models` reports:
+
+```yaml
+    models:
+      - id: Qwen3.8-27B
+        contextWindow: 106496
+        maxTokens: 24576
+```
+
+`models` must be an **array**; an object fails validation with
+`providers.llama-swap.models: must be an array (was an object)` and — worth
+knowing — that error disables *every* custom provider, not just the broken one,
+so a typo here takes 9router down with it. omp says so on stderr and then
+reports "No models available".
+
+Cloud models under omp are no longer a gap: lmloop asks `omp models --json` for
+its catalogue rather than reading pi's `models.json`, which is what it used to
+do. See `Harness.declared_windows`.
+
+## Pointing opencode at llama-swap
+
+opencode keeps providers in `~/.config/opencode/opencode.json`. Same shape of
+block, and the same reason to declare the windows rather than let it guess:
+
+```json
+"provider": {
+  "llama-swap": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "llama-swap (direct)",
+    "options": { "baseURL": "http://127.0.0.1:8080/v1" },
+    "models": {
+      "Qwen3.8-27B": { "name": "Qwen3.8-27B",
+                       "limit": { "context": 106496, "output": 24576 } }
+    }
+  }
+}
+```
+
+```toml
+[agent]
+harness = "opencode"
+model   = "llama-swap/<model>"
+```
+
+opencode takes no `[agent] tools` — it has no allowlist flag — so leave it out.
+
+**Go direct, not through a router.** An opencode run pointed at the same
+llama-swap *through* 9router produced no output at all: nine minutes, a
+zero-byte stream, nothing to diagnose. Pointed straight at llama-swap the same
+objective committed in 1m02s. The router is for when you actually want a cloud
+model.
 
 ## Testing changes without waiting hours
 

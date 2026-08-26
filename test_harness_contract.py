@@ -303,5 +303,102 @@ class _FakeFile:
         return self._content
 
 
+def load_opencode():
+    """opencode's stream is shaped differently: no `message_end`, tool calls
+    arrive as one `tool_use` with the result attached, and a step's `reason` is
+    the closest thing it has to a stop reason."""
+    events = {}
+    for line in (TESTDATA / "opencode-events.jsonl").read_text().splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        part = event.get("part") or {}
+        kind = event.get("type")
+        if kind == "tool_use":
+            key = f"tool_use:{(part.get('state') or {}).get('status')}"
+        elif kind == "step_finish":
+            key = f"step_finish:{part.get('reason')}"
+        else:
+            key = kind
+        events[key] = event
+    return events
+
+
+class OpencodeCapturedEventTests(unittest.TestCase):
+    """Captured from a real opencode run against a local llama-swap.
+
+    Kept apart from the pi/omp cases because opencode shares none of their
+    vocabulary -- which is the reason to capture it rather than assume the
+    adapter's own view of it is right.
+    """
+
+    def test_a_tool_call_is_normalised_like_any_other_agents(self):
+        adapter = harness.get("opencode")
+        event = load_opencode()["tool_use:completed"]
+        result = adapter.classify(event)
+        self.assertEqual(harness.TOOL, result["kind"])
+        self.assertEqual("write", result["name"])
+        self.assertEqual("src/example.py", result["path"])
+        self.assertTrue(result["target"])
+
+    def test_a_step_carries_its_reason_and_token_counts(self):
+        adapter = harness.get("opencode")
+        for variant, reason in (("step_finish:stop", "stop"),
+                                ("step_finish:tool-calls", "tool-calls")):
+            with self.subTest(variant=variant):
+                event = load_opencode()[variant]
+                result = adapter.classify(event)
+                self.assertEqual(harness.MESSAGE_END, result["kind"])
+                self.assertEqual(reason, result["stop_reason"])
+                tokens = event["part"]["tokens"]
+                self.assertEqual(tokens["input"], result["input"])
+                self.assertEqual(tokens["output"], result["output"])
+
+    def test_tokens_come_from_the_step_not_a_message(self):
+        """opencode puts usage on `step_finish`; pi and omp put it on an
+        assistant `message_end`.  An adapter that looked for a message here
+        would report zero tokens for every iteration."""
+        result = harness.get("opencode").classify(load_opencode()["step_finish:stop"])
+        self.assertGreater(result["input"], 0)
+        self.assertGreater(result["output"], 0)
+
+    def test_bookkeeping_events_classify_to_nothing(self):
+        adapter = harness.get("opencode")
+        for key in ("step_start", "text"):
+            with self.subTest(event=key):
+                self.assertIsNone(adapter.classify(load_opencode()[key]))
+
+    def test_it_exposes_no_compaction_and_says_so(self):
+        """No compaction event means the summary harvest is unavailable and an
+        overflowing iteration falls back to a git-synthesised handoff."""
+        adapter = harness.get("opencode")
+        self.assertEqual("", adapter.compaction_event)
+        self.assertEqual(b"", adapter.compaction_marker)
+        self.assertEqual("", adapter.compaction_summary(load_opencode()["step_finish:stop"]))
+
+    def test_everything_it_classifies_survives_the_interesting_filter(self):
+        adapter = harness.get("opencode")
+        for key, event in load_opencode().items():
+            if adapter.classify(event) is None:
+                continue
+            with self.subTest(event=key):
+                self.assertTrue(
+                    any(m in json.dumps(event) for m in adapter.interesting),
+                    f"{key} is classified but would never be parsed",
+                )
+
+    def test_its_activity_markers_appear_in_real_output(self):
+        blob = (TESTDATA / "opencode-events.jsonl").read_bytes()
+        for marker in harness.get("opencode").activity:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, blob)
+
+    def test_classify_never_raises_on_any_captured_event(self):
+        adapter = harness.get("opencode")
+        for key, event in load_opencode().items():
+            with self.subTest(event=key):
+                adapter.classify(event)
+
+
 if __name__ == "__main__":
     unittest.main()

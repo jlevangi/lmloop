@@ -7,10 +7,12 @@ from real runs and redacted. Used by `test_harness_contract.py`.
 |---|---|
 | `pi-events.jsonl` | an archived pi run |
 | `omp-events.jsonl` | a live omp worktree |
+| `opencode-events.jsonl` | an lmloop run driving opencode against a local llama-swap |
 
-There is no `opencode-events.jsonl`: no run on this machine has used it, and
-inventing one would only assert what `OpencodeHarness` already believes. Add
-it from a real run rather than by hand.
+opencode shares none of the other two's vocabulary — no `message_end`, tool
+calls arrive as one `tool_use` with the result already attached, and usage rides
+on `step_finish` rather than a message — which is exactly why it is captured
+rather than assumed.
 
 ## Redaction
 

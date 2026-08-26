@@ -49,18 +49,32 @@ _FALLBACK = {
     "output_override": {"local-wide": 24576, "local-fast": 16384},
     "unmeasured_context": 24576,
     "llama_swap_url": "http://127.0.0.1:8080",
-    # Which provider prefix means "a local server whose real window this
-    # machine can measure for itself".  Everything in this module that reads
+    # Model-id prefixes that mean "this is served by the local llama-swap,
+    # whatever the agent calls it".  Everything in this module that reads
     # `/running`, parses a `--ctx-size`, or trusts the context cache applies to
-    # this provider and no other.
+    # these prefixes and nothing else.  What follows the prefix is the bare
+    # model name llama-swap knows it by, which is what the measured cache is
+    # keyed on.
     #
-    # Named rather than hardcoded because llama-swap is one deployment, not a
-    # requirement: set it to "" and the local path is simply off -- no
-    # preflight, no cache lookup, every model's metadata comes from the
-    # harness's own config the way a router-backed model's already does.  That
-    # is the supported configuration for a machine that has no local server at
-    # all, and it is why nothing here compares a provider to a literal.
-    "local_provider": "llama-swap",
+    # A LIST, because one server arrives under as many names as there are ways
+    # to reach it.  Measured on one machine, all three of these are the same
+    # weights on the same box:
+    #
+    #     pi        llama-swap/Qwen3.8-27B                 (direct)
+    #     omp       9router/pc-llama-swap/Qwen3.8-27B      (through a router)
+    #     opencode  9router/pc-llama-swap/Qwen3.8-27B      (through a router)
+    #
+    # and only the first was recognised.  The other two were treated as remote,
+    # so lmloop believed what the router advertised -- 262144 for a model
+    # actually loaded with `--ctx-size 131072`, which is the exact failure this
+    # module's docstring exists to describe.  Declaring the prefix is how an
+    # operator says "these two names are my server too".
+    #
+    # Empty list turns the local path off entirely: no preflight, no cache
+    # lookup, every model's metadata from the agent's own catalogue.  That is
+    # the supported configuration for a machine with no local server, and it is
+    # why nothing here compares a provider to a literal.
+    "local_providers": ["llama-swap"],
 }
 
 
@@ -82,19 +96,47 @@ HEADROOM = budgets()["headroom"]
 OUTPUT_OVERRIDE = budgets()["output_override"]
 
 
+def local_providers() -> list[str]:
+    """Model-id prefixes served by the local server; empty if there is none.
+
+    Accepts the older single-string `local_provider` key as well, so a budgets
+    file written before this was a list keeps working unchanged.
+    """
+    policy = budgets()
+    configured = policy.get("local_providers")
+    if configured is None:
+        configured = policy.get("local_provider") or []
+    if isinstance(configured, str):
+        configured = [configured] if configured else []
+    return [prefix for prefix in configured if prefix]
+
+
 def local_provider() -> str:
-    """The provider prefix this machine measures itself; "" if there is none."""
-    return budgets()["local_provider"]
+    """The first configured local prefix, or "".
+
+    Kept for the callers that need one name to build an id with rather than a
+    set to test against -- `lmloop models` printing what it just measured.
+    """
+    prefixes = local_providers()
+    return prefixes[0] if prefixes else ""
+
+
+def local_name(model: str) -> str:
+    """The bare name the local server knows this model by, or "".
+
+    The measured cache is keyed on what `GET /running` reports, which is the
+    model name alone -- so a router-qualified id has to have the whole prefix
+    taken off, not just the first path segment.
+    """
+    for prefix in local_providers():
+        if model.startswith(prefix + "/"):
+            return model[len(prefix) + 1:]
+    return ""
 
 
 def is_local(model: str) -> bool:
-    """Is this a model whose real window we can measure, rather than be told?
-
-    False when no local provider is configured, which is the whole point: a
-    machine with no local server takes the router path for everything.
-    """
-    provider = local_provider()
-    return bool(provider) and provider_of(model) == provider
+    """Is this a model whose real window we can measure, rather than be told?"""
+    return bool(local_name(model))
 
 _CTX_SIZE = re.compile(r"--ctx-size\s+(\d+)")
 
@@ -123,7 +165,7 @@ def preflight(model: str, base_url: str) -> tuple[bool, str]:
     if not is_local(model):
         return True, "no preflight for non-local models"
 
-    name = model.split("/", 1)[1]
+    name = local_name(model)
     try:
         entries = running(base_url)
     except (urllib.error.URLError, OSError, ValueError) as error:
@@ -193,8 +235,6 @@ def declared_window(model: str, harness_name: str = "") -> tuple[int, int] | Non
     """``(context, max_output)`` we believe is safe, or None if unknown."""
     if "/" not in model:
         return None
-    provider, name = model.split("/", 1)
-
     if not is_local(model):
         # Not measurable from here, so the agent's own catalogue is the best
         # answer there is -- and it has to be *this* agent's.  Returning None
@@ -206,6 +246,7 @@ def declared_window(model: str, harness_name: str = "") -> tuple[int, int] | Non
         # keeps its own and knows far more models than pi's file lists.
         return harness_windows(harness_name).get(model)
 
+    name = local_name(model)
     real = load_cache().get(name)
     if not real:
         return None

@@ -1837,10 +1837,10 @@ class LocalServerWaitTests(unittest.TestCase):
         self.assertEqual(60, slept.call_args.args[0])
 
     def test_with_no_local_provider_configured_nothing_waits(self):
-        """`local_provider = ""` is the setting for a machine with no local
+        """An empty `local_providers` is the setting for a machine with no local
         server at all; a llama-swap-shaped model id must not resurrect the wait."""
         run = self.make_run("llama-swap/local-fast")
-        policy = dict(models._FALLBACK, local_provider="")
+        policy = dict(models._FALLBACK, local_providers=[])
         with mock.patch.object(models, "budgets", return_value=policy),              mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_wait_for_server") as wait,              mock.patch.object(run, "_sleep_interruptibly", return_value=True):
             self.assertTrue(run._backoff(1, "agent-error"))
         wait.assert_not_called()

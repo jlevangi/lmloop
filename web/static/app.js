@@ -34,7 +34,19 @@ async function api(path, options = {}) {
     init.body = JSON.stringify(options.body);
     if (state.config?.csrf) init.headers["X-CSRF-Token"] = state.config.csrf;
   }
-  const response = await fetch(path, init);
+  const method = (init.method || "GET").toUpperCase();
+  let response;
+  for (const delay of method === "GET" ? [0, 250, 750] : [0]) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    try {
+      response = await fetch(path, init);
+      break;
+    } catch (error) {
+      // A suspended mobile PWA can resume before its network process is ready.
+      // Only GET is safe to replay; a mutation must surface its original result.
+      if (!(error instanceof TypeError) || delay === 750 || method !== "GET") throw error;
+    }
+  }
   if (response.status === 401) { location.href = "/login"; throw new Error("unauthenticated"); }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
@@ -1121,7 +1133,20 @@ function schedule() {
   state.timer = setTimeout(async () => { await poll(); schedule(); }, seconds * 1000);
 }
 
-document.addEventListener("visibilitychange", schedule);
+function resumePolling() {
+  if (document.hidden || !state.config) return;
+  clearTimeout(state.timer);
+  void poll().finally(schedule);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) schedule();
+  else resumePolling();
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) resumePolling();
+});
+window.addEventListener("online", resumePolling);
 
 // One second, only while something is running and the tab is visible.
 setInterval(() => {

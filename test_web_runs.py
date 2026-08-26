@@ -10,6 +10,19 @@ from unittest import mock
 
 import config as config_module
 from web import runs
+
+
+class PwaResumeRecoveryTests(unittest.TestCase):
+    def test_gets_retry_and_resume_events_poll_immediately(self):
+        app = (Path(__file__).parent / "web" / "static" / "app.js").read_text()
+        self.assertIn('method === "GET" ? [0, 250, 750] : [0]', app)
+        self.assertIn('window.addEventListener("pageshow"', app)
+        self.assertIn('window.addEventListener("online", resumePolling)', app)
+        self.assertIn('void poll().finally(schedule)', app)
+
+    def test_shell_version_was_bumped_for_new_client_logic(self):
+        worker = (Path(__file__).parent / "web" / "static" / "sw.js").read_text()
+        self.assertIn('const SHELL = "lmloop-shell-v4"', worker)
 from web.server import Handler
 
 

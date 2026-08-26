@@ -1319,8 +1319,9 @@ class Run:
         return True
 
     def _wait_for_server(self, iteration: int, detail: str) -> bool:
-        """Hold until llama-swap comes back.  True if it did, False if we gave up.
+        """Hold until the local server comes back.  True if it did, False if we gave up.
 
+        Only reached for a run whose model is served locally -- see `_backoff`.
         This is the case where the machine's owner needs the GPU: the server is
         stopped deliberately, for as long as a game lasts.  Nothing is wrong and
         nothing needs escalating -- the iteration simply cannot run yet, so the
@@ -1371,8 +1372,15 @@ class Run:
             six hours, so it keeps the original 1m/2m/4m and then gives up.
 
         `GET /running` tells them apart, and it is the same call preflight makes.
+
+        Both of those are about a *local* server, and only a run whose model
+        comes from one has anything to wait for.  Asking regardless cost a
+        cloud-model run six hours: with no llama-swap listening, the very first
+        agent-error found the server "not there", parked on the long wait for a
+        service the run never used, and only then failed -- the same failure the
+        short backoff reaches in seven minutes.
         """
-        if not self._server_is_up():
+        if models.is_local(self.model) and not self._server_is_up():
             return self._wait_for_server(iteration, detail)
 
         if not hasattr(self, "_errors"):

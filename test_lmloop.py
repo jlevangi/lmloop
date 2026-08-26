@@ -17,6 +17,7 @@ import config
 import gitops
 import harness
 import lmloop
+import models
 import loop
 import pi_runner
 import prompts
@@ -1775,6 +1776,74 @@ class ThirdPartyAdapterTests(unittest.TestCase):
         with mock.patch.object(loop.browser, "preflight") as preflight:
             run.probe_browser()
         preflight.assert_not_called()
+
+
+class LocalServerWaitTests(unittest.TestCase):
+    """Whether a failing run waits for a local model server, per lm-cpz.
+
+    The long wait is right for a local server stopped by hand -- the machine's
+    owner wanted the GPU, and waiting hours is exactly correct.  It is wrong
+    for a model that never touches that server, and asking regardless cost a
+    cloud-model run six hours to reach a failure the short backoff reaches in
+    seven minutes.
+    """
+
+    def make_run(self, model):
+        root = Path(tempfile.mkdtemp())
+        cfg = config.load(root)
+        cfg["agent"]["model"] = model
+        run = Run(root, cfg, "objective", run_id="test-run")
+        run.rundir.path.mkdir(parents=True)
+        run.screen = mock.MagicMock()
+        return run
+
+    def test_a_cloud_model_never_waits_for_a_server_it_does_not_use(self):
+        run = self.make_run("openrouter/anthropic/claude")
+        with mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_wait_for_server") as wait,              mock.patch.object(run, "_sleep_interruptibly", return_value=True) as slept:
+            self.assertTrue(run._backoff(1, "agent-error"))
+        wait.assert_not_called()
+        # The short backoff instead: one 60-second hold, not 720 of 30.
+        self.assertEqual(60, slept.call_args.args[0])
+
+    def test_a_cloud_model_does_not_even_ask_whether_the_server_is_up(self):
+        """`_server_is_up` is a network call.  A run that cannot care about the
+        answer should not be making it on every failure."""
+        run = self.make_run("openrouter/anthropic/claude")
+        with mock.patch.object(run, "_server_is_up") as up,              mock.patch.object(run, "_sleep_interruptibly", return_value=True):
+            run._backoff(1, "agent-error")
+        up.assert_not_called()
+
+    def test_a_cloud_model_gives_up_after_the_short_backoff_not_six_hours(self):
+        run = self.make_run("openrouter/anthropic/claude")
+        with mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_sleep_interruptibly", return_value=True):
+            self.assertTrue(run._backoff(1, "boom"))
+            self.assertTrue(run._backoff(1, "boom"))
+            self.assertTrue(run._backoff(1, "boom"))
+            self.assertFalse(run._backoff(1, "boom"))
+
+    def test_a_local_model_still_waits_when_the_server_is_gone(self):
+        run = self.make_run("llama-swap/local-fast")
+        with mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_wait_for_server", return_value=True) as wait:
+            self.assertTrue(run._backoff(3, "server down"))
+        wait.assert_called_once_with(3, "server down")
+
+    def test_a_local_model_with_a_live_server_still_takes_the_short_backoff(self):
+        """A server that answers and misbehaves does not fix itself by being
+        waited on."""
+        run = self.make_run("llama-swap/local-fast")
+        with mock.patch.object(run, "_server_is_up", return_value=True),              mock.patch.object(run, "_wait_for_server") as wait,              mock.patch.object(run, "_sleep_interruptibly", return_value=True) as slept:
+            self.assertTrue(run._backoff(1, "bad build"))
+        wait.assert_not_called()
+        self.assertEqual(60, slept.call_args.args[0])
+
+    def test_with_no_local_provider_configured_nothing_waits(self):
+        """`local_provider = ""` is the setting for a machine with no local
+        server at all; a llama-swap-shaped model id must not resurrect the wait."""
+        run = self.make_run("llama-swap/local-fast")
+        policy = dict(models._FALLBACK, local_provider="")
+        with mock.patch.object(models, "budgets", return_value=policy),              mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_wait_for_server") as wait,              mock.patch.object(run, "_sleep_interruptibly", return_value=True):
+            self.assertTrue(run._backoff(1, "agent-error"))
+        wait.assert_not_called()
 
 
 if __name__ == "__main__":

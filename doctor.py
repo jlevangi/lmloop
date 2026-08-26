@@ -143,6 +143,42 @@ def gate_check(config: dict, repo: Path):
     return ("gate", OK, command)
 
 
+def extensions_check(harness_module, config: dict):
+    """Name what is loaded into the agent, because it decides what a run can do.
+
+    Extensions are invisible from lmloop and not all of them are inert. One
+    installed here hooks every tool call out to an approval daemon, and during
+    a real run it answered for the agent: `[SECURITY] Blocked command: git (max
+    mode) (rule: command_blocklist)`. The iteration spent its time working
+    around a `git` it was never going to be allowed to run, and nothing in the
+    run's own record said why.
+
+    An unattended loop cannot answer an approval prompt and cannot argue with a
+    denial, so anything that gates tool calls is worth naming before a run
+    rather than after. Reported rather than judged: `model-catalog.js` is an
+    extension too, and lmloop would not work without it.
+    """
+    name = config["agent"].get("harness", "pi")
+    try:
+        directory = harness_module.get(name).config_dir
+    except SystemExit:
+        return ("agent extensions", OK, "unknown agent")
+    if not directory:
+        return ("agent extensions", OK, f"lmloop does not know where {name} keeps them")
+    folder = Path(directory) / "extensions"
+    if not folder.is_dir():
+        return ("agent extensions", OK, "none installed")
+    loaded = sorted(
+        path.name for path in folder.iterdir()
+        if path.suffix in (".js", ".ts", ".mjs") and not path.name.endswith(".bak")
+    )
+    if not loaded:
+        return ("agent extensions", OK, "none installed")
+    return ("agent extensions", OK,
+            f"{len(loaded)} loaded into {name}: {', '.join(loaded)}"
+            " (each can gate what a run may do)")
+
+
 def notify_check(config_module, config: dict):
     settings = config.get("notify", {})
     if not settings.get("url"):
@@ -171,6 +207,7 @@ def check(repo: Path, config: dict, modules) -> list[tuple[str, str, str]]:
         server_check(models_module, config),
         worktree_check(runrecord_module, repo, config),
         gate_check(config, repo),
+        extensions_check(harness_module, config),
         notify_check(config_module, config),
     ]
     return results

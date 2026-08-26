@@ -78,6 +78,10 @@ class Harness:
     # The `--tools` names this agent will accept, when it is fussy about it.
     # Empty means it takes whatever it is given; see `unknown_tools`.
     known_tools: frozenset[str] = frozenset()
+    # Where this agent keeps its own configuration, if lmloop knows.  Used to
+    # report what is loaded into it -- extensions in particular, which are
+    # invisible from here and can change what a run is allowed to do.
+    config_dir: Path | None = None
     # The tool allowlist to use when the operator never chose one.  Empty means
     # "the shipped default in `config.DEFAULTS` already suits this agent" --
     # true for pi, whose names that default was written from, and for opencode,
@@ -181,7 +185,8 @@ class PiHarness(Harness):
     # pi's own provider config: the authority for models lmloop does not
     # measure itself, because it is the same file pi reads when it builds the
     # request.
-    models_file = Path.home() / ".pi" / "agent" / "models.json"
+    config_dir = Path.home() / ".pi" / "agent"
+    models_file = config_dir / "models.json"
 
     def declared_windows(self):
         try:
@@ -422,6 +427,7 @@ class OmpHarness(PiHarness):
     # omp is a pi fork and reads pi's variables too, so this adds to the
     # inherited `PI_*` rather than replacing it.
     env_passthrough = ("PI_*", "OMP_*")
+    config_dir = Path.home() / ".omp" / "agent"
     interesting = (
         '"tool_execution_start"', '"tool_execution_end"', '"message_end"',
         '"agent_end"', '"auto_compaction_start"',

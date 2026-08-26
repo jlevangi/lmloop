@@ -212,5 +212,65 @@ class WholeRunTests(unittest.TestCase):
             doctor.check(repo, cfg, (config, harness, models, runrecord))
 
 
+class ExtensionsCheckTests(unittest.TestCase):
+    """What is loaded into the agent, which decides what a run may do.
+
+    One extension installed on the machine this was written on hooks every
+    tool call out to an approval daemon, and during a real run it answered for
+    the agent: `[SECURITY] Blocked command: git (max mode)`. Nothing in the
+    run's record said why.
+    """
+
+    def with_extensions(self, *names):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "extensions").mkdir()
+        for name in names:
+            (directory / "extensions" / name).write_text("//\n")
+        adapter = harness.get("pi")
+        return mock.patch.object(type(adapter), "config_dir", directory)
+
+    def test_installed_extensions_are_named(self):
+        with self.with_extensions("model-catalog.js", "moshi-hooks.ts"):
+            _, status, detail = doctor.extensions_check(harness, {"agent": {"harness": "pi"}})
+        self.assertEqual(doctor.OK, status)
+        self.assertIn("model-catalog.js", detail)
+        self.assertIn("moshi-hooks.ts", detail)
+        self.assertIn("gate what a run may do", detail)
+
+    def test_backups_are_not_counted_as_loaded(self):
+        with self.with_extensions("model-catalog.js", "model-catalog.js.bak-20260821"):
+            _, _, detail = doctor.extensions_check(harness, {"agent": {"harness": "pi"}})
+        self.assertIn("1 loaded", detail)
+
+    def test_an_empty_directory_is_none_installed(self):
+        with self.with_extensions():
+            _, status, detail = doctor.extensions_check(harness, {"agent": {"harness": "pi"}})
+        self.assertEqual(doctor.OK, status)
+        self.assertEqual("none installed", detail)
+
+    def test_no_directory_at_all_is_fine(self):
+        adapter = harness.get("pi")
+        with mock.patch.object(type(adapter), "config_dir", Path(tempfile.mkdtemp())):
+            _, status, _ = doctor.extensions_check(harness, {"agent": {"harness": "pi"}})
+        self.assertEqual(doctor.OK, status)
+
+    def test_an_agent_whose_config_lmloop_cannot_find_says_so(self):
+        _, status, detail = doctor.extensions_check(
+            harness, {"agent": {"harness": "opencode"}})
+        self.assertEqual(doctor.OK, status)
+        self.assertIn("does not know where", detail)
+
+    def test_an_unknown_agent_does_not_raise(self):
+        _, status, _ = doctor.extensions_check(harness, {"agent": {"harness": "nonesuch"}})
+        self.assertEqual(doctor.OK, status)
+
+    def test_it_never_judges_an_extension(self):
+        """`model-catalog.js` is an extension too, and lmloop would not work
+        without it -- reporting is the job, not deciding."""
+        with self.with_extensions("model-catalog.js"):
+            _, status, _ = doctor.extensions_check(harness, {"agent": {"harness": "pi"}})
+        self.assertNotEqual(doctor.FAIL, status)
+
+
 if __name__ == "__main__":
     unittest.main()

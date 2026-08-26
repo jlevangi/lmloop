@@ -381,5 +381,132 @@ class OpenPrTests(unittest.TestCase):
         self.assertIn("mine", seen["argv"])
 
 
+class ControlTests(unittest.TestCase):
+    """The five control actions that are an operation rather than a destination.
+
+    Added after the lm-ka5.5 move found them uncovered: three mutations --
+    starting a second loop beside a live one, `stop-now` no longer setting
+    `STOP` as well, and `continue` leaving `PAUSE` behind -- all passed
+    unnoticed. Each of those has a comment describing the incident it came
+    from, and none of them had a test.
+    """
+
+    def setUp(self):
+        (self.root, self.repo, self.worktree, self.run_dir,
+         self.project, self.archive) = build_repo()
+        self.handler = Recording({"read_only": False, "python": "python3"})
+
+    def control(self, action, payload=None):
+        return self.handler.control(self.project, self.run_dir, action, payload or {})
+
+    def sentinels(self):
+        return {name for name in ("PAUSE", "STOP", "STOP-NOW")
+                if (self.run_dir / name).exists()}
+
+    def test_pause_and_resume_are_one_file(self):
+        self.control("pause")
+        self.assertEqual({"PAUSE"}, self.sentinels())
+        self.control("resume")
+        self.assertEqual(set(), self.sentinels())
+
+    def test_stop_sets_only_stop(self):
+        self.control("stop")
+        self.assertEqual({"STOP"}, self.sentinels())
+
+    def test_stop_now_sets_both_sentinels(self):
+        """Every reader that only knows about STOP still has to see a run that
+        is stopping -- see rundir.stop_now_requested."""
+        self.control("stop-now")
+        self.assertEqual({"STOP", "STOP-NOW"}, self.sentinels())
+
+    def test_resuming_a_run_that_was_never_paused_is_not_an_error(self):
+        self.control("resume")
+        self.assertEqual(200, self.handler.status)
+
+    def test_an_unknown_action_is_refused_by_name(self):
+        self.control("demolish")
+        self.assertEqual(400, self.handler.status)
+        self.assertIn("demolish", self.handler.payload["error"])
+
+    def test_continue_refuses_to_start_a_second_loop(self):
+        """Two loops in one worktree commit over each other and write the same
+        status file. Refused here rather than by the child, whose complaint
+        goes to a pipe nobody reads."""
+        with mock.patch.object(runs_module, "_holder", return_value=9999):
+            self.control("continue")
+        self.assertEqual(409, self.handler.status)
+        self.assertIn("9999", self.handler.payload["error"])
+
+    def test_continue_does_not_launch_anything_when_it_refuses(self):
+        with mock.patch.object(runs_module, "_holder", return_value=9999), \
+             mock.patch.object(server.service.subprocess, "Popen") as popen:
+            self.control("continue")
+        popen.assert_not_called()
+
+    def test_continue_clears_every_sentinel_including_pause(self):
+        """A run holding on PAUSE is just as stopped as one that finished.
+        Leaving that behind spawned a second loop that went straight back into
+        the hold, so the button did nothing and said nothing about why."""
+        for name in ("PAUSE", "STOP", "STOP-NOW"):
+            (self.run_dir / name).touch()
+        with mock.patch.object(runs_module, "_holder", return_value=0), \
+             mock.patch.object(server.service.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            self.control("continue")
+        self.assertEqual(set(), self.sentinels())
+
+    def test_continue_passes_the_run_and_the_iteration_count(self):
+        with mock.patch.object(runs_module, "_holder", return_value=0), \
+             mock.patch.object(server.service.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            self.control("continue", {"iterations": 7})
+        argv = popen.call_args.args[0]
+        self.assertIn("resume", argv)
+        self.assertIn(self.run_dir.name, argv)
+        self.assertIn("7", argv)
+
+    def test_continue_forwards_a_model_and_thinking_override(self):
+        with mock.patch.object(runs_module, "_holder", return_value=0), \
+             mock.patch.object(server.service.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            self.control("continue", {"model": "p/m", "thinking": "low"})
+        argv = popen.call_args.args[0]
+        self.assertIn("--model", argv)
+        self.assertIn("p/m", argv)
+        self.assertIn("--thinking", argv)
+
+    def test_a_child_that_dies_immediately_reports_why(self):
+        """Throwing the reason away is what made a dead button
+        indistinguishable from a working one."""
+        def die(argv, **kwargs):
+            kwargs["stdout"].write(b"lmloop: no model set\n")
+            return mock.Mock(wait=mock.Mock(return_value=1))
+
+        with mock.patch.object(runs_module, "_holder", return_value=0), \
+             mock.patch.object(server.service.subprocess, "Popen", side_effect=die):
+            self.control("continue")
+        self.assertEqual(500, self.handler.status)
+        self.assertIn("no model set", self.handler.payload["error"])
+
+    def test_a_child_still_running_after_a_moment_counts_as_started(self):
+        with mock.patch.object(runs_module, "_holder", return_value=0), \
+             mock.patch.object(server.service.subprocess, "Popen") as popen:
+            popen.return_value.wait.side_effect = \
+                server.service.subprocess.TimeoutExpired("lmloop", 1.5)
+            self.control("continue")
+        self.assertEqual(200, self.handler.status)
+
+    def test_archive_delete_and_pr_are_dispatched_not_handled_here(self):
+        """They are a destination rather than an operation; routing is what
+        the handler is for."""
+        for action, method in (("archive", "archive_run"),
+                               ("delete", "delete_run"),
+                               ("pr", "open_pr")):
+            with self.subTest(action=action):
+                with mock.patch.object(Recording, method) as called:
+                    self.control(action)
+                called.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

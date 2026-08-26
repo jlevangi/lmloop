@@ -487,78 +487,24 @@ class Handler(BaseHTTPRequestHandler):
         return self.json({"started": result.stdout.strip()})
 
     def control(self, project, run_dir, action, payload):
-        """Pause, resume, stop, or continue -- all but one are a file touch.
+        """Route one control action.
 
-        The loop polls for these itself, so nothing here needs to know whether
-        the run is alive, own its pid, or still be running when it acts.
+        The five that are an operation live in `service.control`; the three
+        that are a destination are dispatched here, because routing is what
+        this class is for.
         """
-        if action == "pause":
-            (run_dir / "PAUSE").touch()
-        elif action == "resume":
-            (run_dir / "PAUSE").unlink(missing_ok=True)
-        elif action == "stop":
-            (run_dir / "STOP").touch()
-        elif action == "stop-now":
-            # The stop that does not wait for the iteration to finish.  Both
-            # sentinels, so every reader that only knows about STOP still sees a
-            # run that is stopping -- see rundir.stop_now_requested.
-            (run_dir / "STOP-NOW").touch()
-            (run_dir / "STOP").touch()
-        elif action == "continue":
-            # The one that needs a process: the run has already exited, and more
-            # iterations mean starting the loop again on the same worktree.
-            iterations = int(payload.get("iterations") or 3)
-            # A run that still has a live loop does not need continuing, and
-            # starting a second one puts two loops in one worktree.  Refused
-            # here rather than by the child, because the child's complaint goes
-            # to a pipe nobody reads and the button just looks broken.
-            holder = runs_module._holder(run_dir)
-            if holder:
-                return self.json({
-                    "error": f"this run already has a loop (pid {holder});"
-                             " resume it instead of continuing it",
-                }, 409)
-            argv = [
-                self.config["python"], LMLOOP, "resume", run_dir.name,
-                "--iterations", str(iterations),
-            ]
-            for flag, key in (("--model", "model"), ("--thinking", "thinking")):
-                if payload.get(key):
-                    argv += [flag, str(payload[key])]
-            # Every sentinel, PAUSE included.  "Continue" is the button for a
-            # run that has stopped, and a run is just as stopped when it is
-            # holding on PAUSE -- leaving that one behind spawned a second loop
-            # that went straight back into the hold, so the button did nothing
-            # and said nothing about why.
-            (run_dir / "STOP").unlink(missing_ok=True)
-            (run_dir / "STOP-NOW").unlink(missing_ok=True)
-            (run_dir / "PAUSE").unlink(missing_ok=True)
-            # To a file, not to DEVNULL: when this fails it fails in the first
-            # second, and throwing the reason away is what made a dead button
-            # indistinguishable from a working one.
-            log_path = run_dir / "continue.log"
-            with log_path.open("wb") as log:
-                child = subprocess.Popen(
-                    argv, cwd=project["path"], stdin=subprocess.DEVNULL,
-                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
-                )
-            try:
-                if child.wait(timeout=1.5) != 0:
-                    return self.json(
-                        {"error": log_path.read_text().strip()[-500:] or "resume failed"},
-                        500,
-                    )
-            except subprocess.TimeoutExpired:
-                pass  # still running after a second and a half: it started
-        elif action == "archive":
+        answered = service.control(
+            project, run_dir, action, payload, self.config, LMLOOP)
+        if answered is not None:
+            status, reply = answered
+            return self.json(reply, status)
+        if action == "archive":
             return self.archive_run(project, run_dir)
-        elif action == "delete":
+        if action == "delete":
             return self.delete_run(project, run_dir, payload)
-        elif action == "pr":
+        if action == "pr":
             return self.open_pr(project, run_dir, payload)
-        else:
-            return self.json({"error": f"unknown action {action}"}, 400)
-        return self.json(runs_module.summarise(project, run_dir))
+        return self.json({"error": f"unknown action {action}"}, 400)
 
     # -- archive, delete, PR ----------------------------------------------
     #
@@ -679,31 +625,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.json(runs_module.summarise(project, target))
 
     def delete_run(self, project, run_dir, payload):
-        """Permanently remove an archived run.  Refuses anything else."""
-        import shutil
-
-        if not runs_module.is_archived(run_dir):
-            return self.json(
-                {"error": "archive this run before deleting it, so the removal "
-                          "of its worktree and the loss of its record are two "
-                          "separate decisions"}, 400,
-            )
-        start = runrecord.latest_run_start(runs_module._events(run_dir))
-        branch = runrecord.resolved_branch(run_dir, start)
-        dropped = None
-        if payload.get("branch"):
-            # -D, not -d: the branch is usually unmerged, which is exactly the
-            # case the caller is saying they do not want kept.
-            result = subprocess.run(
-                ["git", "branch", "-D", branch],
-                cwd=project["path"], capture_output=True, text=True, timeout=30,
-            )
-            dropped = branch if result.returncode == 0 else None
-        try:
-            shutil.rmtree(run_dir)
-        except OSError as error:
-            return self.json({"error": f"delete failed: {error}"}, 500)
-        return self.json({"deleted": run_dir.name, "branch_deleted": dropped})
+        status, reply = service.delete_run(project, run_dir, payload)
+        return self.json(reply, status)
 
     def open_pr(self, project, run_dir, payload):
         status, body = service.open_pr(project, run_dir, payload)

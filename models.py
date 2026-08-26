@@ -78,15 +78,47 @@ _FALLBACK = {
 }
 
 
+# What `config.load` last layered on top of the shared file, for this process.
+# See `use` below.
+_OVERRIDES: dict = {}
+
+
+def use(settings: dict) -> None:
+    """Layer a config's `[models]` section over the shared budgets file.
+
+    `model-budgets.json` is shared with the pi extension on purpose -- both
+    sides have to split a window the same way or lmloop believes in prompt room
+    pi was never given -- so it stays the place those numbers live.  But a
+    *project* may still need to say something different, and before this the
+    only settings reachable from `.lmloop.toml` were the ones `config.DEFAULTS`
+    happened to copy out at import time.
+
+    `config.load` calls this with the fully layered `[models]` section, which is
+    the one place that knows what defaults, global config and the repo's own
+    file add up to.  Process-wide because the alternative is threading a config
+    through `declared_window`, `preflight` and `is_local` to reach the two
+    functions that actually read policy -- and every caller of those already
+    ran `config.load` first.
+    """
+    _OVERRIDES.clear()
+    _OVERRIDES.update({k: v for k, v in settings.items() if k in _FALLBACK})
+
+
+def forget_overrides() -> None:
+    """Drop them again.  For tests, and for anything loading a second config."""
+    _OVERRIDES.clear()
+
+
 def budgets() -> dict:
-    """The split policy, from the shared file, falling back to the defaults."""
+    """The split policy: defaults, then the shared file, then this config."""
+    merged = dict(_FALLBACK)
     try:
         loaded = json.loads(BUDGETS_FILE.read_text())
     except (OSError, ValueError):
-        return dict(_FALLBACK)
+        loaded = {}
     # Keys prefixed with `_` are prose for whoever opens the file.
-    merged = dict(_FALLBACK)
     merged.update({k: v for k, v in loaded.items() if not k.startswith("_")})
+    merged.update(_OVERRIDES)
     return merged
 
 

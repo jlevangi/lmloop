@@ -68,6 +68,13 @@ class Run:
         # event -- said "pi" whatever it was, so a run's own record could not be
         # trusted to name the thing that produced it.
         self.harness_name = config["agent"].get("harness", "pi")
+        # Model policy is read all over `models.py` by functions that never see
+        # a config, so the layered answer is handed over once, here.  Here and
+        # not in `config.load`, which the WebUI calls once per project while
+        # walking them all: a process-wide setting written by whichever config
+        # was loaded last is exactly wrong there.  A `Run` is the one place a
+        # single config really does govern the whole process.
+        models.use(config["models"])
         self.role = "editing"
         self.window, self.max_output = models.declared_window(
             self.model, self.harness_name) or (0, 0)

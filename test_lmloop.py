@@ -1,4 +1,5 @@
 import contextlib
+import io
 import json
 import tempfile
 import time
@@ -1844,6 +1845,102 @@ class LocalServerWaitTests(unittest.TestCase):
         with mock.patch.object(models, "budgets", return_value=policy),              mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_wait_for_server") as wait,              mock.patch.object(run, "_sleep_interruptibly", return_value=True):
             self.assertTrue(run._backoff(1, "agent-error"))
         wait.assert_not_called()
+
+
+class ConfigValidationTests(unittest.TestCase):
+    """A config file is hand-written, and every mistake in one used to be
+    silent.  Measured on a file with three ordinary slips: `modle` left the
+    model at its default, a `[stopp]` section was discarded whole, and
+    `timeout_seconds = "900"` sailed through as a string.
+    """
+
+    def problems(self, text):
+        root = Path(tempfile.mkdtemp())
+        (root / ".lmloop.toml").write_text(text)
+        import tomllib
+        raw = tomllib.loads(text)
+        return config.validate(raw, root / ".lmloop.toml")
+
+    def test_a_clean_config_has_nothing_to_say(self):
+        self.assertEqual([], self.problems('[agent]\nmodel = "x/y"\n'))
+
+    def test_a_misspelled_key_is_named_and_a_fix_suggested(self):
+        found = self.problems('[agent]\nmodle = "x/y"\n')
+        self.assertEqual(1, len(found))
+        self.assertIn("`[agent] modle` is not a setting", found[0])
+        self.assertIn("did you mean `model`?", found[0])
+
+    def test_a_misspelled_section_is_named_and_a_fix_suggested(self):
+        found = self.problems("[stopp]\ninitial_turns = 12\n")
+        self.assertEqual(1, len(found))
+        self.assertIn("unknown section `[stopp]`", found[0])
+        self.assertIn("did you mean `stop`?", found[0])
+
+    def test_a_wrong_shape_says_what_it_wanted_and_what_it_got(self):
+        found = self.problems('[iteration]\ntimeout_seconds = "900"\n')
+        self.assertEqual(1, len(found))
+        self.assertIn("expects a whole number", found[0])
+        self.assertIn("got a string in quotes", found[0])
+
+    def test_true_is_not_reported_as_a_whole_number(self):
+        """In Python `True` is an `int`; saying "expects a whole number" of a
+        `true` would be nonsense, and saying nothing at all would be worse."""
+        found = self.problems("[iteration]\ntimeout_seconds = true\n")
+        self.assertEqual(1, len(found))
+        self.assertIn("expects a whole number", found[0])
+        self.assertIn("got true or false", found[0])
+
+    def test_a_whole_number_is_accepted_where_a_float_is_expected(self):
+        """Nobody writing `older_than_days = 0` means something else by it."""
+        self.assertEqual([], self.problems("[prune]\nolder_than_days = 0\n"))
+
+    def test_a_bool_where_a_bool_belongs_is_fine(self):
+        self.assertEqual([], self.problems("[gate]\nblocks_commit = true\n"))
+
+    def test_a_list_where_a_list_belongs_is_fine(self):
+        self.assertEqual([], self.problems('[worktree]\nlink = [".venv"]\n'))
+
+    def test_the_legacy_turn_limit_is_still_a_setting(self):
+        self.assertEqual([], self.problems("[stop]\nmax_iterations = 20\n"))
+
+    def test_every_problem_is_reported_not_just_the_first(self):
+        found = self.problems(
+            '[agent]\nmodle = "x"\n\n[stopp]\na = 1\n\n[gate]\nblocks_commit = "yes"\n'
+        )
+        self.assertEqual(3, len(found))
+
+    def test_the_shipped_sample_passes_its_own_validator(self):
+        """`lmloop init` writes that file, so a key renamed in DEFAULTS without
+        the sample following would hand every new user a config that fails."""
+        import tomllib
+        self.assertEqual(
+            [], config.validate(tomllib.loads(config.sample()), Path("sample")),
+        )
+
+    def test_every_defaults_section_appears_in_the_sample(self):
+        import tomllib
+        sample = tomllib.loads(config.sample())
+        self.assertEqual(sorted(config.DEFAULTS), sorted(sample))
+
+    def test_a_run_refuses_to_start_on_a_bad_config(self):
+        root = Path(tempfile.mkdtemp())
+        (root / ".lmloop.toml").write_text('[agent]\nmodle = "x/y"\n')
+        with mock.patch.object(config, "GLOBAL_CONFIG", root / "absent.toml"):
+            with self.assertRaises(SystemExit) as caught:
+                config.load(root)
+        self.assertIn("did you mean `model`?", str(caught.exception))
+
+    def test_reading_an_existing_run_still_works_on_a_bad_config(self):
+        """`lmloop status` exists for the run already going; refusing to show
+        it because of a typo in a setting that run never saw helps nobody."""
+        root = Path(tempfile.mkdtemp())
+        (root / ".lmloop.toml").write_text('[agent]\nmodle = "x/y"\n')
+        with mock.patch.object(config, "GLOBAL_CONFIG", root / "absent.toml"), \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            loaded = config.load(root, strict=False)
+        self.assertEqual("llama-swap/local-fast", loaded["agent"]["model"])
+        self.assertIn("ignoring config problems", stderr.getvalue())
+        self.assertIn("did you mean `model`?", stderr.getvalue())
 
 
 if __name__ == "__main__":

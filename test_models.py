@@ -146,6 +146,12 @@ class DeclaredWindowTests(unittest.TestCase):
 
 
 class BudgetsTests(unittest.TestCase):
+    """The shared file's layer, with no config layered over it."""
+
+    def setUp(self):
+        models.forget_overrides()
+        self.addCleanup(models.forget_overrides)
+
     def test_a_missing_file_leaves_the_defaults_intact(self):
         with mock.patch.object(models.Path, "read_text", side_effect=OSError):
             self.assertEqual(models._FALLBACK, models.budgets())
@@ -270,6 +276,54 @@ class RouterQualifiedLocalModelTests(unittest.TestCase):
         with self.with_providers():
             self.assertFalse(models.is_local("llama-swap/Qwen3.8-27B"))
             self.assertEqual("", models.local_name("llama-swap/Qwen3.8-27B"))
+
+
+class ConfigOverrideTests(unittest.TestCase):
+    """`[models]` in a config beats the shared budgets file.
+
+    The file is shared with the pi extension so both sides split a window the
+    same way; a project still has to be able to say something different without
+    editing a file another program reads.
+    """
+
+    def setUp(self):
+        models.forget_overrides()
+        self.addCleanup(models.forget_overrides)
+
+    def test_a_config_value_wins_over_the_shared_file(self):
+        with mock.patch.object(models.Path, "read_text",
+                               return_value='{"llama_swap_url": "http://from-file:1"}'):
+            self.assertEqual("http://from-file:1", models.budgets()["llama_swap_url"])
+            models.use({"llama_swap_url": "http://from-config:2"})
+            self.assertEqual("http://from-config:2", models.budgets()["llama_swap_url"])
+
+    def test_settings_the_config_does_not_mention_keep_the_files_value(self):
+        with mock.patch.object(models.Path, "read_text",
+                               return_value='{"headroom": 4096}'):
+            models.use({"llama_swap_url": "http://from-config:2"})
+            self.assertEqual(4096, models.budgets()["headroom"])
+
+    def test_a_project_can_point_at_its_own_local_server(self):
+        models.use({"local_providers": ["my-own-server"]})
+        self.assertTrue(models.is_local("my-own-server/whatever"))
+        self.assertFalse(models.is_local("llama-swap/Qwen3.8-27B"))
+
+    def test_a_project_can_turn_the_local_path_off(self):
+        models.use({"local_providers": []})
+        self.assertFalse(models.is_local("llama-swap/Qwen3.8-27B"))
+
+    def test_keys_that_are_not_model_policy_are_ignored(self):
+        """`[models]` carries `server_wait_seconds` too, which is the loop's
+        business and not this module's."""
+        models.use({"server_wait_seconds": 999, "nonsense": 1})
+        policy = models.budgets()
+        self.assertNotIn("server_wait_seconds", policy)
+        self.assertNotIn("nonsense", policy)
+
+    def test_forgetting_restores_the_files_answer(self):
+        models.use({"llama_swap_url": "http://from-config:2"})
+        models.forget_overrides()
+        self.assertNotEqual("http://from-config:2", models.budgets()["llama_swap_url"])
 
 
 if __name__ == "__main__":

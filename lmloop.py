@@ -196,7 +196,7 @@ def _read_run_state(run_dir: Path) -> dict:
 
 def cmd_list(args: argparse.Namespace) -> int:
     repo = gitops.repo_root(Path.cwd())
-    runs = _discover_runs(repo, config_module.load(repo))
+    runs = _discover_runs(repo, config_module.load(repo, strict=False))
     if not runs:
         print("no runs for this repo")
         return 0
@@ -220,7 +220,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     import json
 
     repo = gitops.repo_root(Path.cwd())
-    runs = _discover_runs(repo, config_module.load(repo))
+    runs = _discover_runs(repo, config_module.load(repo, strict=False))
     if not runs:
         print("no runs for this repo")
         return 1
@@ -341,7 +341,7 @@ def cmd_models(args: argparse.Namespace) -> int:
     url = config_module.DEFAULTS["models"]["llama_swap_url"]
     try:
         repo = gitops.repo_root(Path.cwd())
-        url = config_module.load(repo)["models"]["llama_swap_url"]
+        url = config_module.load(repo, strict=False)["models"]["llama_swap_url"]
     except SystemExit:
         pass
 
@@ -382,7 +382,8 @@ def cmd_models(args: argparse.Namespace) -> int:
     # found" on a machine that never had it.
     agent_name = "pi"
     try:
-        agent_name = config_module.load(gitops.repo_root(Path.cwd()))["agent"]["harness"]
+        agent_name = config_module.load(
+            gitops.repo_root(Path.cwd()), strict=False)["agent"]["harness"]
     except SystemExit:
         pass
     try:

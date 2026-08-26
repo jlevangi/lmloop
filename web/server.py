@@ -575,7 +575,8 @@ class Handler(BaseHTTPRequestHandler):
         settings = worktree / ".pi" / "settings.json"
         settings_bytes = settings.read_bytes() if settings.is_file() else None
         links = {}
-        for name in config_module.load(Path(project["path"]))["worktree"].get("link") or []:
+        for name in config_module.load(
+                Path(project["path"]), strict=False)["worktree"].get("link") or []:
             linked = worktree / name
             if linked.is_symlink():
                 links[linked] = os.readlink(linked)

@@ -92,7 +92,7 @@ def _worktree_root(project: Path) -> Path:
     relocated only in `~/.config/lmloop/config.toml` is not invisible here.
     See `runrecord.worktree_root`.
     """
-    return runrecord.worktree_root(project, config_module.load(project))
+    return runrecord.worktree_root(project, config_module.load(project, strict=False))
 
 
 def _runs_under(root: Path) -> list[Path]:

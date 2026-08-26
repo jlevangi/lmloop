@@ -8,7 +8,9 @@ worktree placement live with the repo they describe.
 
 from __future__ import annotations
 
+import difflib
 import shutil
+import sys
 import tomllib
 from pathlib import Path
 
@@ -93,6 +95,13 @@ DEFAULTS: dict = {
         # moves, rather than one here and one in a JavaScript file nobody
         # remembers is there.  A repo's own .lmloop.toml still overrides it.
         "llama_swap_url": models.budgets()["llama_swap_url"],
+        # Which model-id prefixes mean "served by that llama-swap".  Seeded from
+        # the same shared file, and overridable per repo like everything else
+        # here -- a project pointed at a different local server should not have
+        # to edit a file the pi extension also reads.  An empty list turns the
+        # local path off: no preflight, no measured window, every model's
+        # metadata from the agent's own catalogue.
+        "local_providers": models.budgets()["local_providers"],
         # How long to hold when the model server is simply NOT THERE, as opposed
         # to there and failing.  On a workstation whose GPU is also the machine
         # its owner plays games on, llama-swap being stopped for an hour or two
@@ -297,10 +306,99 @@ def resolve_tools(harness_name: str, tools: str, strict: bool = True) -> str:
     return tools
 
 
-def load(repo_root: Path) -> dict:
+# What a value of each shape is called when telling somebody they typed the
+# wrong one.  `bool` before `int` on purpose: in Python `True` is an `int`, and
+# reporting "expects an integer" for a `true` would be nonsense.
+_SHAPES = ((bool, "true or false"), (int, "a whole number"), (float, "a number"),
+           (str, "a string in quotes"), (list, "a list"))
+
+
+def _shape(value) -> str:
+    for kind, name in _SHAPES:
+        if isinstance(value, kind):
+            return name
+    return type(value).__name__
+
+
+def _accepts(expected, value) -> bool:
+    """Is `value` a usable stand-in for a default of `expected`'s shape?
+
+    One deliberate looseness: a whole number where a float is expected.  TOML
+    tells `0` and `0.0` apart and nobody writing `older_than_days = 0` means
+    anything different by it.
+    """
+    if isinstance(expected, bool):
+        return isinstance(value, bool)
+    if isinstance(expected, float):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(expected, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, type(expected))
+
+
+def _suggest(name: str, known) -> str:
+    close = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.6)
+    return f"; did you mean `{close[0]}`?" if close else ""
+
+
+def validate(raw: dict, source: Path) -> list[str]:
+    """Everything wrong with one config file, as lines somebody can act on.
+
+    A config file is hand-written, and until this existed every mistake in one
+    was silent.  A misspelled key is not a smaller version of a wrong value --
+    it is *no* value, so the run quietly uses the default and does none of what
+    was asked.  Measured on a file with three ordinary slips: `modle` left the
+    model at `llama-swap/local-fast`, a `[stopp]` section was discarded whole,
+    and `timeout_seconds = "900"` sailed through as a string to be compared
+    against a number much later, somewhere that says nothing about config.
+
+    Returns rather than raises, so a caller can decide whether a typo should
+    stop a run from starting (it should) or stop you reading one that is
+    already going (it should not).
+    """
+    problems = []
+    for section, values in raw.items():
+        if section not in DEFAULTS:
+            problems.append(
+                f"{source}: unknown section `[{section}]`{_suggest(section, DEFAULTS)}"
+            )
+            continue
+        if not isinstance(values, dict):
+            problems.append(f"{source}: `{section}` should be a `[{section}]` section")
+            continue
+        for key, value in values.items():
+            if key not in DEFAULTS[section]:
+                problems.append(
+                    f"{source}: `[{section}] {key}` is not a setting"
+                    f"{_suggest(key, DEFAULTS[section])}"
+                )
+                continue
+            expected = DEFAULTS[section][key]
+            if not _accepts(expected, value):
+                problems.append(
+                    f"{source}: `[{section}] {key}` expects {_shape(expected)}, "
+                    f"got {_shape(value)} ({value!r})"
+                )
+    return problems
+
+
+def load(repo_root: Path, strict: bool = True) -> dict:
     """Defaults, then global, then project; translate the legacy turn limit."""
     global_config = _read(GLOBAL_CONFIG)
     project_config = _read(repo_root / PROJECT_CONFIG)
+
+    problems = (validate(global_config, GLOBAL_CONFIG)
+                + validate(project_config, repo_root / PROJECT_CONFIG))
+    if problems:
+        listed = "\n  ".join(problems)
+        if strict:
+            raise SystemExit(f"lmloop: config problems:\n  {listed}")
+        # Read-only commands still have to work on a config that would refuse
+        # to start a run: the whole point of `lmloop status` is the run that is
+        # already going, and refusing to show it because of a typo in a setting
+        # that run never saw helps nobody.  Said out loud rather than swallowed.
+        print(f"lmloop: ignoring config problems:\n  {listed}", file=sys.stderr)
+
     config = _merge(_merge(DEFAULTS, global_config), project_config)
     explicit_stop = {**global_config.get("stop", {}), **project_config.get("stop", {})}
     if "max_iterations" in explicit_stop:
@@ -385,8 +483,19 @@ planner_thinking = ""
 
 [models]
 # Defaults to whatever ~/.config/lmloop/model-budgets.json says, which is also
-# what the pi extension reads.  Set this only to point one repo somewhere else.
+# what the pi extension reads.  Set these only to point one repo somewhere else.
 # llama_swap_url = "http://127.0.0.1:8080"
+#
+# Which model-id prefixes mean "served by that llama-swap", and so get a real
+# measured window instead of whatever the agent's catalogue claims.  Point your
+# agents DIRECTLY at llama-swap rather than through a router: a router reports
+# what a model advertises, not how the weights were loaded, and one reported
+# 262144 for a model actually running with --ctx-size 131072.
+# local_providers = ["llama-swap"]
+#
+# An empty list turns the local path off entirely -- no preflight, no measured
+# window -- which is the setting for a machine with no local server.
+# local_providers = []
 
 [worktree]
 root   = "{repo}/.worktrees/{run_id}"

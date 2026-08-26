@@ -297,6 +297,21 @@ which is easier to trust than a cron job quietly rewriting run directories at
   plan. Deciding the steps is a whole-repository question that happens once and
   wants the widest window; carrying one out happens every iteration and wants
   throughput. Empty uses `model` for both.
+Mistakes in these files are reported rather than ignored. An unknown section or
+key, or a value of the wrong shape, names the file, the setting and a likely
+correction:
+
+```
+lmloop: config problems:
+  .lmloop.toml: `[agent] modle` is not a setting; did you mean `model`?
+  .lmloop.toml: unknown section `[stopp]`; did you mean `stop`?
+  .lmloop.toml: `[iteration] timeout_seconds` expects a whole number, got a string in quotes ('900')
+```
+
+Starting a run refuses; reading one that is already going (`list`, `status`)
+warns and carries on, because the run in progress never saw the setting you
+mistyped.
+
 - `[gate] command` — run after every iteration, **with the worktree as its
   working directory**, so a path that only exists in the main checkout has to be
   absolute or listed under `[worktree] link`. It is also run once before the
@@ -307,6 +322,20 @@ which is easier to trust than a cron job quietly rewriting run directories at
   in the commit message and the next iteration's prompt but commits regardless,
   which is usually what you want; a gate that could not be run never blocks a
   commit, whatever that setting says.
+- `[models] local_providers` — which model-id prefixes mean "served by the
+  local llama-swap", and so get a real *measured* window instead of whatever
+  the agent's catalogue claims. Defaults to what
+  `~/.config/lmloop/model-budgets.json` says, and a repo can override it like
+  any other setting. An empty list turns the local path off entirely — no
+  preflight, no measured window — which is the setting for a machine with no
+  local server.
+
+  Point your agents **directly** at llama-swap rather than through a router. A
+  router reports what a model advertises, not how the weights were loaded: one
+  reported 262144 for a model actually running with `--ctx-size 131072`, and
+  the agent compacts against its own number. `docs/operations.md` has the
+  provider block for each bundled agent.
+
 - `[env] inherit`, `pass`, `block` — what the agent and the gate see of your
   environment. The default is `inherit = "allowlist"`: enough to run a process
   and a build (a PATH, a HOME, a locale, TLS trust, proxies, the usual

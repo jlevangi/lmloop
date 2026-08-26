@@ -133,5 +133,38 @@ class BackoffDelayTests(unittest.TestCase):
         self.assertIsNone(policy.backoff_delay(4))
 
 
+class FailureReasonTests(unittest.TestCase):
+    """How a run that died of an exception describes itself afterwards."""
+
+    def test_a_second_ctrl_c_is_the_operator_not_a_crash(self):
+        self.assertEqual("interrupted", policy.failure_reason(KeyboardInterrupt()))
+
+    def test_an_exception_names_its_type_and_message(self):
+        self.assertEqual(
+            "crashed: RuntimeError: harness exploded",
+            policy.failure_reason(RuntimeError("harness exploded")),
+        )
+
+    def test_an_exception_with_no_message_still_names_its_type(self):
+        self.assertEqual("crashed: ValueError", policy.failure_reason(ValueError()))
+
+    def test_a_multiline_message_is_collapsed(self):
+        """This lands in `status.json` and in the closing summary."""
+        self.assertEqual(
+            "crashed: RuntimeError: line one line two",
+            policy.failure_reason(RuntimeError("line one\n  line two")),
+        )
+
+    def test_an_enormous_message_is_capped(self):
+        reason = policy.failure_reason(RuntimeError("x" * 5000))
+        self.assertEqual(200, len(reason))
+        self.assertTrue(reason.endswith("..."))
+
+    def test_a_message_just_under_the_cap_is_left_alone(self):
+        error = RuntimeError("y" * (200 - len("crashed: RuntimeError: ")))
+        self.assertEqual(200, len(policy.failure_reason(error)))
+        self.assertFalse(policy.failure_reason(error).endswith("..."))
+
+
 if __name__ == "__main__":
     unittest.main()

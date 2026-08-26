@@ -209,3 +209,24 @@ def backoff_delay(error_count: int) -> int | None:
     if error_count > 3:
         return None
     return 60 * 2 ** (error_count - 1)
+
+
+def failure_reason(error: BaseException) -> str:
+    """How a run that died of an exception should describe itself afterwards.
+
+    The distinction that matters to whoever reads the run back is operator
+    versus defect: a second Ctrl-C is somebody taking their terminal back and
+    is not a crash, so it reads as `interrupted` and lands in the same
+    vocabulary as every other deliberate stop.  Anything else names its type,
+    because "crashed" on its own sends a reader to the event log to find out
+    what actually happened.
+
+    Capped, because this string is written into `status.json` as
+    `stop_reason` and printed in the closing summary, and an exception
+    carrying a whole subprocess transcript in its message would drown both.
+    """
+    if isinstance(error, KeyboardInterrupt):
+        return "interrupted"
+    detail = " ".join(str(error).split())
+    named = f"crashed: {type(error).__name__}" + (f": {detail}" if detail else "")
+    return named[:197] + "..." if len(named) > 200 else named

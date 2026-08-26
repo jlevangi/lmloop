@@ -1052,52 +1052,115 @@ class Run:
         iteration = from_iteration
         reason = None
         self._plan_at_start = self.rundir.plan_progress()[0]
-        while True:
-            iteration += 1
-            display.wait_while_paused(self.rundir, self.screen, lambda: self.interrupted)
-            # Recomputed here rather than fixed at the start: the plan is the
-            # agent's, it changes while the run is going, and the budget is
-            # supposed to follow it.  Everything downstream -- the status line,
-            # status.json, the prompt -- reads `max_iterations`, so setting it
-            # here is enough to make all of them agree.
-            self.max_iterations = self._budget(iteration)
-            reason = self._abort_reason(iteration, started)
-            if reason:
-                break
-            try:
-                self.iterate(iteration)
-            except PreflightError as error:
-                if not self._backoff(iteration, str(error)):
-                    reason = f"preflight failed: {error}"
+        try:
+            while True:
+                iteration += 1
+                display.wait_while_paused(self.rundir, self.screen, lambda: self.interrupted)
+                # Recomputed here rather than fixed at the start: the plan is the
+                # agent's, it changes while the run is going, and the budget is
+                # supposed to follow it.  Everything downstream -- the status line,
+                # status.json, the prompt -- reads `max_iterations`, so setting it
+                # here is enough to make all of them agree.
+                self.max_iterations = self._budget(iteration)
+                reason = self._abort_reason(iteration, started)
+                if reason:
                     break
-                iteration -= 1
-                continue
-            transport = self._transport_failure()
-            if transport:
-                # The server, not the work.  Same backoff as a failed preflight,
-                # and the iteration number is reused, so a restart of llama-swap
-                # does not quietly cost one of twelve iterations.
-                if not self._backoff(iteration, transport):
-                    reason = f"model server unreachable: {transport}"
-                    break
-                iteration -= 1
+                try:
+                    self.iterate(iteration)
+                except PreflightError as error:
+                    if not self._backoff(iteration, str(error)):
+                        reason = f"preflight failed: {error}"
+                        break
+                    iteration -= 1
+                    continue
+                transport = self._transport_failure()
+                if transport:
+                    # The server, not the work.  Same backoff as a failed preflight,
+                    # and the iteration number is reused, so a restart of llama-swap
+                    # does not quietly cost one of twelve iterations.
+                    if not self._backoff(iteration, transport):
+                        reason = f"model server unreachable: {transport}"
+                        break
+                    iteration -= 1
+        except BaseException as error:  # noqa: BLE001 - re-raised below
+            # An iteration can fail in ways this loop never enumerated -- a bug
+            # here, a harness that raises something new, a second Ctrl-C landing
+            # mid-iterate.  Whatever it was, the run still owes the disk its
+            # evidence and the operator their terminal back, so the reason is
+            # recorded and `finally` finalises exactly as a clean stop would.
+            # The exception is re-raised, never swallowed: the caller's exit
+            # code and traceback are the operator's copy of the same news.
+            reason = policy.failure_reason(error)
+            raise
+        finally:
+            self._finalise(reason, iteration, started)
+        return 0
 
-        self.rundir.event(
+    def _finalise(self, reason: str | None, iteration: int, started: float) -> None:
+        """Everything the run owes the disk and the operator on the way out.
+
+        Called from a `finally`, so it runs whether the loop stopped on its own
+        terms, raised, or took a second Ctrl-C.  Only the first of those used to
+        finalise at all: an unexpected exception anywhere in `iterate` skipped
+        the `run:complete` event, the terminal status, the run-state save, the
+        claim release, the screen cleanup and the notification in one go,
+        leaving a finished run reading as "working" for as long as anyone cared
+        to look and its `loop.pid` on disk.
+
+        Every step is guarded on its own, because the steps a later reader needs
+        most are not the ones most likely to survive.  `self.rundir.base_commit`
+        is one missing file away from raising and it sits inside the *first*
+        step, which before this was enough on its own to cost the release and
+        the terminal status.  A step that fails is evidence in its own right --
+        see `_safely` -- rather than a reason to skip the rest.
+
+        The order is the one a clean run always used, and nothing here touches
+        the worktree: finalising a crashed run must never be the thing that
+        discards what it managed to produce.
+        """
+        stopped = reason or "complete"
+        progress: list[int] = [0, 0]
+
+        self._safely("run:complete event", lambda: self.rundir.event(
             "run:complete",
-            status=reason or "complete",
+            status=stopped,
             iterations=iteration - 1,
             commitCount=gitops.commit_count(self.worktree, self.rundir.base_commit),
             worktreePath=str(self.worktree),
-        )
-        done, total = self.rundir.plan_progress()
-        self.rundir.write_terminal_status(reason or "complete", iteration - 1, done, total)
-        self._save_run_state()
-        self.rundir.release()
-        self.screen.close()
-        self._summarise(reason, started)
-        self._sweep()
-        self._announce(reason, started, iteration - 1)
-        return 0
+        ))
+        self._safely("plan progress", lambda: progress.__setitem__(
+            slice(0, 2), self.rundir.plan_progress()))
+        self._safely("terminal status", lambda: self.rundir.write_terminal_status(
+            stopped, iteration - 1, progress[0], progress[1]))
+        self._safely("run-state save", self._save_run_state)
+        self._safely("claim release", self.rundir.release)
+        self._safely("screen cleanup", self.screen.close)
+        self._safely("summary", lambda: self._summarise(reason, started))
+        self._safely("sweep", self._sweep)
+        self._safely("notification", lambda: self._announce(reason, started, iteration - 1))
+
+    def _safely(self, step: str, action) -> None:
+        """Run one finalisation step; never let it take the rest down with it.
+
+        The failure is recorded twice on purpose, in the two places the two
+        readers look: an event for whoever reads the run back later, and a line
+        on the terminal for whoever is watching now.  Both are themselves
+        guarded, because the event log is one of the things that can be broken
+        at this point -- a full disk takes the run and the record of why with it
+        otherwise.
+        """
+        try:
+            action()
+        except Exception as error:  # noqa: BLE001 - continuing is the whole point
+            detail = f"{type(error).__name__}: {error}"
+            try:
+                self.rundir.event("finalise:failed", step=step, detail=detail)
+            except Exception:  # noqa: BLE001 - the log may be what broke
+                pass
+            try:
+                self.screen.log(f"  {step} failed on the way out: {detail}")
+            except Exception:  # noqa: BLE001 - so may the terminal
+                pass
 
     def _announce(self, reason: str | None, started: float, iterations: int) -> None:
         """Push one notification saying the run has stopped.

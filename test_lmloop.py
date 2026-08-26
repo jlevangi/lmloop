@@ -1,3 +1,4 @@
+import contextlib
 import json
 import tempfile
 import time
@@ -16,6 +17,7 @@ import config
 import gitops
 import harness
 import lmloop
+import loop
 import pi_runner
 import prompts
 import runrecord
@@ -1149,6 +1151,340 @@ class InterruptCharacterizationTests(unittest.TestCase):
         with mock.patch("time.sleep") as slept:
             self.assertFalse(run._sleep_interruptibly(60))
         slept.assert_not_called()
+
+
+class FinalisationCharacterizationTests(unittest.TestCase):
+    """Pins `Run.start`'s exit path, per lm-ka5.8.
+
+    The clean-stop order is characterisation: it is what a run has always
+    done and the guarded path must keep doing it.  Everything after that is
+    the bug -- before `_finalise` existed, `start` only handled
+    `PreflightError`, so any other exception out of `iterate` skipped the
+    `run:complete` event, the terminal status, the run-state save, the claim
+    release, the screen cleanup and the notification together, and left the
+    run reading as "working" with its `loop.pid` still on disk.
+
+    `signal.signal` is patched out throughout: `start` installs real process
+    handlers, and a test that let it would leave the runner's own SIGINT
+    pointing at a dead `Run`.
+    """
+
+    STEPS = ["run:complete", "terminal", "save_state", "release",
+             "screen_close", "summarise", "sweep", "announce"]
+
+    def make_run(self):
+        repo = Path(tempfile.mkdtemp()) / "wt"
+        repo.mkdir()
+        for args in (
+            ("init", "-q", "-b", "main"),
+            ("config", "user.email", "lmloop@test"),
+            ("config", "user.name", "lmloop test"),
+        ):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+        (repo / "seed.txt").write_text("seed\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, check=True, capture_output=True)
+
+        root = Path(tempfile.mkdtemp())
+        run = Run(root, config.load(root), "objective", run_id="test-run")
+        run.worktree = repo
+        run.rundir = RunDir(repo, "test-run")
+        run.rundir.create("objective", gitops.head_commit(repo))
+        run.screen = mock.MagicMock()
+        return run, repo
+
+    @contextlib.contextmanager
+    def driving(self, run, iterate, stop_after=1):
+        """Run `start` with the world held still around it.
+
+        Only `iterate` and the stop decision are real inputs; the notify and
+        prune tails are mocked out because neither is what these tests are
+        about and both reach outside the process.
+        """
+        with mock.patch.object(loop.signal, "signal"), \
+             mock.patch.object(loop.display, "Keys"), \
+             mock.patch.object(loop.display, "wait_while_paused"), \
+             mock.patch.object(run, "iterate", side_effect=iterate), \
+             mock.patch.object(run, "_transport_failure", return_value=""), \
+             mock.patch.object(
+                 run, "_abort_reason",
+                 side_effect=lambda i, s: "asked to stop" if i > stop_after else None), \
+             mock.patch.object(run, "_summarise"), \
+             mock.patch.object(run, "_sweep"), \
+             mock.patch.object(run, "_announce"):
+            yield
+
+    def record_steps(self, run):
+        """Patch each finalisation step to append its name to one list."""
+        seen: list[str] = []
+        real_event = run.rundir.event
+
+        def event(name, **fields):
+            if name == "run:complete":
+                seen.append("run:complete")
+            return real_event(name, **fields)
+
+        patches = [
+            mock.patch.object(run.rundir, "event", side_effect=event),
+            mock.patch.object(run.rundir, "write_terminal_status",
+                              side_effect=lambda *a, **k: seen.append("terminal")),
+            mock.patch.object(run, "_save_run_state",
+                              side_effect=lambda *a, **k: seen.append("save_state")),
+            mock.patch.object(run.rundir, "release",
+                              side_effect=lambda *a, **k: seen.append("release")),
+            mock.patch.object(run.screen, "close",
+                              side_effect=lambda *a, **k: seen.append("screen_close")),
+            mock.patch.object(run, "_summarise",
+                              side_effect=lambda *a, **k: seen.append("summarise")),
+            mock.patch.object(run, "_sweep",
+                              side_effect=lambda *a, **k: seen.append("sweep")),
+            mock.patch.object(run, "_announce",
+                              side_effect=lambda *a, **k: seen.append("announce")),
+        ]
+        return seen, patches
+
+    @staticmethod
+    def status(run):
+        return json.loads(run.rundir.status_path.read_text())
+
+    @staticmethod
+    def events(run, name):
+        return [e for e in run.rundir.read_events() if e.get("event") == name]
+
+    # -- the clean stop, unchanged ----------------------------------------
+
+    def test_a_clean_stop_finalises_in_the_established_order(self):
+        run, _ = self.make_run()
+        seen, patches = self.record_steps(run)
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(loop.signal, "signal"))
+            stack.enter_context(mock.patch.object(loop.display, "Keys"))
+            stack.enter_context(mock.patch.object(loop.display, "wait_while_paused"))
+            stack.enter_context(mock.patch.object(run, "iterate"))
+            stack.enter_context(mock.patch.object(run, "_transport_failure", return_value=""))
+            stack.enter_context(mock.patch.object(
+                run, "_abort_reason",
+                side_effect=lambda i, s: "asked to stop" if i > 1 else None))
+            self.assertEqual(0, run.start())
+        self.assertEqual(self.STEPS, seen)
+
+    def test_a_clean_stop_records_its_reason(self):
+        run, _ = self.make_run()
+        with self.driving(run, lambda n: None):
+            run.start()
+        self.assertEqual("stopped", self.status(run)["phase"])
+        self.assertEqual("asked to stop", self.status(run)["stop_reason"])
+        self.assertEqual("asked to stop", self.events(run, "run:complete")[0]["status"])
+
+    def test_a_run_that_stops_on_a_finished_plan_reads_as_completed(self):
+        run, _ = self.make_run()
+        with mock.patch.object(loop.signal, "signal"), \
+             mock.patch.object(loop.display, "Keys"), \
+             mock.patch.object(loop.display, "wait_while_paused"), \
+             mock.patch.object(run, "iterate"), \
+             mock.patch.object(run, "_transport_failure", return_value=""), \
+             mock.patch.object(run, "_summarise"), mock.patch.object(run, "_sweep"), \
+             mock.patch.object(run, "_announce"), \
+             mock.patch.object(run, "_abort_reason",
+                               side_effect=lambda i, s: "plan complete" if i > 1 else None):
+            run.start()
+        self.assertEqual("completed", self.status(run)["phase"])
+
+    # -- the crash, which used to finalise nothing ------------------------
+
+    def test_an_unexpected_exception_still_finalises_every_step(self):
+        run, _ = self.make_run()
+        seen, patches = self.record_steps(run)
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(loop.signal, "signal"))
+            stack.enter_context(mock.patch.object(loop.display, "Keys"))
+            stack.enter_context(mock.patch.object(loop.display, "wait_while_paused"))
+            stack.enter_context(mock.patch.object(run, "_abort_reason", return_value=None))
+            stack.enter_context(mock.patch.object(
+                run, "iterate", side_effect=RuntimeError("harness exploded")))
+            with self.assertRaises(RuntimeError):
+                run.start()
+        self.assertEqual(self.STEPS, seen)
+
+    def test_an_unexpected_exception_is_re_raised_not_swallowed(self):
+        """The operator's exit code and traceback are their copy of the news."""
+        run, _ = self.make_run()
+        with self.driving(run, RuntimeError("harness exploded")), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(RuntimeError) as caught:
+                run.start()
+        self.assertEqual("harness exploded", str(caught.exception))
+
+    def test_a_crash_writes_a_terminal_status_that_names_it(self):
+        run, _ = self.make_run()
+        with self.driving(run, RuntimeError("harness exploded")), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(RuntimeError):
+                run.start()
+        status = self.status(run)
+        self.assertEqual("stopped", status["phase"])
+        self.assertEqual("crashed: RuntimeError: harness exploded", status["stop_reason"])
+        self.assertFalse(status["stopping"])
+
+    def test_a_crash_records_run_complete_with_the_same_reason(self):
+        run, _ = self.make_run()
+        with self.driving(run, RuntimeError("harness exploded")), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(RuntimeError):
+                run.start()
+        complete = self.events(run, "run:complete")
+        self.assertEqual(1, len(complete))
+        self.assertEqual("crashed: RuntimeError: harness exploded", complete[0]["status"])
+
+    def test_a_crash_releases_the_claim(self):
+        """A held claim outlives the process that held it: the next run sees
+        a `loop.pid` and has to reason about whether it is real."""
+        run, _ = self.make_run()
+        run.rundir.claim()
+        self.assertTrue(run.rundir.pid_path.exists())
+        with self.driving(run, RuntimeError("harness exploded")), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(RuntimeError):
+                run.start()
+        self.assertFalse(run.rundir.pid_path.exists())
+
+    def test_a_crash_hands_the_terminal_back(self):
+        run, _ = self.make_run()
+        with self.driving(run, RuntimeError("harness exploded")), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(RuntimeError):
+                run.start()
+        run.screen.close.assert_called_once()
+
+    def test_a_crash_never_discards_the_work(self):
+        """Invariant 1.  Finalising a crashed run must not be the thing that
+        costs it what it managed to produce."""
+        run, repo = self.make_run()
+        (repo / "precious.py").write_text("hours of work\n")
+        (repo / "seed.txt").write_text("edited\n")
+        with self.driving(run, RuntimeError("harness exploded")), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(RuntimeError):
+                run.start()
+        self.assertEqual("hours of work\n", (repo / "precious.py").read_text())
+        self.assertEqual("edited\n", (repo / "seed.txt").read_text())
+
+    def test_finalising_runs_no_destructive_git_command(self):
+        """The same invariant, stated against git rather than the tree, so a
+        future `_finalise` that tidies up cannot pass by leaving the files
+        alone and resetting the index."""
+        run, _ = self.make_run()
+        seen: list[list[str]] = []
+        real_git = gitops.git
+
+        def spy(args, cwd, check=True):
+            seen.append(list(args))
+            return real_git(args, cwd, check=check)
+
+        with mock.patch.object(gitops, "git", side_effect=spy), \
+             self.driving(run, RuntimeError("harness exploded")), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(RuntimeError):
+                run.start()
+        self.assertTrue(seen, "expected finalisation to touch git at all")
+        for args in seen:
+            self.assertNotIn(args[0], ("reset", "clean", "checkout", "restore"), args)
+
+    def test_a_second_interrupt_finalises_as_interrupted_rather_than_crashed(self):
+        """A second Ctrl-C raises `KeyboardInterrupt` out of `iterate`.  That
+        is the operator, not a defect, and it reads as such."""
+        run, _ = self.make_run()
+        with self.driving(run, KeyboardInterrupt()), \
+             mock.patch.object(run, "_abort_reason", return_value=None):
+            with self.assertRaises(KeyboardInterrupt):
+                run.start()
+        self.assertEqual("interrupted", self.status(run)["stop_reason"])
+        self.assertEqual("interrupted", self.events(run, "run:complete")[0]["status"])
+
+    def test_a_preflight_error_that_gives_up_is_still_an_ordinary_stop(self):
+        """`PreflightError` was always handled, and stays handled: it names
+        its own reason and must not be relabelled a crash."""
+        run, _ = self.make_run()
+        with self.driving(run, loop.PreflightError("no model")), \
+             mock.patch.object(run, "_abort_reason", return_value=None), \
+             mock.patch.object(run, "_backoff", return_value=False):
+            self.assertEqual(0, run.start())
+        self.assertEqual("preflight failed: no model", self.status(run)["stop_reason"])
+
+    # -- failures inside finalisation itself ------------------------------
+
+    def test_a_missing_base_commit_does_not_cost_the_release(self):
+        """`rundir.base_commit` reads a file and raises if it is gone, and it
+        sits inside the *first* finalisation step -- which before the guards
+        was enough on its own to skip the terminal status and the release."""
+        run, _ = self.make_run()
+        run.rundir.claim()
+        (run.rundir.path / "base-commit").unlink()
+        with self.driving(run, lambda n: None):
+            self.assertEqual(0, run.start())
+        self.assertFalse(run.rundir.pid_path.exists())
+        self.assertEqual("asked to stop", self.status(run)["stop_reason"])
+
+    def test_a_failing_step_is_recorded_against_its_name(self):
+        run, _ = self.make_run()
+        (run.rundir.path / "base-commit").unlink()
+        with self.driving(run, lambda n: None):
+            run.start()
+        failures = self.events(run, "finalise:failed")
+        self.assertEqual(1, len(failures))
+        self.assertEqual("run:complete event", failures[0]["step"])
+        self.assertIn("FileNotFoundError", failures[0]["detail"])
+
+    def test_a_failing_terminal_status_does_not_cost_the_release(self):
+        run, _ = self.make_run()
+        run.rundir.claim()
+        with self.driving(run, lambda n: None), \
+             mock.patch.object(run.rundir, "write_terminal_status",
+                               side_effect=OSError("disk full")):
+            self.assertEqual(0, run.start())
+        self.assertFalse(run.rundir.pid_path.exists())
+        run.screen.close.assert_called_once()
+
+    def test_a_failing_release_does_not_cost_the_screen(self):
+        run, _ = self.make_run()
+        with self.driving(run, lambda n: None), \
+             mock.patch.object(run.rundir, "release", side_effect=OSError("nope")):
+            self.assertEqual(0, run.start())
+        run.screen.close.assert_called_once()
+
+    def test_a_broken_event_log_still_lets_the_run_finish(self):
+        """The log is one of the things that can be broken at this point, so
+        `_safely` guards its own reporting too."""
+        run, _ = self.make_run()
+        run.rundir.claim()
+        with self.driving(run, lambda n: None), \
+             mock.patch.object(run.rundir, "event", side_effect=OSError("disk full")):
+            self.assertEqual(0, run.start())
+        self.assertFalse(run.rundir.pid_path.exists())
+        run.screen.close.assert_called_once()
+
+    def test_every_later_step_still_runs_when_an_early_one_fails(self):
+        run, _ = self.make_run()
+        seen, patches = self.record_steps(run)
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            stack.enter_context(mock.patch.object(loop.signal, "signal"))
+            stack.enter_context(mock.patch.object(loop.display, "Keys"))
+            stack.enter_context(mock.patch.object(loop.display, "wait_while_paused"))
+            stack.enter_context(mock.patch.object(run, "iterate"))
+            stack.enter_context(mock.patch.object(run, "_transport_failure", return_value=""))
+            stack.enter_context(mock.patch.object(
+                run, "_abort_reason",
+                side_effect=lambda i, s: "asked to stop" if i > 1 else None))
+            stack.enter_context(mock.patch.object(
+                run, "_save_run_state", side_effect=OSError("disk full")))
+            run.start()
+        self.assertEqual([s for s in self.STEPS if s != "save_state"], seen)
 
 
 if __name__ == "__main__":

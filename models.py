@@ -53,6 +53,18 @@ _FALLBACK = {
     "output_override": {"local-wide": 24576, "local-fast": 16384},
     "unmeasured_context": 24576,
     "llama_swap_url": "http://127.0.0.1:8080",
+    # Which provider prefix means "a local server whose real window this
+    # machine can measure for itself".  Everything in this module that reads
+    # `/running`, parses a `--ctx-size`, or trusts the context cache applies to
+    # this provider and no other.
+    #
+    # Named rather than hardcoded because llama-swap is one deployment, not a
+    # requirement: set it to "" and the local path is simply off -- no
+    # preflight, no cache lookup, every model's metadata comes from the
+    # harness's own config the way a router-backed model's already does.  That
+    # is the supported configuration for a machine that has no local server at
+    # all, and it is why nothing here compares a provider to a literal.
+    "local_provider": "llama-swap",
 }
 
 
@@ -72,6 +84,21 @@ def budgets() -> dict:
 # now come from `budgets()` rather than being written down a second time.
 HEADROOM = budgets()["headroom"]
 OUTPUT_OVERRIDE = budgets()["output_override"]
+
+
+def local_provider() -> str:
+    """The provider prefix this machine measures itself; "" if there is none."""
+    return budgets()["local_provider"]
+
+
+def is_local(model: str) -> bool:
+    """Is this a model whose real window we can measure, rather than be told?
+
+    False when no local provider is configured, which is the whole point: a
+    machine with no local server takes the router path for everything.
+    """
+    provider = local_provider()
+    return bool(provider) and provider_of(model) == provider
 
 _CTX_SIZE = re.compile(r"--ctx-size\s+(\d+)")
 
@@ -97,7 +124,7 @@ def preflight(model: str, base_url: str) -> tuple[bool, str]:
     check: a dead router surfaces as an ``agent-error`` iteration, which commits
     and hands off like any other outcome.
     """
-    if provider_of(model) != "llama-swap":
+    if not is_local(model):
         return True, "no preflight for non-local models"
 
     name = model.split("/", 1)[1]
@@ -174,7 +201,7 @@ def declared_window(model: str) -> tuple[int, int] | None:
         return None
     provider, name = model.split("/", 1)
 
-    if provider != "llama-swap":
+    if not is_local(model):
         # Not measurable from here, so pi's own config is the best answer there
         # is.  Returning None -- which is what this did -- made every 9router
         # model look like it had no context at all: `Run.window` fell to 0, the

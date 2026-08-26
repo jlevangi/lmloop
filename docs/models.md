@@ -59,9 +59,20 @@ actually configures the agent.
   "llama_swap_url": "http://127.0.0.1:8080",
   "headroom": 8192,
   "output_override": { "local-wide": 24576, "local-fast": 16384 },
-  "unmeasured_context": 24576
+  "unmeasured_context": 24576,
+  "local_provider": "llama-swap"
 }
 ```
+
+`local_provider` is which provider prefix means "a local server this machine can
+measure for itself". Everything above -- the `/running` preflight, the
+`--ctx-size` measurement, the context cache -- applies to that provider and no
+other, and nothing in `models.py` compares a provider to a literal.
+
+**If you have no local server, set it to `""`.** The local path then turns off
+completely: no preflight, no cache lookup, and every model's window comes from
+the agent's own config the way a router-backed model's already does. llama-swap
+is one deployment, not a requirement.
 
 This exists because those numbers used to be written down three times -- in
 `models.py`, in `lmloop models --detect`, and in the extension -- and had

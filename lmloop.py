@@ -358,7 +358,8 @@ def cmd_models(args: argparse.Namespace) -> int:
             # while `declared_window` applied the per-model override, so the one
             # command whose whole job is to report the budget reported a
             # different one from the budget the run would use.
-            context, output = models_module.declared_window(f"llama-swap/{name}") or (0, 0)
+            context, output = models_module.declared_window(
+                f"{models_module.local_provider()}/{name}") or (0, 0)
             print(f"{name}: real {real}, declaring {context} + {output} output")
         print(f"\nwritten to {models_module.CONTEXT_CACHE}")
         return 0

@@ -426,6 +426,38 @@ class IterationClockTests(unittest.TestCase):
         self.assertIn('querySelector("#view-run .model-meta .clock")', APP)
 
 
+class IterationDetailTests(unittest.TestCase):
+    """Clicking a row in the iterations table expands it to that iteration's
+    own slice of notes.md, instead of sending the reader to the Notes section
+    to find the right heading by eye.  Confirmed live on the poker-night run:
+    two 'agent-error' rows whose reason -- llama-swap rejecting an image the
+    agent tried to view -- previously only turned up by grepping the raw
+    per-iteration jsonl stream by hand.
+    """
+
+    def function_body(self, name):
+        match = re.search(rf"function {name}\(.*?\) \{{(.*?)\n\}}", APP, re.S)
+        self.assertIsNotNone(match, f"{name} moved or was renamed")
+        return match.group(1)
+
+    def test_notes_are_split_by_the_same_heading_rundir_writes(self):
+        """rundir.append_notes writes '### Iteration N'; the split pattern
+        here has to match that heading exactly or every row shows nothing."""
+        body = self.function_body("iterationNotes")
+        self.assertIn(r"### Iteration (\d+)", body)
+
+    def test_the_table_is_handed_the_runs_notes(self):
+        self.assertIn("iterationTable(run.iterations, run.notes)", APP)
+
+    def test_expansion_uses_the_hidden_attribute_not_a_css_class(self):
+        """CLAUDE.md: `[hidden]` loses to any `display` rule, so a class
+        pretending to be it is exactly the shipped-twice bug this project
+        already paid for once."""
+        body = self.function_body("iterationTable")
+        self.assertIn("detail.hidden = ", body)
+        self.assertNotIn("classList", body)
+
+
 class RunStateVocabularyTests(unittest.TestCase):
     def test_every_state_the_api_computes_is_one_the_dashboard_knows(self):
         served = set(re.findall(r'return \("?([a-z]+)"', (ROOT / "web" / "runs.py").read_text()))

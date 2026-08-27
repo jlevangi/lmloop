@@ -591,7 +591,23 @@ const OUTCOME_CLASS = {
   interrupted: "",
 };
 
-function iterationTable(rows) {
+/* notes.md is one file for the whole run, but each iteration's own summary,
+ * changed files and learnings sit under their own "### Iteration N" heading
+ * -- see rundir.append_notes. Splitting it here, client-side, means a click
+ * on the iterations table can show just the one that matters instead of
+ * sending the reader to a wall of text and a find-on-page. No new endpoint:
+ * `run.notes` is already the whole file, sent on every poll. */
+function iterationNotes(notes) {
+  const map = new Map();
+  if (!notes) return map;
+  const parts = notes.split(/^### Iteration (\d+)$/m);
+  for (let i = 1; i < parts.length; i += 2) {
+    map.set(Number(parts[i]), parts[i + 1].trim());
+  }
+  return map;
+}
+
+function iterationTable(rows, notes) {
   const wrap = el("div", "scroll-x");
   const table = document.createElement("table");
   const head = document.createElement("tr");
@@ -605,8 +621,10 @@ function iterationTable(rows) {
     head.append(el("th", null, label));
   }
   table.append(head);
+  const byIteration = iterationNotes(notes);
   for (const row of rows) {
     const tr = document.createElement("tr");
+    tr.className = "iter-row";
     tr.append(el("td", null, row.iteration));
     tr.append(el("td", OUTCOME_CLASS[row.outcome] ?? "", row.outcome ?? "…"));
     tr.append(el("td", null, row.seconds ? duration(row.seconds) : ""));
@@ -622,6 +640,16 @@ function iterationTable(rows) {
     tr.append(el("td", null, row.plan_total ? `${row.plan_done}/${row.plan_total}` : ""));
     tr.append(el("td", null, row.commit ? row.commit.slice(0, 8) : ""));
     table.append(tr);
+
+    const detail = el("tr", "iter-detail");
+    detail.hidden = true;
+    const cell = el("td");
+    cell.colSpan = 9;
+    cell.append(el("pre", null, byIteration.get(row.iteration) || "nothing recorded for this iteration"));
+    detail.append(cell);
+    table.append(detail);
+
+    tr.addEventListener("click", () => { detail.hidden = !detail.hidden; });
   }
   wrap.append(table);
   return wrap;
@@ -787,7 +815,7 @@ async function renderRun(project, runId, { quiet = false } = {}) {
   // asked when someone opens a running job.
   if (run.iterations?.length) {
     section("iterations", "Iterations", (inner) => {
-      inner.append(iterationTable(run.iterations));
+      inner.append(iterationTable(run.iterations, run.notes));
     });
   }
 

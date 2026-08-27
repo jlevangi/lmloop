@@ -429,6 +429,15 @@ td.warn { color: var(--warn); }
 td.bad { color: var(--bad); }
 .scroll-x { overflow-x: auto; overscroll-behavior-x: contain; }
 
+/* Each iterations-table row expands in place to that iteration's own slice of
+   notes.md -- see iterationNotes() -- so reading why one failed does not mean
+   leaving the table for the Notes section and finding the right heading by
+   eye. */
+.iter-row { cursor: pointer; }
+.iter-row:hover { background: var(--line-soft); }
+.iter-detail td { white-space: normal; background: var(--ink-sink); }
+.iter-detail pre { margin: 0; max-height: 40dvh; }
+
 /* ── Sections ───────────────────────────────────────────────────────────
    Every block on the run page folds, and they all look the same folded or not,
    so the page reads as one list of things rather than a stack of unrelated

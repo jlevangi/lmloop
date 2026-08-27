@@ -38,6 +38,9 @@ import runrecord
 from web import runs as runs_module
 from web import service
 from web import auth as auth_module
+from web import device_auth
+from web import push as push_module
+from web import push_store
 
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
@@ -114,6 +117,22 @@ def build_auth():
     })
 
 
+def build_device_tokens() -> device_auth.DeviceTokens:
+    """Read-only bearer tokens for clients with no cookie jar of their own --
+    a background service or a periodic job, not a browser. See
+    `web.device_auth` for why these can never grant write access."""
+    return device_auth.build(os.environ.get("LMLOOP_WEB_DEVICE_TOKENS", ""))
+
+
+def build_push() -> push_module.WebPush:
+    """This deployment's Web Push configuration; see `web.push`."""
+    return push_module.build(
+        config_module.secret(os.environ.get("LMLOOP_WEB_VAPID_PRIVATE_KEY", "")),
+        config_module.reference(os.environ.get("LMLOOP_WEB_VAPID_CONTACT", "")),
+        push_store.default_path(),
+    )
+
+
 # `pi --list-models` costs ~2.6s: it starts node, loads every extension, and
 # asks llama-swap for its catalogue.  That is fine once and intolerable on every
 # page load, so the answer is cached and the endpoint that needs it is separate
@@ -176,6 +195,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "lmloop-web"
     config: dict = {}
     auth: OIDC = None
+    device_tokens: device_auth.DeviceTokens = None
+    push: push_module.WebPush = None
 
     def log_message(self, fmt, *args):
         print(f"{self.client_address[0]} {fmt % args}")
@@ -240,6 +261,19 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.redirect("/login")
         return None
+
+    def device_session(self):
+        """A read-only session for a device token, or None.
+
+        Consulted only from `do_GET`, for `/api/*`. **Never call this from
+        `do_POST`** -- see `web.device_auth`'s module docstring for why that
+        invariant is what keeps a device token from ever being able to
+        mutate a run, however it is configured.
+        """
+        label = self.device_tokens.match(self.headers.get("Authorization", "")) if self.device_tokens else None
+        if not label:
+            return None
+        return {"name": f"device:{label}", "csrf": "disabled"}
 
     def body(self):
         try:
@@ -328,7 +362,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.static(path.lstrip("/"))
 
         if not path.startswith("/static/"):
-            session = self.require_auth(path.startswith("/api/"))
+            session = None
+            if path.startswith("/api/"):
+                session = self.device_session()
+            if not session:
+                session = self.require_auth(path.startswith("/api/"))
             if not session:
                 return
 
@@ -349,6 +387,7 @@ class Handler(BaseHTTPRequestHandler):
                 "csrf": session["csrf"],
                 "auth": self.auth.mode,
                 "oidc": self.auth.enabled,
+                "push_public_key": self.push.public_key if self.push else "",
                 # The dashboard's context gauge used to carry its own `0.75`,
                 # which agreed with `policy.CONTEXT_PRESSURE` by coincidence.
                 # Served rather than duplicated: the number was measured from
@@ -379,7 +418,10 @@ class Handler(BaseHTTPRequestHandler):
         session = self.require_auth(api=True)
         if not session:
             return
-        if self.config["read_only"]:
+        # Push-subscription management is dashboard preference, not a run
+        # mutation -- read-only mode exists to guard runs, not to stop a
+        # browser from asking to be notified about them.
+        if self.config["read_only"] and not path.startswith("/api/push/"):
             return self.json({"error": "read-only mode"}, 403)
         # Only a cookie session needs one: CSRF is about a browser attaching
         # an ambient credential to somebody else's request, and the other modes
@@ -393,6 +435,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.create_project(self.body())
         if path == "/api/runs":
             return self.start_run(self.body())
+        if path == "/api/push/subscribe":
+            return self.push_subscribe(self.body())
+        if path == "/api/push/unsubscribe":
+            return self.push_unsubscribe(self.body())
         if path.startswith("/api/runs/"):
             parts = path[len("/api/runs/"):].split("/")
             if len(parts) == 3:
@@ -409,6 +455,19 @@ class Handler(BaseHTTPRequestHandler):
     def start_run(self, payload):
         status, reply = service.start_run(payload, self.config, LMLOOP)
         return self.json(reply, status)
+
+    def push_subscribe(self, payload):
+        if not self.push or not self.push.enabled:
+            return self.json({"error": "push not configured"}, 400)
+        if not payload.get("endpoint"):
+            return self.json({"error": "missing endpoint"}, 400)
+        push_store.add(self.push.store_path, payload)
+        return self.json({"ok": True})
+
+    def push_unsubscribe(self, payload):
+        if self.push:
+            push_store.remove(self.push.store_path, payload.get("endpoint", ""))
+        return self.json({"ok": True})
 
     def control(self, project, run_dir, action, payload):
         """Route one control action.
@@ -473,6 +532,8 @@ def serve(config: dict | None = None) -> int:
 
     Handler.config = config
     Handler.auth = auth
+    Handler.device_tokens = build_device_tokens()
+    Handler.push = build_push()
     httpd = ThreadingHTTPServer((config["host"], config["port"]), Handler)
     scheme = "https" if auth.trusted else "http"
     print(f"lmloop web on {scheme}://{config['host']}:{config['port']}")

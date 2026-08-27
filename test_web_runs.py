@@ -32,8 +32,8 @@ class PwaResumeRecoveryTests(unittest.TestCase):
     # change the shell and forget.  A digest of the shell itself fails on
     # exactly the case that matters.  It caught its first one immediately --
     # three shell files changed in this session's own work with no bump.
-    SHELL_VERSION = "lmloop-shell-v10"
-    SHELL_DIGEST = "9e9c40e7884c3633333f4b45f1152ed382670c75a1f18373febd5fd744e4dbcc"
+    SHELL_VERSION = "lmloop-shell-v11"
+    SHELL_DIGEST = "94b79cf19c61082758b38d5145741cd3fa3077fecb1d20df0d6a27d77c08591d"
 
     def test_the_shell_version_covers_the_shell_as_it_stands(self):
         static = Path(__file__).parent / "web" / "static"
@@ -53,7 +53,8 @@ class PwaResumeRecoveryTests(unittest.TestCase):
         worker = (Path(__file__).parent / "web" / "static" / "sw.js").read_text()
         listed = set(re.findall(r'"(/[^"]*)"', worker.split("const ASSETS = [")[1].split("]")[0]))
         self.assertEqual({"/", "/static/app.js", "/static/style.css",
-                          "/static/icon-192.png", "/manifest.json"}, listed)
+                          "/static/icon-192.png", "/manifest.json",
+                          "/static/offline.html"}, listed)
 from web.server import Handler
 
 

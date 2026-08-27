@@ -12,13 +12,14 @@
  * which cached an app shell AND intercepted fetches) gets evicted from phones
  * that still have it installed.
  */
-const SHELL = "lmloop-shell-v10";
+const SHELL = "lmloop-shell-v11";
 const ASSETS = [
   "/",
   "/static/app.js",
   "/static/style.css",
   "/static/icon-192.png",
   "/manifest.json",
+  "/static/offline.html",
 ];
 
 self.addEventListener("install", (event) => {
@@ -55,8 +56,50 @@ self.addEventListener("fetch", (event) => {
           if (response.ok) caches.open(SHELL).then((cache) => cache.put(request, response.clone()));
           return response;
         })
-        .catch(() => hit);
+        // A failed navigation with nothing cached yet -- the very first
+        // offline visit -- gets the offline page instead of the browser's
+        // own error screen.  Everything else just has no fallback: a
+        // stylesheet or script that fails with nothing cached stays failed,
+        // which is the network's own answer, not this file's to soften.
+        .catch(() => hit || (request.mode === "navigate" ? caches.match("/static/offline.html") : undefined));
       return hit || live;
+    }),
+  );
+});
+
+// Data, never cached (see the module doc above), arrives here only when the
+// page that requested it is open to receive it -- push exists for the case
+// it is not.  The subscription is created and torn down by app.js; this is
+// only the receiving half.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    return; // an unparsable payload is not evidence of anything to show
+  }
+  const { title, body, url, project, run_id } = data;
+  if (!title) return;
+  event.waitUntil(self.registration.showNotification(title, {
+    body,
+    icon: "/static/icon-192.png",
+    badge: "/static/icon-192.png",
+    // Tagged per-run so two pushes about the *same* run collapse into one
+    // notification instead of stacking, while different runs still stack.
+    tag: project && run_id ? `lmloop-${project}-${run_id}` : "lmloop",
+    data: { url: url || "/" },
+  }));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || "/";
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((matches) => {
+      for (const client of matches) {
+        if ("focus" in client) return client.navigate(url).then(() => client.focus());
+      }
+      return clients.openWindow(url);
     }),
   );
 });

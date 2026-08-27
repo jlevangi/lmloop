@@ -1,0 +1,13 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+
+# Local and CI signing material -- never committed, see README.md
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.apk
+*.sha256

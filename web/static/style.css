@@ -195,6 +195,15 @@ h2 {
 }
 .who a { color: var(--moon); text-decoration: none; border-bottom: 1px solid var(--moon-dim); }
 .who a:hover { color: var(--text); }
+/* Independent of `.who`: shown whenever the server offers push, in every
+   auth mode -- `none` has no identity to report but benefits the same. */
+.push-toggle {
+  display: block; margin: 6px auto 24px; padding: 6px 14px;
+  font-size: .72rem; color: var(--text-faint); background: transparent;
+  border: 1px solid var(--line); border-radius: var(--r); cursor: pointer;
+}
+.push-toggle[aria-pressed="true"] { color: var(--moon); border-color: var(--moon-dim); }
+.push-toggle:hover { color: var(--text); }
 code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-size: .85em; }
 
 /* ── Filters ────────────────────────────────────────────────────────── */

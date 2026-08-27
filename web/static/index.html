@@ -64,6 +64,11 @@
       <a id="who-out" href="/logout" hidden>Sign out</a>
       <span id="who-note" hidden></span>
     </footer>
+    <!-- Independent of identity: `none` mode has no `#who` to show, but
+         still benefits from push as much as any other deployment. Shown
+         whenever the server offers a `push_public_key`, regardless of auth
+         mode. -->
+    <button type="button" id="push-toggle" class="push-toggle" hidden>Notify this device</button>
   </section>
 
   <!-- Run ----------------------------------------------------------------->

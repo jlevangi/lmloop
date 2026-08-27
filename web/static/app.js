@@ -1304,6 +1304,65 @@ function renderIdentity(config) {
   if (shape.note) $("who-note").textContent = shape.note;
 }
 
+/* ── Web Push ──────────────────────────────────────────────────────────────
+ *
+ * Independent of identity (see index.html): shown whenever the server
+ * offers a `push_public_key`, in every auth mode including `none`. A run is
+ * hours long and unattended by design -- this is the moment nobody is
+ * looking, and previously the only way to hear about it was ntfy or having
+ * the tab open. See `web/push.py` and `webpush.py` for the server side. */
+
+function urlBase64ToUint8Array(base64) {
+  const padded = base64.padEnd(base64.length + (4 - (base64.length % 4)) % 4, "=");
+  const raw = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (char) => char.charCodeAt(0));
+}
+
+async function currentPushSubscription() {
+  const registration = await navigator.serviceWorker.ready;
+  return registration.pushManager.getSubscription();
+}
+
+async function setPushToggleLabel() {
+  const button = $("push-toggle");
+  const subscription = await currentPushSubscription().catch(() => null);
+  button.textContent = subscription ? "Notifications on" : "Notify this device";
+  button.setAttribute("aria-pressed", String(Boolean(subscription)));
+}
+
+async function togglePush() {
+  const button = $("push-toggle");
+  button.disabled = true;
+  try {
+    const existing = await currentPushSubscription();
+    if (existing) {
+      await api("/api/push/unsubscribe", { body: { endpoint: existing.endpoint } });
+      await existing.unsubscribe();
+    } else {
+      if (await Notification.requestPermission() !== "granted") return;
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(state.config.push_public_key),
+      });
+      await api("/api/push/subscribe", { body: subscription.toJSON() });
+    }
+  } catch (error) {
+    console.error("push toggle failed", error); // eslint-disable-line no-console
+  } finally {
+    button.disabled = false;
+    await setPushToggleLabel();
+  }
+}
+
+async function initPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !state.config.push_public_key) return;
+  const button = $("push-toggle");
+  button.hidden = false;
+  button.addEventListener("click", togglePush);
+  await setPushToggleLabel();
+}
+
 (async function start() {
   try {
     state.config = await api("/api/config");
@@ -1311,6 +1370,7 @@ function renderIdentity(config) {
     return;
   }
   renderIdentity(state.config);
+  initPush();
   await poll();
   schedule();
 })();

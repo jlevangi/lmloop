@@ -22,7 +22,7 @@ dependencies = []
 # Only the dashboard, and only when it is exposed beyond loopback.  Without
 # these OIDC is unavailable and the server refuses to bind anything else, which
 # is the safe failure and not an error.
-web = ["PyJWT[crypto]>=2.7,<3", "requests>=2.31,<3"]
+web = ["PyJWT[crypto]>=2.7,<3", "requests>=2.31,<3", "pywebpush>=2.0,<3"]
 
 [project.scripts]
 lmloop = "lmloop:main"
@@ -33,7 +33,7 @@ py-modules = [
     "lmloop", "loop", "policy", "pi_runner", "prompts", "rundir", "runrecord",
     "attach",
     "gitops", "checks", "models", "browser", "harness", "config", "env",
-    "display", "doctor", "eta", "notify", "prune",
+    "display", "doctor", "eta", "notify", "prune", "webpush",
 ]
 
 [tool.setuptools.packages.find]

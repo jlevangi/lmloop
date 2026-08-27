@@ -1222,6 +1222,7 @@ class Run:
         self._safely("summary", lambda: self._summarise(reason, started))
         self._safely("sweep", self._sweep)
         self._safely("notification", lambda: self._announce(reason, started, iteration - 1))
+        self._safely("web push", lambda: self._announce_push(reason, started, iteration - 1))
 
     def _safely(self, step: str, action) -> None:
         """Run one finalisation step; never let it take the rest down with it.
@@ -1246,6 +1247,34 @@ class Run:
             except Exception:  # noqa: BLE001 - so may the terminal
                 pass
 
+    def _finalisation_run_summary(self, reason: str | None, started: float, iterations: int) -> dict:
+        """The run dict `notify.send` and `webpush.send` both summarise from.
+
+        Failures are read back from the event log rather than tracked as the
+        run went, so a step that failed before either notifier existed still
+        shows up correctly the day one does.
+        """
+        failures: dict[str, int] = {}
+        for event in self.rundir.read_events():
+            if event.get("event") == "iteration:end":
+                outcome = event.get("outcome", "")
+                if outcome and outcome != "ok":
+                    failures[outcome] = failures.get(outcome, 0) + 1
+        return {
+            "repo": self.repo.name,
+            "project": self.repo.name,
+            "run_id": self.run_id,
+            "objective": self.objective,
+            "iterations": iterations,
+            "commits": gitops.commit_count(self.worktree, self.rundir.base_commit),
+            "hours": (time.monotonic() - started) / 3600,
+            "plan": self.rundir.plan_progress(),
+            "reason": reason or "complete",
+            "failures": failures,
+            "defects": self.defects,
+            "dashboard_url": self.config.get("notify", {}).get("dashboard_url", ""),
+        }
+
     def _announce(self, reason: str | None, started: float, iterations: int) -> None:
         """Push one notification saying the run has stopped.
 
@@ -1257,29 +1286,10 @@ class Run:
         if not settings.get("url"):
             return
 
-        failures: dict[str, int] = {}
-        for event in self.rundir.read_events():
-            if event.get("event") == "iteration:end":
-                outcome = event.get("outcome", "")
-                if outcome and outcome != "ok":
-                    failures[outcome] = failures.get(outcome, 0) + 1
-
         try:
             import notify
 
-            problem = notify.send(settings, {
-                "repo": self.repo.name,
-                "project": self.repo.name,
-                "run_id": self.run_id,
-                "objective": self.objective,
-                "iterations": iterations,
-                "commits": gitops.commit_count(self.worktree, self.rundir.base_commit),
-                "hours": (time.monotonic() - started) / 3600,
-                "plan": self.rundir.plan_progress(),
-                "reason": reason or "complete",
-                "failures": failures,
-                "defects": self.defects,
-            })
+            problem = notify.send(settings, self._finalisation_run_summary(reason, started, iterations))
         except Exception as error:  # noqa: BLE001 - never fails a run
             problem = str(error)
 
@@ -1288,6 +1298,25 @@ class Run:
             self.screen.log(f"  could not notify: {problem}")
         else:
             self.rundir.event("notify", topic=settings.get("topic", ""))
+
+    def _announce_push(self, reason: str | None, started: float, iterations: int) -> None:
+        """Web Push counterpart to `_announce`: push to every browser
+        subscribed through the dashboard instead of (or alongside) ntfy.
+
+        Independent of `[notify]` -- `webpush.py` is itself a no-op when the
+        VAPID key is unset or nobody has subscribed, so this needs no gate of
+        its own beyond `_safely`'s try/except.
+        """
+        try:
+            import webpush
+
+            problem = webpush.send(self._finalisation_run_summary(reason, started, iterations))
+        except Exception as error:  # noqa: BLE001 - never fails a run
+            problem = str(error)
+
+        if problem:
+            self.rundir.event("webpush:failed", detail=problem)
+            self.screen.log(f"  could not web-push: {problem}")
 
     def _sweep(self) -> None:
         """Reclaim the disk this run cost, now that it has stopped.

@@ -1,0 +1,14 @@
+<!-- A notification's small icon must be a flat, opaque silhouette:
+     the system recolors it for the status bar and does not render any hue in
+     this file. Crescent-moon path, matching lmloop's own branding
+     (web/static/icon.svg is the same shape, drawn as two overlapping
+     circles rather than a single path). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M21,12.79A9,9 0,1 1,11.21,3 7,7 0,0 0,21,12.79z" />
+</vector>

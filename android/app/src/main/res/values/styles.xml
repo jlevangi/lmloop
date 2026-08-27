@@ -1,0 +1,7 @@
+<resources>
+    <!-- The dashboard is dark-only by design (web/static/style.css has no
+         `prefers-color-scheme`; see its :root token comment), so the
+         native chrome around the WebView matches rather than flashing
+         light on launch. -->
+    <style name="Theme.Lmloop" parent="android:style/Theme.Material.NoActionBar" />
+</resources>

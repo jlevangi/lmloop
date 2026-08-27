@@ -469,5 +469,36 @@ class RunStateVocabularyTests(unittest.TestCase):
                 self.assertIn(state, code, f"the dashboard never mentions state {state!r}")
 
 
+class WebPushVocabularyTests(unittest.TestCase):
+    """Web Push's three surfaces -- server, service worker, page -- have to
+    agree on the same field name and the same two event types, or a
+    subscribed browser silently never shows anything."""
+
+    SW = (ROOT / "web" / "static" / "sw.js").read_text()
+
+    def test_the_config_endpoint_serves_the_key_the_page_reads(self):
+        served = re.search(r'if path == "/api/config":(.*?)\}\)', SERVER, re.S)
+        self.assertIn('"push_public_key":', served.group(1))
+        self.assertIn("state.config.push_public_key", APP)
+
+    def test_the_service_worker_handles_both_push_events(self):
+        self.assertIn('addEventListener("push"', self.SW)
+        self.assertIn('addEventListener("notificationclick"', self.SW)
+
+    def test_the_page_offers_a_subscribe_toggle_wired_to_both_api_routes(self):
+        self.assertIn("push-toggle", HTML)
+        self.assertIn('"/api/push/subscribe"', APP)
+        self.assertIn('"/api/push/unsubscribe"', APP)
+
+    def test_both_routes_are_served(self):
+        self.assertIn('path == "/api/push/subscribe"', SERVER)
+        self.assertIn('path == "/api/push/unsubscribe"', SERVER)
+
+    def test_the_offline_page_is_precached_and_referenced_by_the_worker(self):
+        self.assertIn('"/static/offline.html"', self.SW)
+        self.assertIn('caches.match("/static/offline.html")', self.SW)
+        self.assertTrue((ROOT / "web" / "static" / "offline.html").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ import json
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +22,7 @@ import harness
 import lmloop
 import models
 import loop
+import notify
 import pi_runner
 import policy
 import prompts
@@ -2567,3 +2569,53 @@ class ReplyCutOffTests(unittest.TestCase):
         state = self.feed((8192, "length"), (8192, "length"), (500, "toolUse"))
         self.assertEqual(2, state.truncations)
         self.assertEqual(8192, state.peak_output)
+
+
+class NotifyReferenceTests(unittest.TestCase):
+    """The ntfy host and topic may point at their values.
+
+    Not secrecy exactly -- a host and a topic are not a credential -- but
+    together they are enough to push to somebody's phone, and a config file
+    gets copied into a repo, pasted into an issue, and read by the agent the
+    loop is driving.
+    """
+
+    def send(self, settings):
+        """`notify.send` with the network stubbed, returning the URL it built."""
+        seen = {}
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+
+        def fake_urlopen(request, timeout=None):
+            seen["url"] = request.full_url
+            seen["headers"] = dict(request.headers)
+            return Response()
+
+        with unittest.mock.patch.object(notify.urllib.request, "urlopen", fake_urlopen):
+            problem = notify.send(settings, {"repo": "r", "outcome": "ok"})
+        return problem, seen
+
+    def test_a_literal_url_and_topic_still_work(self):
+        """Every config that predates this keeps working untouched."""
+        _, seen = self.send({"url": "https://ntfy.example", "topic": "t"})
+        self.assertEqual("https://ntfy.example/t", seen["url"])
+
+    def test_both_can_come_from_the_environment(self):
+        with unittest.mock.patch.dict(os.environ, {
+            "LMLOOP_NTFY_URL": "https://private.example",
+            "LMLOOP_NTFY_TOPIC": "secret-topic",
+        }):
+            _, seen = self.send({"url": "env:LMLOOP_NTFY_URL",
+                                 "topic": "env:LMLOOP_NTFY_TOPIC"})
+        self.assertEqual("https://private.example/secret-topic", seen["url"])
+
+    def test_an_unresolvable_reference_disables_rather_than_leaks(self):
+        """Never post to a host literally named `env:SOMETHING`, and never
+        send the reference as though it were the value."""
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            problem, seen = self.send({"url": "env:NOT_SET", "topic": "t"})
+        self.assertEqual("no url configured", problem)
+        self.assertNotIn("url", seen)

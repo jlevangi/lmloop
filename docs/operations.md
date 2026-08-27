@@ -604,6 +604,12 @@ told us nothing about 47 selectors that had stopped being loaded.
 
 ## Notifications
 
+`[notify] url` and `topic` may point at their values rather than hold them —
+`env:LMLOOP_NTFY_URL`, `file:~/.config/ntfy-url`, `!pass show ntfy/url` — the
+same spellings `token` takes. Together a private host and its topic are enough
+to push to your phone, and a config file gets copied into a repo, pasted into
+an issue, and read by the agent the loop is driving.
+
 `[notify] url` (ntfy) pushes one message when a run stops. `dashboard_url`
 makes it tap through to that run via the hash route the dashboard already
 supports.

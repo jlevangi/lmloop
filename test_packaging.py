@@ -6,6 +6,7 @@ failure only ever reaches somebody who installed it properly.
 """
 
 import re
+import subprocess
 import tomllib
 import unittest
 from pathlib import Path
@@ -89,6 +90,42 @@ class ServiceUnitTests(unittest.TestCase):
 
 class ExampleFileTests(unittest.TestCase):
     PERSONAL = re.compile(r"pierce|levangie|172\.20\.\d+|/home/\w")
+
+    # Repo-wide, this has to be narrower: `/home/you` is a fine thing to write
+    # in documentation, and an example file is the one place it is not. What is
+    # never fine anywhere is a real name, a real host, or a real address on
+    # somebody's network.
+    IDENTIFYING = re.compile(r"pierce|levangie|\b172\.\d+\.\d+\.\d+\b")
+    # This file names them in order to look for them.
+    EXEMPT = {"test_packaging.py"}
+
+    def test_nothing_in_the_repository_carries_a_real_identity(self):
+        """The example files were guarded and nothing else was, which is the
+        wrong half: this repository is public, and what gets published is every
+        tracked file. Captured fixtures are the live risk -- one added recently
+        was a verbatim copy of an operator's own agent settings."""
+        listed = subprocess.run(
+            ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.split()
+        self.assertGreater(len(listed), 40, "git ls-files returned almost nothing")
+        offenders = {}
+        for name in listed:
+            if name in self.EXEMPT:
+                continue
+            try:
+                text = (ROOT / name).read_text(errors="ignore")
+            except OSError:
+                continue
+            found = sorted(set(self.IDENTIFYING.findall(text)))
+            if found:
+                offenders[name] = found
+        self.assertEqual({}, offenders, f"tracked files carrying an identity: {offenders}")
+
+    def test_the_guard_can_actually_see_something(self):
+        """A guard on the guard: an `ls-files` that returned nothing, or a
+        pattern that matches nothing, would pass silently."""
+        self.assertRegex("ran as pierce on 172.20.23.94", self.IDENTIFYING)
+        self.assertNotRegex("/home/you/.config", self.IDENTIFYING)
 
     def test_no_shipped_example_carries_somebody_s_settings(self):
         import config

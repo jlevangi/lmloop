@@ -397,6 +397,20 @@ def _suggest(name: str, known) -> str:
     return f"; did you mean `{close[0]}`?" if close else ""
 
 
+def reference(value: str) -> str:
+    """Resolve a setting that may point at its value instead of holding it.
+
+    The same spellings `secret` takes, for settings that are not credentials
+    but are still nobody else's business: an ntfy host and topic are together
+    enough to push to somebody's phone, and `dashboard_url` names a machine.
+
+    Separate from `secret` only in what it says about the caller's intent --
+    the resolution is identical, and a literal is still a literal, so every
+    config that predates this keeps working untouched.
+    """
+    return secret(value)
+
+
 def secret(value: str) -> str:
     """Resolve a secret a config points at rather than contains.
 
@@ -656,6 +670,9 @@ pre_write_file_limit = 3  # files allowed before the first write
 steps_per_iteration  = 1  # plan steps allowed in one turn
 
 [notify]
+# The host and topic may point at their values rather than hold them, the same
+# way `token` does: "env:LMLOOP_NTFY_URL", "file:~/.config/ntfy-url",
+# "!pass show ntfy/url". Together they are enough to push to your phone.
 url           = ""        # e.g. "https://ntfy.example.com"; empty disables
 topic         = "lmloop"
 token         = ""        # bearer, if the server requires one

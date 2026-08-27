@@ -25,6 +25,18 @@ mkdir -p "$shim" "$repo"
 ln -s "$here/tools/fake-agent" "$shim/pi"
 export PATH="$shim:$PATH"
 
+# A scratch HOME, so this really is what it says it is.
+#
+# Config is layered, and the operator's `~/.config/lmloop/config.toml` was
+# being layered in -- which meant the `[notify]` block came with it and every
+# run of this script pushed a notification to whatever phone that points at.
+# "no GPU, no API key and no network" was three-quarters true, and the quarter
+# that was not is the one that reaches someone at 2am.  A scratch HOME also
+# makes the result the same on any machine, which is the other half of the
+# claim.
+export HOME="$work/home"
+mkdir -p "$HOME"
+
 cd "$repo"
 git init -q -b main
 git config user.email smoke@lmloop
@@ -123,6 +135,13 @@ grep -q '"git:commit"' "$log" && say ok "git:commit written" || say FAIL "no git
 
 pid="$(dirname "$run_dir")/loop.pid"
 [ ! -f "$pid" ] && say ok "claim released" || say FAIL "loop.pid left behind"
+
+# The claim on the tin. This script used to inherit the operator's notify
+# settings and push a real message on every run, which nothing here noticed
+# because nothing here looked.
+grep -q '"event": "notify"' "$log" \
+  && say FAIL "sent a real notification -- this run is not hermetic" \
+  || say ok "no notification sent"
 
 echo
 if [ "$fail" -eq 0 ]; then

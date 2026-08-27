@@ -83,8 +83,14 @@ def summarise(run: dict) -> tuple[str, str, str, str]:
 
 def send(settings: dict, run: dict) -> str:
     """Push one notification.  Returns "" on success, or the reason it failed."""
-    base = (settings.get("url") or "").strip().rstrip("/")
-    topic = (settings.get("topic") or "").strip().strip("/")
+    # Resolved the same way the token is, and for a reason that is not quite
+    # secrecy: a private ntfy host and the topic on it are together enough to
+    # push to somebody's phone, and a config file gets copied into a repo,
+    # pasted into an issue, and read by the agent the loop is driving. Pointing
+    # at them -- `env:LMLOOP_NTFY_URL` -- keeps them out of every config dict
+    # this process passes around, the dashboard's rendering included.
+    base = config.reference(settings.get("url")).strip().rstrip("/")
+    topic = config.reference(settings.get("topic")).strip().strip("/")
     if not base:
         return "no url configured"
     # Either a bare server plus a topic, or a URL that already names one.

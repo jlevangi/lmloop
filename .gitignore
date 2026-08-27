@@ -15,3 +15,8 @@ dist/
 
 # Local issue tracker: bd data, config and hooks stay on this machine.
 .beads/
+
+# Session handoffs. Scaffolding for whoever picks the work up next, not part
+# of the project -- and this repository is public, so a file describing one
+# person's machine and workflow does not belong in it.
+.claude/*HANDOFF*.md

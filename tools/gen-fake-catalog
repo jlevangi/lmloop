@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Regenerate testdata/{pi,omp}-models.{txt,json} against a throwaway catalogue.
+
+These three files are unlike the rest of testdata/: they are not redacted,
+because the tests need the *shape* of a catalogue -- multiple providers,
+dozens of models, a mix of reasoning and non-reasoning entries -- and a
+catalogue is a list of model names, which is the entire thing under test.
+That is fine for a catalogue's shape and wrong for its content: a *real*
+catalogue names which paid routing services and which locally-served models
+someone actually uses, which is exactly the kind of thing this repository's
+guard for captured fixtures exists to catch (see the portability sweep that
+filed lm-8ws, and testdata/README.md).
+
+So this writes a scratch `~/.pi/agent/models.json` and `~/.omp/agent/models.yml`
+under a throwaway `PI_CODING_AGENT_DIR` -- both agents honour it, see
+docs/operations.md's "For adapter work" recipe -- naming nothing but invented
+providers ("demo-cloud", "demo-local") and invented models, then runs the real
+`pi --list-models` / `omp models` / `omp models --json` against it and writes
+whatever they actually say. Still a real capture, not a hand-edited one; just
+against a config with nothing in it that identifies anyone.
+
+Needs `pi` and `omp` on PATH. Nothing here touches llama-swap or the network.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+TESTDATA = REPO / "testdata"
+
+FAMILIES = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+            "hotel", "india", "juliet", "kilo", "lima", "mike", "november",
+            "oscar", "papa", "quebec", "romeo", "sierra", "tango"]
+SIZES = ["mini", "small", "base", "large", "xl"]
+THINKING = [None, ["low", "high"], ["minimal", "low", "medium", "high"],
+            ["minimal", "low", "medium", "high", "xhigh"]]
+CONTEXTS = [128000, 200000, 262144, 400000, 1048576]
+OUTPUTS = [16384, 32768, 65536, 131072]
+
+
+def fake_models(n: int, prefix: str) -> list[dict]:
+    out = []
+    for i in range(n):
+        thinking = THINKING[i % len(THINKING)]
+        out.append({
+            "id": f"{prefix}-{FAMILIES[i % len(FAMILIES)]}-{SIZES[i % len(SIZES)]}-{i:03d}",
+            "name": f"Demo {FAMILIES[i % len(FAMILIES)].title()} "
+                    f"{SIZES[i % len(SIZES)].title()} {i:03d}",
+            "reasoning": thinking is not None,
+            "input": ["text", "image"] if i % 3 == 0 else ["text"],
+            "contextWindow": CONTEXTS[i % len(CONTEXTS)],
+            "maxTokens": OUTPUTS[i % len(OUTPUTS)],
+        })
+    return out
+
+
+def write_omp_yaml(path: Path, providers: dict[str, list[dict]]) -> None:
+    lines = ["providers:"]
+    for name, models in providers.items():
+        lines += [f"  {name}:",
+                  f"    baseUrl: http://127.0.0.1:9999/v1",
+                  f"    api: openai-completions",
+                  f"    auth: none",
+                  f"    models:"]
+        for m in models:
+            lines += [f"      - id: {m['id']}",
+                      f"        name: \"{m['name']}\"",
+                      f"        reasoning: {'true' if m['reasoning'] else 'false'}",
+                      f"        input: [{', '.join(m['input'])}]",
+                      f"        contextWindow: {m['contextWindow']}",
+                      f"        maxTokens: {m['maxTokens']}"]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def write_pi_json(path: Path, providers: dict[str, list[dict]]) -> None:
+    doc = {"providers": {
+        name: {
+            "baseUrl": "http://127.0.0.1:9999/v1",
+            "api": "openai-completions",
+            # A placeholder: pi hides a provider's models from --list-models
+            # until *some* credential is configured, even an unused one.
+            "apiKey": "dummy",
+            "models": [{"id": m["id"], "name": m["name"], "reasoning": m["reasoning"],
+                        "input": m["input"], "contextWindow": m["contextWindow"],
+                        "maxTokens": m["maxTokens"]} for m in models],
+        }
+        for name, models in providers.items()
+    }}
+    path.write_text(json.dumps(doc, indent=2))
+
+
+def main() -> int:
+    for binary in ("pi", "omp"):
+        if not shutil.which(binary):
+            print(f"gen-fake-catalog: `{binary}` is not on PATH", file=sys.stderr)
+            return 1
+
+    providers = {"demo-cloud": fake_models(90, "demo-cloud"),
+                 "demo-local": fake_models(8, "demo-local")}
+
+    with tempfile.TemporaryDirectory() as work:
+        agent_dir = Path(work) / "agent"
+        agent_dir.mkdir()
+        write_omp_yaml(agent_dir / "models.yml", providers)
+        write_pi_json(agent_dir / "models.json", providers)
+
+        env = dict(os.environ, PI_CODING_AGENT_DIR=str(agent_dir))
+        pi_out = subprocess.run(["pi", "--list-models"], env=env,
+                                 capture_output=True, text=True, check=True).stdout
+        omp_out = subprocess.run(["omp", "models"], env=env,
+                                  capture_output=True, text=True, check=True).stdout
+        omp_json = subprocess.run(["omp", "models", "--json"], env=env,
+                                   capture_output=True, text=True, check=True).stdout
+
+    total = len(json.loads(omp_json)["models"])
+    if total <= 90:
+        print(f"gen-fake-catalog: only {total} models came back; "
+              "test_omp_knows_far_more_models_than_its_table_has_rows_of_header "
+              "needs more than 90", file=sys.stderr)
+        return 1
+
+    (TESTDATA / "pi-models.txt").write_text(pi_out)
+    (TESTDATA / "omp-models.txt").write_text(omp_out)
+    (TESTDATA / "omp-models.json").write_text(omp_json)
+    print(f"wrote {total} fake models across {len(providers)} providers to {TESTDATA}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

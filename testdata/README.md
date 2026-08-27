@@ -16,9 +16,31 @@ from real runs and redacted. Used by `test_harness_contract.py`.
 The three catalogue files are used by `test_harness_contract.py` and are not
 redacted: a catalogue is a list of model names, which is the entire thing under
 test. `omp-models.txt` is captured for the same reason a failing input is kept
-anywhere -- it is the output that the shared column parser turned into
-`9router/(97)` and `llama-swap/(7)`, and the test that reads it is what keeps
-the reason omp has its own parser checkable rather than asserted.
+anywhere -- it is the output that the shared column parser turns into a
+handful of bogus `provider/(count)` entries, one per provider's table header,
+and the test that reads it is what keeps the reason omp has its own parser
+checkable rather than asserted.
+
+Unlike the two event-stream files, these three are not captured from a real
+operator's agent, on purpose: a real catalogue names which paid routing
+services and which locally-served models someone actually uses, which is
+exactly the kind of thing this repository's guard for captured fixtures exists
+to catch (see the portability sweep that filed lm-8ws). What the tests need is
+the *shape* -- two-plus providers, 90-odd models between them, a mix of
+reasoning and non-reasoning entries -- not particular names, so they are
+captured for real against a throwaway catalogue instead:
+
+```bash
+tools/gen-fake-catalog
+```
+
+It writes a scratch `models.yml`/`models.json` under a throwaway
+`PI_CODING_AGENT_DIR` -- naming nothing but invented providers ("demo-cloud",
+"demo-local") and invented models -- then runs the real `pi --list-models`,
+`omp models` and `omp models --json` against it and writes the three files
+here from what they actually say. Still a real capture, not a hand-edited one;
+just against a config with nothing in it that identifies anyone. Needs `pi`
+and `omp` on `PATH`; touches no network and no llama-swap.
 
 `pi-settings.json` is captured for the same reason, and is the one file here
 that is trimmed: it is a copy of a real `~/.pi/agent/settings.json`, and the

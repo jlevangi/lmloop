@@ -378,9 +378,10 @@ class RunStateVocabularyTests(unittest.TestCase):
         served = set(re.findall(r'return \("?([a-z]+)"', (ROOT / "web" / "runs.py").read_text()))
         served |= set(re.findall(r'return "([a-z]+)", age', (ROOT / "web" / "runs.py").read_text()))
         served -= {"unknown"}
+        code = code_only(APP)
         for state in served:
             with self.subTest(state=state):
-                self.assertIn(state, APP, f"the dashboard never mentions state {state!r}")
+                self.assertIn(state, code, f"the dashboard never mentions state {state!r}")
 
 
 if __name__ == "__main__":

@@ -187,6 +187,14 @@ h2 {
 }
 .tally { color: var(--text-faint); font-size: .72rem; letter-spacing: 0; }
 .empty { color: var(--text-faint); text-align: center; padding: 60px 8px; line-height: 1.9; font-size: .88rem; }
+/* Who is asking. Quiet on purpose: it is a fact about the deployment, not a
+   control, and on the common deployment there is nothing here to press. */
+.who {
+  display: flex; flex-wrap: wrap; gap: 3px 10px; justify-content: center;
+  padding: 22px 8px 6px; font-size: .72rem; color: var(--text-faint);
+}
+.who a { color: var(--moon); text-decoration: none; border-bottom: 1px solid var(--moon-dim); }
+.who a:hover { color: var(--text); }
 code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-size: .85em; }
 
 /* ── Filters ────────────────────────────────────────────────────────── */

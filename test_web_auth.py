@@ -184,9 +184,23 @@ class ModelListingTests(unittest.TestCase):
 
     def test_it_asks_the_configured_agent_not_always_pi(self):
         with mock.patch.object(server.subprocess, "run") as ran:
-            ran.return_value = mock.Mock(stdout="")
+            ran.return_value = mock.Mock(stdout='{"models": []}')
             server.available_models(self.config(harness="omp"), force=True)
-        self.assertEqual(["omp", "models"], ran.call_args.args[0])
+        self.assertEqual("omp", ran.call_args.args[0][0])
+
+    def test_it_asks_each_agent_in_the_form_that_agent_can_be_parsed_from(self):
+        """`omp models` prints a box-drawing table.  Asking for the printable
+        answer and reading it with pi's column parser is the bug this pair of
+        tests exists for: it offered `9router/(97)` and `llama-swap/(7)` as the
+        whole catalogue of an agent that knows ninety-seven models."""
+        seen = {}
+        for agent, stdout in (("pi", ""), ("omp", '{"models": []}')):
+            with mock.patch.object(server.subprocess, "run") as ran:
+                ran.return_value = mock.Mock(stdout=stdout)
+                server.available_models(self.config(harness=agent), force=True)
+            seen[agent] = ran.call_args.args[0]
+        self.assertEqual(["pi", "--list-models"], seen["pi"])
+        self.assertEqual(["omp", "models", "--json"], seen["omp"])
 
     def test_the_table_header_is_not_offered_as_a_model(self):
         stdout = ("provider    model    context\n"
@@ -202,6 +216,15 @@ class ModelListingTests(unittest.TestCase):
                                return_value=mock.Mock(stdout=stdout)):
             got = server.available_models(self.config(), force=True)
         self.assertEqual(["somebody-elses-router/a/model"], got["models"])
+
+    def test_a_catalogue_that_is_not_what_the_agent_documents_is_unavailable(self):
+        """omp answers `--json` with JSON, and a version that does not is an
+        agent that has not answered -- not one with no models."""
+        with mock.patch.object(server.subprocess, "run",
+                               return_value=mock.Mock(stdout="Error: unknown flag")):
+            got = server.available_models(self.config(harness="omp"), force=True)
+        self.assertEqual("unavailable", got["model_source"])
+        self.assertEqual([], got["models"])
 
     def test_an_agent_that_cannot_list_says_so(self):
         got = server.available_models(self.config(harness="opencode"), force=True)

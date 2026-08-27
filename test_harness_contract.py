@@ -410,5 +410,87 @@ class OpencodeCapturedEventTests(unittest.TestCase):
                 adapter.classify(event)
 
 
+class CatalogueTests(unittest.TestCase):
+    """What each adapter makes of its agent's real catalogue output.
+
+    Captured, for the same reason as the event streams: the bug these exist
+    for is one where the code's belief and the agent's output had diverged and
+    nothing said so.  `web/server.py` read every agent's catalogue with pi's
+    column parser, so `omp models` -- a provider header and then a box-drawing
+    table -- came back as two models named after the provider counts, and the
+    API reported them as omp's own catalogue.
+    """
+
+    def stdout(self, name):
+        return (TESTDATA / name).read_text()
+
+    def run_with(self, adapter, stdout):
+        """The adapter's catalogue, with the agent's real output handed back."""
+        with unittest.mock.patch(
+            "harness.subprocess.run",
+            return_value=unittest.mock.Mock(stdout=stdout),
+        ):
+            return adapter.catalogue()
+
+    def test_pi_reads_its_own_columns(self):
+        models = self.run_with(harness.get("pi"), self.stdout("pi-models.txt"))
+        self.assertGreater(len(models), 50, models)
+        self.assertNotIn("provider/model", models, "the header is not a model")
+        for model in models:
+            with self.subTest(model=model):
+                self.assertIn("/", model)
+
+    def test_omp_reads_the_json_and_not_the_table(self):
+        models = self.run_with(harness.get("omp"), self.stdout("omp-models.json"))
+        self.assertGreater(len(models), 50, models)
+        for model in models:
+            with self.subTest(model=model):
+                self.assertIn("/", model)
+
+    def test_omp_knows_far_more_models_than_its_table_has_rows_of_header(self):
+        """The measured shape of the bug: the printable answer yields two."""
+        models = self.run_with(harness.get("omp"), self.stdout("omp-models.json"))
+        self.assertGreater(len(models), 90, len(models))
+
+    def test_pis_parser_over_omps_table_is_the_bug_this_replaced(self):
+        """Not a claim about today's code -- a record of what the shared parser
+        did, so the reason omp has its own is checkable rather than asserted."""
+        wrong = harness.get("pi").parse_catalogue(self.stdout("omp-models.txt"))
+        self.assertTrue(all("(" in model for model in wrong), wrong)
+        self.assertLess(len(wrong), 5, wrong)
+
+    def test_every_model_omp_offers_is_one_it_also_declares_a_window_for(self):
+        """Both come from the same `omp models --json`, and a selector in one
+        and not the other means the two readers have drifted apart."""
+        stdout = self.stdout("omp-models.json")
+        adapter = harness.get("omp")
+        with unittest.mock.patch(
+            "harness.subprocess.run",
+            return_value=unittest.mock.Mock(stdout=stdout),
+        ):
+            self.assertEqual(set(adapter.catalogue()), set(adapter.declared_windows()))
+
+    def test_an_agent_that_cannot_list_offers_nothing_rather_than_guessing(self):
+        self.assertEqual([], harness.get("opencode").list_models_argv())
+        self.assertEqual([], harness.get("opencode").catalogue())
+
+    def test_a_failure_to_run_reaches_the_caller(self):
+        """The dashboard tells "could not be run" from "knows no models" apart,
+        and can only do that if the adapter does not swallow the difference."""
+        for agent in ("pi", "omp"):
+            with self.subTest(agent=agent), \
+                 unittest.mock.patch("harness.subprocess.run", side_effect=OSError):
+                with self.assertRaises(OSError):
+                    harness.get(agent).catalogue()
+
+    def test_omp_answering_with_something_other_than_json_reaches_the_caller(self):
+        with unittest.mock.patch(
+            "harness.subprocess.run",
+            return_value=unittest.mock.Mock(stdout="Error: unknown flag: --json"),
+        ):
+            with self.assertRaises(ValueError):
+                harness.get("omp").catalogue()
+
+
 if __name__ == "__main__":
     unittest.main()

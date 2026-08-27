@@ -471,10 +471,7 @@ function patchModel(model, run) {
       ? `${compact(used)} / ${compact(window)} · ${Math.round(share * 100)}%`
       : `${compact(used)} · window unmeasured`;
     model.gaugeFill.style.width = `${Math.round(Math.min(share, 1) * 100)}%`;
-    // The bands are about what happens next, not about tidiness: past ~75% the
-    // next tool result is what triggers a compaction, and a compaction is where
-    // a slow run starts thrashing.
-    model.gaugeFill.className = share > 0.9 ? "bad" : share > 0.75 ? "warn" : "";
+    model.gaugeFill.className = pressureClass(share);
   }
 
   const bits = [];
@@ -559,6 +556,24 @@ function planWindow(steps) {
   return holder;
 }
 
+/* The bands are about what happens next, not about tidiness: past the warn
+ * threshold the next tool result is what triggers a compaction, and a
+ * compaction is where a slow run starts thrashing.
+ *
+ * The warn threshold is `policy.CONTEXT_PRESSURE`, served by /api/config.  It
+ * was measured -- iterations that ended in an overflow sat at 80% and up on a
+ * 24,576-token window, clean ones far below -- and it used to be written out
+ * again here as a literal `0.75`, agreeing with the runner by coincidence.
+ * The 0.9 below is this page's own: the runner has nothing to say at 90% that
+ * it did not already say at 75%, and the difference is only how loudly. */
+const CONTEXT_DANGER = 0.9;
+
+function pressureClass(share) {
+  const warn = state.config?.context_pressure;
+  if (share > CONTEXT_DANGER) return "bad";
+  return warn && share > warn ? "warn" : "";
+}
+
 const OUTCOME_CLASS = {
   ok: "ok", thrashing: "warn", truncated: "warn", "no-action": "warn",
   stalled: "bad", timeout: "bad", "tool-timeout": "bad", "agent-error": "bad",
@@ -571,7 +586,10 @@ function iterationTable(rows) {
   const head = document.createElement("tr");
   // `in` is the prompt as the model counted it -- the number that decides
   // whether the next iteration compacts -- and is the one column here that
-  // explains a thrash rather than just recording one.
+  // explains a thrash rather than just recording one.  An iteration the loop
+  // flagged carries its share of the window beside the count: without it, the
+  // run that motivated this -- three iterations at 80-84% and then an overflow
+  // -- reads as ordinary work followed by something inexplicable.
   for (const label of ["#", "outcome", "time", "wr", "ovf", "in", "out", "plan", "commit"]) {
     head.append(el("th", null, label));
   }
@@ -583,7 +601,12 @@ function iterationTable(rows) {
     tr.append(el("td", null, row.seconds ? duration(row.seconds) : ""));
     tr.append(el("td", null, row.writes ?? ""));
     tr.append(el("td", null, row.compactions || ""));
-    tr.append(el("td", null, compact(row.input_tokens)));
+    // `row.pressure` exists only for an iteration the loop itself flagged, so
+    // the threshold is never re-decided here -- only how hard to say it.
+    tr.append(el("td", pressureClass(row.pressure || 0),
+                 row.pressure
+                   ? `${compact(row.input_tokens)} · ${Math.round(row.pressure * 100)}%`
+                   : compact(row.input_tokens)));
     tr.append(el("td", null, compact(row.output_tokens)));
     tr.append(el("td", null, row.plan_total ? `${row.plan_done}/${row.plan_total}` : ""));
     tr.append(el("td", null, row.commit ? row.commit.slice(0, 8) : ""));
@@ -783,6 +806,39 @@ async function renderRun(project, runId, { quiet = false } = {}) {
 
 /* ── New run ───────────────────────────────────────────────────────────── */
 
+/* Why the model list is what it is.
+ *
+ * `/api/models` asks the configured agent for its catalogue, and says in
+ * `model_source` when it could not: the agent's own name when the list really
+ * came from asking it, one of these when it did not.  Rendered as <option>s
+ * the two are indistinguishable, and picking from a list nobody asked for
+ * produces a run that dies on its first request, minutes later, for a reason
+ * nothing on this page would explain.
+ *
+ * Every other value of `model_source` is an agent's name -- so this map is
+ * also the definition of "the list is real", and `test_web_frontend.py` reads
+ * both it and `web/server.py` to keep the two spellings the same. */
+const MODEL_SOURCE_REASON = {
+  "unavailable": "The agent could not be asked: not installed, or it did not answer.",
+  "unknown agent": "The configured agent is not one lmloop knows.",
+  "fallback": "The agent listed no models.",
+};
+const CANNOT_LIST = " cannot list";
+
+function modelSourceNote(catalogue) {
+  const source = catalogue.model_source || "";
+  const reason = MODEL_SOURCE_REASON[source] || (source.endsWith(CANNOT_LIST)
+    ? `${source.slice(0, -CANNOT_LIST.length)} has no way to list its models.`
+    : "");
+  if (!reason) return "";
+  // What the operator does about it differs by which of these it is.  An empty
+  // select is not a dead end: `start_run` sends no --model at all when nothing
+  // is picked, and the run takes the model from the project's own config.
+  return `${reason} ${(catalogue.models || []).length
+    ? "This is the configured default, not a catalogue."
+    : "Nothing to pick from \u2014 the run will use the model in the project\u2019s own .lmloop.toml."}`;
+}
+
 async function renderNew() {
   $("bar-title").textContent = "New run";
   $("bar-sub").textContent = "one objective, many iterations";
@@ -812,6 +868,9 @@ async function renderNew() {
     return option;
   }));
   $("model").value = state.config.default_model;
+  const source = modelSourceNote(catalogue);
+  $("model-source").textContent = source;
+  $("model-source").hidden = !source;
   $("thinking").value = state.config.default_thinking || "";
   $("iterations").value = state.config.default_max_iterations;
 }
@@ -1170,12 +1229,45 @@ setInterval(() => {
   }
 }, 1000);
 
+/* ── Who is asking ─────────────────────────────────────────────────────── */
+
+/* The server has three answers and the page had none of them.
+ *
+ * `web/auth.py` supports `none`, `proxy` and `oidc`, and /api/config reports
+ * which is live as `auth` along with the name it resolved.  The page read
+ * neither, so a proxy-authenticated deployment -- the common one, behind an
+ * ingress that already does SSO -- showed no identity at all even though every
+ * request carried one, and offered no way to sign out or any reason why.
+ *
+ * Only `oidc` owns /login and /logout; in `proxy` the session belongs to the
+ * proxy and a sign-out button here would clear a cookie that was never the
+ * credential.  Saying that is the point: an absent button reads as an
+ * oversight, and this one is a fact about the deployment. */
+const AUTH_IDENTITY = {
+  // `none` is loopback-only by construction -- the server refuses to bind a
+  // network without an identity boundary -- so there is nobody to name.
+  "none": null,
+  "proxy": { note: "sign out at your proxy" },
+  "oidc": { logout: true },
+};
+
+function renderIdentity(config) {
+  const shape = AUTH_IDENTITY[config?.auth];
+  $("who").hidden = !shape || !config.user;
+  if (!shape || !config.user) return;
+  $("who-name").textContent = `Signed in as ${config.user}`;
+  $("who-out").hidden = !shape.logout;
+  $("who-note").hidden = !shape.note;
+  if (shape.note) $("who-note").textContent = shape.note;
+}
+
 (async function start() {
   try {
     state.config = await api("/api/config");
   } catch {
     return;
   }
+  renderIdentity(state.config);
   await poll();
   schedule();
 })();

@@ -1,8 +1,9 @@
 # lmloop — notes for agents working on this repo
 
 A loop that hands one objective to a local model, works on it for hours in a git
-worktree, and commits what it actually did. ~2,600 lines, Python 3.11+, standard
-library only, no build step.
+worktree, and commits what it actually did. ~9,600 lines of Python and ~2,200
+of frontend, plus ~6,800 of tests. Python 3.11+, standard library only, no
+build step.
 
 **Read `docs/design.md` before changing behaviour.** Most of what looks arbitrary
 in this codebase is load-bearing and was paid for with a failed run.
@@ -46,12 +47,25 @@ in this codebase is load-bearing and was paid for with a failed run.
   its compaction events are `auto_compaction_*`, its `edit` takes a patch script
   rather than a path, it lists models with a `models` subcommand where pi uses
   `--list-models` (the flag is an outright error, so an adapter that inherits
-  pi's spelling prints one where a catalogue belongs), and it *rejects* `--tools`
+  pi's spelling prints one where a catalogue belongs — and `omp models` prints a
+  box-drawing table, so an adapter that inherits pi's *parser* offers
+  `9router/(97)` and `llama-swap/(7)` as the catalogue instead; `--json`, and
+  `Harness.catalogue`, exist for that), and it *rejects* `--tools`
   names it does not know instead of ignoring them — which is one of the few ways
   `--mode json` exits non-zero. It also keeps its own config directory,
   `~/.omp/agent`, so a reader pointed at `~/.pi/agent` answers for pi's models
   and nobody else's: pi's `models.json` listed four where `omp models --json`
   knows ninety-seven.
+- **An agent's environment can block `git`, and pi's does by default.**
+  `@vtstech/pi-security`, a pi npm package, blocks 66 commands in `max` mode --
+  `git` among them -- and uses `max` when `~/.pi/agent/security.json` does not
+  exist, which it does not until somebody writes it. A run then spends
+  iterations working around a `git` it will never be allowed to run. `basic`
+  keeps all 41 critical blocks and allows `git`. `lmloop doctor` warns, and
+  names the file. Two investigations blamed something else first -- pi itself,
+  then `moshi-hooks.ts`, which registers only notification events and cannot
+  deny anything: what gates a tool call was a *package* in `settings.json`, not
+  a file in `extensions/`.
 - **omp's browser cannot carry a query-string credential.** It takes an HTTP CDP
   discovery endpoint, rejects `ws://`, and drops `?token=` on both the paths it
   uses to reach one. `browser.py` says so before a run rather than after.

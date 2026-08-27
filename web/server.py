@@ -25,7 +25,6 @@ import hmac
 import json
 import mimetypes
 import os
-import re
 import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +33,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import config as config_module
 import harness
+import policy
 import runrecord
 from web import runs as runs_module
 from web import service
@@ -121,12 +121,6 @@ def build_auth():
 _MODEL_CACHE: dict = {"at": 0.0, "value": None}
 MODEL_CACHE_SECONDS = 300
 
-# A provider name as an agent prints it: a bare token in the first column.
-# Header and rule lines from a table do not match, and neither does a model id
-# that already carries its provider.
-_PROVIDER = re.compile(r"[A-Za-z0-9][\w.-]*")
-
-
 def _fallback_models(config: dict) -> list[str]:
     """What to offer when the agent cannot be asked.
 
@@ -140,40 +134,36 @@ def _fallback_models(config: dict) -> list[str]:
 
 
 def available_models(config: dict, force: bool = False) -> dict:
-    """Model ids pi will accept, asked of pi rather than guessed.
+    """Model ids the configured agent will accept, asked of it rather than
+    guessed.
 
     A dashboard that offers a model the agent cannot resolve produces a run that
     dies on its first request, minutes later, for a reason nobody can see from
     here.
+
+    The asking and the parsing both belong to the adapter, because the answer
+    is agent-shaped: this function once ran every agent's output through pi's
+    column parser, and omp's box-drawing table survived it as two models named
+    after its provider counts.  What is left here is the part that really is
+    the dashboard's -- which failure this was, so the sheet can say so.
     """
     fresh = time.monotonic() - _MODEL_CACHE["at"] < MODEL_CACHE_SECONDS
     if _MODEL_CACHE["value"] and fresh and not force:
         return _MODEL_CACHE["value"]
     agent = config["harness"]
     try:
-        argv = harness.get(agent).list_models_argv()
+        adapter = harness.get(agent)
     except SystemExit:
         return {"models": _fallback_models(config), "model_source": "unknown agent"}
-    if not argv:
+    if not adapter.list_models_argv():
         return {"models": _fallback_models(config), "model_source": f"{agent} cannot list"}
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
+        models = adapter.catalogue()
+    # `ValueError` belongs here with the other two: an agent whose catalogue
+    # comes back as something other than what it documents has not answered,
+    # whether it failed to start or failed to make sense.
+    except (OSError, ValueError, subprocess.SubprocessError):
         return {"models": _fallback_models(config), "model_source": "unavailable"}
-    models = []
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        # Any provider, not a list of the two this was first deployed against.
-        # `9router` is one person's router and had no business being a
-        # condition in shipped code; a provider name is whatever the agent says
-        # it is.  Which leaves the table's own header to exclude, since
-        # `provider model` is otherwise shaped exactly like a row -- excluded by
-        # what it says rather than by guessing at column widths, so a change in
-        # the layout costs nothing and a change in the wording costs one model.
-        if parts[:2] == ["provider", "model"]:
-            continue
-        if len(parts) >= 2 and _PROVIDER.fullmatch(parts[0]):
-            models.append(f"{parts[0]}/{parts[1]}")
     result = {
         "models": models or _fallback_models(config),
         "model_source": agent if models else "fallback",
@@ -359,6 +349,11 @@ class Handler(BaseHTTPRequestHandler):
                 "csrf": session["csrf"],
                 "auth": self.auth.mode,
                 "oidc": self.auth.enabled,
+                # The dashboard's context gauge used to carry its own `0.75`,
+                # which agreed with `policy.CONTEXT_PRESSURE` by coincidence.
+                # Served rather than duplicated: the number was measured from
+                # real overflows and belongs to one file.
+                "context_pressure": policy.CONTEXT_PRESSURE,
             })
         if path == "/api/models":
             # Fetched only when the new-run form opens, so first paint never

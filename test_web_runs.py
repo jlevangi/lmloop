@@ -1,4 +1,6 @@
+import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,10 +22,116 @@ class PwaResumeRecoveryTests(unittest.TestCase):
         self.assertIn('window.addEventListener("online", resumePolling)', app)
         self.assertIn('void poll().finally(schedule)', app)
 
-    def test_shell_version_was_bumped_for_new_client_logic(self):
+    # The shell as it stands, and the version it is cached under.  `sw.js`
+    # serves the shell from cache and refreshes it in the background, so an
+    # installed PWA shows the *previous* build for one more launch unless
+    # `SHELL` changes -- and `sw.js` says so in its own header.
+    #
+    # Pinning the version alone, which is what this test used to do, cannot
+    # notice: it fails when somebody bumps the number and passes when they
+    # change the shell and forget.  A digest of the shell itself fails on
+    # exactly the case that matters.  It caught its first one immediately --
+    # three shell files changed in this session's own work with no bump.
+    SHELL_VERSION = "lmloop-shell-v6"
+    SHELL_DIGEST = "7a84b13eaf11257c06f5f3f0551be1d7275997751b01e434d08f0e028ed7d887"
+
+    def test_the_shell_version_covers_the_shell_as_it_stands(self):
+        static = Path(__file__).parent / "web" / "static"
+        worker = (static / "sw.js").read_text()
+        self.assertIn(f'const SHELL = "{self.SHELL_VERSION}"', worker)
+        digest = hashlib.sha256()
+        for name in ("index.html", "app.js", "style.css"):
+            digest.update((static / name).read_bytes())
+        self.assertEqual(
+            self.SHELL_DIGEST, digest.hexdigest(),
+            "the cached shell changed: bump SHELL in web/static/sw.js and record "
+            "the new digest here, or an installed PWA serves the old build",
+        )
+
+    def test_every_asset_the_worker_precaches_is_one_this_test_covers(self):
+        """A guard on the guard: a fourth shell file would be uncovered."""
         worker = (Path(__file__).parent / "web" / "static" / "sw.js").read_text()
-        self.assertIn('const SHELL = "lmloop-shell-v4"', worker)
+        listed = set(re.findall(r'"(/[^"]*)"', worker.split("const ASSETS = [")[1].split("]")[0]))
+        self.assertEqual({"/", "/static/app.js", "/static/style.css",
+                          "/static/icon-192.png", "/manifest.json"}, listed)
 from web.server import Handler
+
+
+class ContextPressureTests(unittest.TestCase):
+    """The loop knows an iteration is running out of room and says so; the run
+    view is where that has to arrive.
+
+    Without it a run that overflows reads as ordinary work followed by an
+    inexplicable compaction -- which is exactly how the run that motivated
+    `policy.CONTEXT_PRESSURE` looked: three iterations at 80-84%, then a
+    compaction that cost the agent everything it had read.
+    """
+
+    def make_run(self, events):
+        base = Path(tempfile.mkdtemp())
+        run_dir = base / ".worktrees" / "r" / ".lmloop" / "runs" / "r"
+        run_dir.mkdir(parents=True)
+        (run_dir / "status.json").write_text(json.dumps({
+            "phase": "stopped", "model": "local/model", "updated_at": "",
+        }))
+        (run_dir / "lmloop.log").write_text(
+            "".join(json.dumps(event) + "\n" for event in events)
+        )
+        return {"id": "p", "path": str(base)}, run_dir
+
+    def iterations(self, events):
+        project, run_dir = self.make_run(events)
+        return runs.detail(project, run_dir)["iterations"]
+
+    def test_an_iteration_the_loop_flagged_carries_its_share_of_the_window(self):
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "ok",
+             "totalInputTokens": 20599},
+            {"event": "context:pressure", "iteration": 1,
+             "inputTokens": 20599, "window": 24576},
+        ])
+        self.assertAlmostEqual(20599 / 24576, rows[0]["pressure"])
+        self.assertEqual(24576, rows[0]["context_window"])
+
+    def test_an_iteration_the_loop_did_not_flag_carries_nothing(self):
+        """The threshold stays `policy`'s to decide.  A row with no `pressure`
+        is not a row at 0% -- it is one the loop had nothing to say about."""
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "ok",
+             "totalInputTokens": 4000},
+        ])
+        self.assertNotIn("pressure", rows[0])
+
+    def test_the_window_is_read_per_iteration_and_not_per_run(self):
+        """Planning and a thrash retry escalate to different models, so one
+        run's iterations do not share a window."""
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "thrashing",
+             "totalInputTokens": 20000},
+            {"event": "context:pressure", "iteration": 1,
+             "inputTokens": 20000, "window": 24576},
+            {"event": "iteration:start", "iteration": 2},
+            {"event": "iteration:end", "iteration": 2, "outcome": "ok",
+             "totalInputTokens": 90000},
+            {"event": "context:pressure", "iteration": 2,
+             "inputTokens": 90000, "window": 106496},
+        ])
+        self.assertEqual([24576, 106496], [row["context_window"] for row in rows])
+
+    def test_a_pressure_event_with_no_window_is_not_reported_as_zero(self):
+        """`Run.window` is 0 for a model nobody measured, and a ratio against
+        zero is an invented number rather than a missing one."""
+        rows = self.iterations([
+            {"event": "iteration:start", "iteration": 1},
+            {"event": "iteration:end", "iteration": 1, "outcome": "ok",
+             "totalInputTokens": 20000},
+            {"event": "context:pressure", "iteration": 1,
+             "inputTokens": 20000, "window": 0},
+        ])
+        self.assertNotIn("pressure", rows[0])
 
 
 # A process that really is an lmloop program, for the holder case that asserts a

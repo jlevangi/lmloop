@@ -43,6 +43,12 @@ MESSAGE_END = "message_end"   # {kind, stop_reason, error, input, output}
 TOOL_END = "tool_end"         # {kind}
 
 
+# A provider name as an agent prints it: a bare token in the first column.
+# Header and rule lines from a table do not match, and neither does a model id
+# that already carries its provider.
+_PROVIDER = re.compile(r"[A-Za-z0-9][\w.-]*")
+
+
 def _tail(path: str) -> str:
     """Just the file name.  The worktree prefix is identical on every call and
     would push the useful part off a phone screen."""
@@ -134,6 +140,65 @@ class Harness:
         `lmloop models` used to shell out to `pi --list-models` whatever agent
         was configured, so an omp or opencode setup was shown pi's catalogue --
         or pi's error, on a machine where pi is not installed at all.
+
+        This is the question asked *for a person*: what it runs prints a table
+        meant for eyes, and `lmloop models` passes it through untouched.  For
+        the same catalogue as data, see `catalogue`.  Which of the two an agent
+        can answer is one capability, so `[]` here means it can answer neither.
+        """
+        return []
+
+    def catalogue(self) -> list[str]:
+        """Every model selector this agent will accept, asked of the agent.
+
+        The same question as `list_models_argv`, in a form that can be parsed.
+        Separate because the printable answer is not the parseable one: omp's
+        is a box-drawing table, and reading it with the column parser pi's
+        output invites yields its two provider headers -- `9router/(97)` and
+        `llama-swap/(7)`, both offered by the dashboard as models, neither of
+        which exists.  Which is the failure the whole thing exists to prevent:
+        offering a model the agent cannot resolve produces a run that dies on
+        its first request, minutes later, for a reason nobody can see from
+        where they picked it.
+
+        `OSError`, `ValueError` and `SubprocessError` are deliberately not
+        caught here.  "The agent could not be run" and "the agent knows no
+        models" are different answers, and only the caller knows how to say
+        either one.
+        """
+        return []
+
+    def loaded_extensions(self) -> list[str]:
+        """Everything loaded into this agent that could gate what a run does.
+
+        Not one kind of thing.  pi loads files from `<config_dir>/extensions`
+        *and* npm packages named in its `settings.json`, and reporting only the
+        first is how `@vtstech/pi-security` stayed invisible: it blocks `git`
+        outright in a mode it defaults to when nobody has chosen one, and
+        `lmloop doctor` named two inert files in its place while a real run
+        spent iterations working around a `git` it was never going to be
+        allowed to run.
+
+        Reported, not judged.  `model-catalog.js` is an extension too and
+        lmloop does not work without it; which of these should be loaded during
+        an unattended run is the operator's call, and they can only make it if
+        something says what is there.
+        """
+        if not self.config_dir:
+            return []
+        folder = Path(self.config_dir) / "extensions"
+        files = sorted(
+            path.name for path in folder.iterdir()
+            if path.suffix in (".js", ".ts", ".mjs") and not path.name.endswith(".bak")
+        ) if folder.is_dir() else []
+        return files + self.loaded_packages()
+
+    def loaded_packages(self) -> list[str]:
+        """Packages this agent loads by name rather than by file.
+
+        Empty for an agent that has no such list -- omp keeps a `config.yml`,
+        which is YAML, which this project has no parser for and does not need
+        one for: omp's extensions are files like anybody else's.
         """
         return []
 
@@ -181,6 +246,55 @@ class PiHarness(Harness):
 
     def list_models_argv(self):
         return [self.binary, "--list-models"]
+
+    def catalogue(self):
+        result = subprocess.run(
+            self.list_models_argv(), capture_output=True, text=True, timeout=60
+        )
+        return self.parse_catalogue(result.stdout)
+
+    @classmethod
+    def parse_catalogue(cls, stdout: str) -> list[str]:
+        """`provider model ...` columns, one model per line.
+
+        Lived in `web/server.py` as the parser for every agent, which is how
+        omp's table came back as two models named after its provider counts.
+        Here it answers for pi, and for the fork that prints what pi prints.
+        """
+        models = []
+        for line in stdout.splitlines():
+            parts = line.split()
+            # Any provider, not a list of the two this was first deployed
+            # against.  `9router` is one person's router and had no business
+            # being a condition in shipped code; a provider name is whatever
+            # the agent says it is.  Which leaves the table's own header to
+            # exclude, since `provider model` is otherwise shaped exactly like
+            # a row -- excluded by what it says rather than by guessing at
+            # column widths, so a change in the layout costs nothing and a
+            # change in the wording costs one model.
+            if parts[:2] == ["provider", "model"]:
+                continue
+            if len(parts) >= 2 and _PROVIDER.fullmatch(parts[0]):
+                models.append(f"{parts[0]}/{parts[1]}")
+        return models
+
+    def loaded_packages(self):
+        """pi's `settings.json` names npm packages it loads at startup.
+
+        A separate mechanism from the extensions directory and just as able to
+        gate a tool call -- `@vtstech/pi-security` arrives this way.
+        """
+        settings = Path(self.config_dir) / "settings.json"
+        try:
+            loaded = json.loads(settings.read_text())
+        except (OSError, ValueError):
+            return []
+        if not isinstance(loaded, dict):
+            return []
+        return sorted(
+            name for name in loaded.get("packages") or []
+            if isinstance(name, str) and name
+        )
 
     # pi's own provider config: the authority for models lmloop does not
     # measure itself, because it is the same file pi reads when it builds the
@@ -444,31 +558,64 @@ class OmpHarness(PiHarness):
         # flag: --list-models`.  It has a `models` subcommand instead.  Verified
         # against omp v17.4.0 -- inheriting pi's spelling printed that error
         # where a catalogue belonged.
+        #
+        # What this prints is a box-drawing table, which is why `catalogue`
+        # below does not read it; see the note there.
         return [self.binary, "models"]
+
+    def _models_json(self) -> list[dict]:
+        """omp's catalogue as data.
+
+        `omp models` prints a provider header and then a box-drawing table --
+        for eyes, not for parsing.  `--json` is the same catalogue in a form
+        that can be read, and it also avoids parsing the `models.yml` behind
+        `~/.omp/agent/models.db`, which this project has no YAML dependency
+        for.
+
+        Roughly two seconds, so both callers below are cached by whoever calls
+        them.  Errors are left to those callers, which want different things
+        from a failure.
+        """
+        result = subprocess.run(
+            [self.binary, "models", "--json"],
+            capture_output=True, text=True, timeout=60,
+        )
+        catalogue = json.loads(result.stdout)
+        if not isinstance(catalogue, dict):
+            return []
+        return [entry for entry in catalogue.get("models") or []
+                if isinstance(entry, dict)]
+
+    def catalogue(self):
+        """The `selector` of every model omp knows -- `provider/id`, which is
+        exactly the string `--model` takes.
+
+        Not `parse_catalogue`, which reads pi's columns: run over `omp models`,
+        the only lines shaped like a row are the two provider headers, whose
+        second token is a count.  That produced `9router/(97)` and
+        `llama-swap/(7)`, offered by the dashboard as the entire catalogue of
+        an agent that knows ninety-seven models.
+        """
+        return [
+            entry["selector"] for entry in self._models_json()
+            if isinstance(entry.get("selector"), str) and entry["selector"]
+        ]
 
     def declared_windows(self):
         """Asked of omp itself rather than read from a file.
 
-        omp keeps its catalogue in `~/.omp/agent/models.db` behind a
-        `models.yml`, and `omp models --json` is the supported way to read it --
-        which also avoids parsing YAML, which this project has no dependency
-        for.  Inheriting `PiHarness`'s file reader instead answered for four
-        models where omp knows ninety-seven, and every other one came back with
-        no window at all.
+        Inheriting `PiHarness`'s file reader instead answered for four models
+        where omp knows ninety-seven, and every other one came back with no
+        window at all.
 
-        Roughly two seconds, so the caller caches; never fatal, because a run
-        with no window metadata still runs.
+        Never fatal, because a run with no window metadata still runs.
         """
         try:
-            result = subprocess.run(
-                [self.binary, "models", "--json"],
-                capture_output=True, text=True, timeout=60,
-            )
-            catalogue = json.loads(result.stdout)
+            entries = self._models_json()
         except (OSError, ValueError, subprocess.SubprocessError):
             return {}
         windows = {}
-        for entry in catalogue.get("models") or []:
+        for entry in entries:
             selector = entry.get("selector")
             context, output = entry.get("contextWindow"), entry.get("maxTokens")
             if selector and isinstance(context, int) and isinstance(output, int):

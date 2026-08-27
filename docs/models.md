@@ -111,6 +111,25 @@ provider block declares them. It guessed 262144 for a `Qwen3.8-27B` loaded with
 `--ctx-size 131072` — and omp compacts against its own number, not lmloop's, so
 the guess is the one that matters. `docs/operations.md` has the block.
 
+## The list the dashboard offers
+
+A window is not the same question as *which models exist*, and the dashboard
+asks the second one: `Harness.catalogue` returns every selector the configured
+agent will accept, and `/api/models` reports in `model_source` whether the list
+really came from asking it. Both live on the adapter because the answer is
+agent-shaped. `web/server.py` used to parse every agent's output with pi's
+column parser — first token a provider, second a model — and `omp models`
+prints a provider header and then a box-drawing table, so the only lines that
+survived were the headers: the dashboard offered `9router/(97)` and
+`llama-swap/(7)`, two models that do not exist, and reported them as omp's own
+catalogue. `omp models --json` is the parseable form, and its `selector` field
+is exactly the string `--model` takes.
+
+`list_models_argv` is the other half and stays separate: it is the question
+asked *for a person*, and `lmloop models` prints what it returns untouched, so
+an operator still sees their agent's own table with its context and thinking
+columns.
+
 ## Models lmloop does not measure
 
 `declared_window` only measures llama-swap, because only llama-swap will tell it

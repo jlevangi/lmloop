@@ -8,6 +8,24 @@ from real runs and redacted. Used by `test_harness_contract.py`.
 | `pi-events.jsonl` | an archived pi run |
 | `omp-events.jsonl` | a live omp worktree |
 | `opencode-events.jsonl` | an lmloop run driving opencode against a local llama-swap |
+| `pi-models.txt` | `pi --list-models` |
+| `omp-models.txt` | `omp models` |
+| `omp-models.json` | `omp models --json` |
+| `pi-settings.json` | `~/.pi/agent/settings.json` |
+
+The three catalogue files are used by `test_harness_contract.py` and are not
+redacted: a catalogue is a list of model names, which is the entire thing under
+test. `omp-models.txt` is captured for the same reason a failing input is kept
+anywhere -- it is the output that the shared column parser turned into
+`9router/(97)` and `llama-swap/(7)`, and the test that reads it is what keeps
+the reason omp has its own parser checkable rather than asserted.
+
+`pi-settings.json` is captured for the same reason, and is the one file here
+that is trimmed: it is a copy of a real `~/.pi/agent/settings.json`, and the
+rest of an operator's installed package list is their business rather than this
+repository's. What is left is the shape and the entry that matters — the one
+`lmloop doctor` could not see, and that a hand-written fixture would never have
+thought to include, since two investigations had already blamed something else.
 
 opencode shares none of the other two's vocabulary — no `message_end`, tool
 calls arrive as one `tool_use` with the result already attached, and usage rides

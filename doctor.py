@@ -17,6 +17,7 @@ cause and the rest are consequences.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -143,40 +144,95 @@ def gate_check(config: dict, repo: Path):
     return ("gate", OK, command)
 
 
+def _pi_security_verdict(config_dir: Path) -> str:
+    """`@vtstech/pi-security` blocks `git`, and defaults to the mode that does.
+
+    Its `max` mode blocks 66 commands, `git` among them, and `getSecurityMode`
+    returns `max` when `security.json` does not exist -- so an operator who
+    installed it for its critical-command list gets the extended one without
+    choosing it.  `basic` keeps all 41 critical blocks and allows `git`.
+
+    That matters here more than it would anywhere else: git is the only witness
+    a run has, and an agent that cannot run it cannot show its work.  It is not
+    fatal -- lmloop commits with its own `git`, not the agent's -- so this is a
+    warning about wasted iterations rather than a refusal.
+    """
+    try:
+        mode = json.loads((config_dir / "security.json").read_text()).get("mode")
+    except (OSError, ValueError, AttributeError):
+        mode = ""
+    if mode in ("basic", "off"):
+        return ""
+    # Name the file. A diagnostic that says "set the mode somewhere" costs the
+    # reader the search this check exists to save them.
+    return (f"npm:@vtstech/pi-security blocks `git` in max mode, which it uses "
+            f"when nothing is set -- run `/security mode basic` in pi, or write "
+            f'{{"mode": "basic"}} to {config_dir / "security.json"}')
+
+
+# Things loaded into an agent that are known to stop a run doing its job, and
+# what to do about each.
+#
+# Not a security opinion, and not a list anybody has to keep current for lmloop
+# to work: every entry names one thing lmloop cannot run without and the setting
+# that gives it back, and says nothing about whether the extension should be
+# installed.  Saying a run will fail is this file's whole purpose; deciding what
+# a machine's posture ought to be is not.
+#
+# One entry, because one has been paid for. A run spent iterations working
+# around a `git` it was never going to be allowed to run, and it took two wrong
+# investigations to find out why -- both of which would have been one `lmloop
+# doctor` away.
+BLOCKING_EXTENSIONS = {"npm:@vtstech/pi-security": _pi_security_verdict}
+
+
 def extensions_check(harness_module, config: dict):
     """Name what is loaded into the agent, because it decides what a run can do.
 
-    Extensions are invisible from lmloop and not all of them are inert. One
-    installed here hooks every tool call out to an approval daemon, and during
-    a real run it answered for the agent: `[SECURITY] Blocked command: git (max
-    mode) (rule: command_blocklist)`. The iteration spent its time working
-    around a `git` it was never going to be allowed to run, and nothing in the
-    run's own record said why.
+    What is loaded is invisible from lmloop and not all of it is inert. During
+    a real run something here answered for the agent -- `[SECURITY] Blocked
+    command: git (max mode) (rule: command_blocklist)` -- and the iteration
+    spent its time working around a `git` it was never going to be allowed to
+    run, with nothing in the run's own record saying why. It is
+    `@vtstech/pi-security`, which blocks `git` in a mode it *defaults* to when
+    nobody has chosen one.
+
+    That took two wrong answers to find, and both are the reason this check now
+    asks the adapter rather than reading a directory itself. The first blamed
+    pi, whose bundle contains none of those strings. The second blamed
+    `moshi-hooks.ts`, which was the only third-party file in the extensions
+    directory -- and cannot block anything: it spawns a detached notifier whose
+    output is discarded. The thing that actually gates tool calls was never in
+    that directory at all. It is a package named in pi's `settings.json`, which
+    this check could not see.
 
     An unattended loop cannot answer an approval prompt and cannot argue with a
-    denial, so anything that gates tool calls is worth naming before a run
-    rather than after. Reported rather than judged: `model-catalog.js` is an
-    extension too, and lmloop would not work without it.
+    denial, so anything able to gate a tool call is worth naming before a run
+    rather than after. Reported rather than judged: `model-catalog.js` is
+    loaded this way too, and lmloop does not work without it.
     """
     name = config["agent"].get("harness", "pi")
     try:
-        directory = harness_module.get(name).config_dir
+        adapter = harness_module.get(name)
     except SystemExit:
         return ("agent extensions", OK, "unknown agent")
-    if not directory:
+    if not adapter.config_dir:
         return ("agent extensions", OK, f"lmloop does not know where {name} keeps them")
-    folder = Path(directory) / "extensions"
-    if not folder.is_dir():
-        return ("agent extensions", OK, "none installed")
-    loaded = sorted(
-        path.name for path in folder.iterdir()
-        if path.suffix in (".js", ".ts", ".mjs") and not path.name.endswith(".bak")
-    )
+    loaded = adapter.loaded_extensions()
     if not loaded:
         return ("agent extensions", OK, "none installed")
-    return ("agent extensions", OK,
-            f"{len(loaded)} loaded into {name}: {', '.join(loaded)}"
-            " (each can gate what a run may do)")
+    # One line, deliberately: `display.out` re-flows whatever it is given to the
+    # terminal width, so a newline embedded here becomes a run of spaces rather
+    # than a break. Wrapping belongs to the thing that knows the width.
+    listing = (f"{len(loaded)} loaded into {name} (each can gate what a run may do): "
+               + ", ".join(loaded))
+    verdicts = [
+        verdict for item in loaded
+        if (verdict := BLOCKING_EXTENSIONS.get(item, lambda _: "")(Path(adapter.config_dir)))
+    ]
+    if verdicts:
+        return ("agent extensions", WARN, listing + " -- " + "; ".join(verdicts))
+    return ("agent extensions", OK, listing)
 
 
 def notify_check(config_module, config: dict):

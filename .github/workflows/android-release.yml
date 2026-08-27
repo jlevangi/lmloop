@@ -95,4 +95,8 @@ jobs:
           sha="lmloop-android-${version}.sha256"
           test -f "$apk" && test -f "$sha"
           sha256sum -c "$sha"
-          gh release create "$GITHUB_REF_NAME" "$apk" "$sha" --generate-notes
+          # This job has no actions/checkout (deliberately -- it needs no
+          # source, only the already-built artifact), so `gh` has no git
+          # remote to infer a repo from; --repo makes that explicit rather
+          # than relying on one being detected.
+          gh release create "$GITHUB_REF_NAME" "$apk" "$sha" --repo "$GITHUB_REPOSITORY" --generate-notes

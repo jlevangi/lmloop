@@ -10,8 +10,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -24,7 +27,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.view.WindowCompat
 import dev.levangie.lmloop.settings.SettingsScreen
 import dev.levangie.lmloop.setup.SetupScreen
 import dev.levangie.lmloop.sync.WorkScheduler
@@ -50,18 +52,6 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Opt out of the edge-to-edge enforcement Android 15+ (API 35)
-        // applies by default to apps targeting it: without this, content --
-        // both this Activity's own composables and, worse, the WebView's
-        // page content -- draws under the status bar and the navigation
-        // bar. That's what made the settings gear unreachable behind the
-        // status bar, and is the leading suspect for the dashboard's own
-        // bottom "active runs" strip being unreachable near the navigation
-        // bar too. Restoring the classic behavior -- system bars reserve
-        // their own space, everything else lays out in what's left -- fixes
-        // both without hand-tuning inset padding on every composable and
-        // on the WebView.
-        WindowCompat.setDecorFitsSystemWindows(window, true)
         val services = lmloopServices
 
         setContent {
@@ -71,7 +61,16 @@ class MainActivity : ComponentActivity() {
             var hasToken by remember { mutableStateOf(services.configStore.hasToken()) }
 
             MaterialTheme(colorScheme = LmloopColorScheme) {
-                Surface(modifier = Modifier.fillMaxSize()) {
+                // Apps targeting API 35+ get edge-to-edge forced by the
+                // system -- `Window.setDecorFitsSystemWindows(true)` is
+                // silently ignored for us regardless of what we pass it, so
+                // opting out is not an option. This is the actual fix: pad
+                // the whole content area (WebView included, since it is a
+                // child of this same layout) by the real system-bar insets,
+                // so nothing -- neither this Activity's own composables nor
+                // the dashboard's own bottom "active runs" strip -- draws
+                // under the status bar or the navigation bar.
+                Surface(modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars)) {
                     if (!configured) {
                         SetupScreen(
                             api = services.api,

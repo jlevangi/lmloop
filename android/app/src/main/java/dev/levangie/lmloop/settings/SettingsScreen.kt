@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -21,24 +22,35 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import dev.levangie.lmloop.config.ServerConfigStore
 import dev.levangie.lmloop.net.ApiResult
 import dev.levangie.lmloop.net.LmloopApiClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private fun notificationsGrantedNow(context: android.content.Context): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED
 
 /**
  * Everything about this app's own configuration in one place -- there was
@@ -62,16 +74,24 @@ fun SettingsScreen(
     var testingToken by remember { mutableStateOf(false) }
     var hasToken by remember { mutableStateOf(configStore.hasToken()) }
 
-    var notificationsGranted by remember {
-        mutableStateOf(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
+    var notificationsGranted by remember { mutableStateOf(notificationsGrantedNow(context)) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> notificationsGranted = granted }
+
+    // Turning the switch "off" can only ever open system settings -- an app
+    // cannot revoke its own runtime permission -- so this is what notices
+    // the real answer once the user comes back from there (or from granting
+    // it in the system prompt on API < 33, which has no ActivityResult
+    // callback of its own).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) notificationsGranted = notificationsGrantedNow(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
@@ -90,27 +110,38 @@ fun SettingsScreen(
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
 
-        Text("Notifications permission", modifier = Modifier.padding(bottom = 4.dp))
-        Text(if (notificationsGranted) "Granted." else "Not granted -- live-watch and closed-app notifications will not show.")
-        if (!notificationsGranted) {
-            OutlinedButton(
-                onClick = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Notifications")
+                Text(
+                    if (notificationsGranted) {
+                        "Live-watch and closed-app notifications can show."
                     } else {
-                        // Below API 33 there is no runtime prompt to relaunch;
-                        // a previously-revoked notification permission can
-                        // only be restored from system app settings.
-                        context.startActivity(
-                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                                .setData(Uri.fromParts("package", context.packageName, null)),
-                        )
+                        "Live-watch and closed-app notifications will not show."
+                    },
+                )
+            }
+            Switch(
+                checked = notificationsGranted,
+                onCheckedChange = { wantsOn ->
+                    when {
+                        wantsOn && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
+                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        wantsOn -> notificationsGranted = true // no runtime prompt below API 33
+                        else ->
+                            // An app can request its own permission but
+                            // cannot revoke it -- the only way "off" is
+                            // real is through system settings.
+                            context.startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                                    .setData(Uri.fromParts("package", context.packageName, null)),
+                            )
                     }
                 },
-                modifier = Modifier.padding(top = 8.dp),
-            ) {
-                Text("Grant")
-            }
+            )
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))

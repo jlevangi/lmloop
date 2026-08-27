@@ -1,10 +1,6 @@
 {
   "packages": [
-    "npm:principal-pi-skills",
-    "npm:pi-hashline-edit-pro",
-    "npm:@vanillagreen/pi-web-tools",
-    "npm:@vtstech/pi-security",
-    "npm:oh-my-pi"
+    "npm:@vtstech/pi-security"
   ],
   "lastChangelogVersion": "0.84.2",
   "theme": "dark"

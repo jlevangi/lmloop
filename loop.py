@@ -25,6 +25,7 @@ from pathlib import Path
 
 import browser
 import checks
+import config
 import display
 import env as envpolicy
 import eta
@@ -479,7 +480,7 @@ class Run:
         enabled = [name.strip() for name in agent.get("tools", "").split(",") if name.strip()]
         if enabled and tool not in enabled:
             return
-        cdp_url = agent.get("browser_cdp_url", "")
+        cdp_url = config.reference(agent.get("browser_cdp_url", ""))
         if not cdp_url:
             # Not a failure, and saying it was one was wrong in the way that
             # matters: a pilot run logged `ok=false, "no browser CDP endpoint
@@ -667,7 +668,8 @@ class Run:
         self.thinking, self.role = thinking, role
         self.window, self.max_output = models.declared_window(
             self.model, self.harness_name) or (0, 0)
-        ok, detail = models.preflight(self.model, self.config["models"]["llama_swap_url"])
+        ok, detail = models.preflight(
+            self.model, config.reference(self.config["models"]["llama_swap_url"]))
         self.rundir.event("preflight", iteration=number, ok=ok, detail=detail)
         if not ok:
             raise PreflightError(detail)
@@ -1341,7 +1343,7 @@ class Run:
     def _server_is_up(self) -> bool:
         """Does llama-swap answer at all?  Free, and never triggers a swap."""
         try:
-            models.running(self.config["models"]["llama_swap_url"], timeout=5.0)
+            models.running(config.reference(self.config["models"]["llama_swap_url"]), timeout=5.0)
             return True
         except Exception:  # noqa: BLE001 - any failure to answer means "not there"
             return False

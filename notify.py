@@ -97,7 +97,7 @@ def send(settings: dict, run: dict) -> str:
     target = f"{base}/{topic}" if topic else base
 
     title, body, tags, priority = summarise(run)
-    click = settings.get("dashboard_url") or ""
+    click = config.reference(settings.get("dashboard_url"))
     if click and run.get("project") and run.get("run_id"):
         click = f"{click.rstrip('/')}/#{run['project']}/{run['run_id']}"
 

@@ -386,6 +386,7 @@ def cmd_models(args: argparse.Namespace) -> int:
         url = config_module.load(repo, strict=False)["models"]["llama_swap_url"]
     except SystemExit:
         pass
+    url = config_module.reference(url)
 
     if args.detect:
         measured = models_module.real_context(url)

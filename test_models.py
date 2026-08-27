@@ -321,9 +321,11 @@ class ConfigOverrideTests(unittest.TestCase):
         self.assertNotIn("nonsense", policy)
 
     def test_forgetting_restores_the_files_answer(self):
-        models.use({"llama_swap_url": "http://from-config:2"})
-        models.forget_overrides()
-        self.assertNotEqual("http://from-config:2", models.budgets()["llama_swap_url"])
+        with mock.patch.object(models.Path, "read_text",
+                               return_value='{"llama_swap_url": "http://from-file:1"}'):
+            models.use({"llama_swap_url": "http://from-config:2"})
+            models.forget_overrides()
+            self.assertEqual("http://from-file:1", models.budgets()["llama_swap_url"])
 
 
 if __name__ == "__main__":

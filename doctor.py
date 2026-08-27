@@ -94,12 +94,12 @@ def model_check(models_module, config: dict):
     return ("model", OK, f"{model}: {window[0]} context + {window[1]} output")
 
 
-def server_check(models_module, config: dict):
+def server_check(config_module, models_module, config: dict):
     """Only meaningful when the configured model is served locally."""
     model = config["agent"].get("model", "")
     if not models_module.is_local(model):
         return ("model server", OK, "not a local model; nothing to reach")
-    url = config["models"]["llama_swap_url"]
+    url = config_module.reference(config["models"]["llama_swap_url"])
     ok, detail = models_module.preflight(model, url)
     if not ok:
         return ("model server", FAIL, f"{url}: {detail}")
@@ -260,7 +260,7 @@ def check(repo: Path, config: dict, modules) -> list[tuple[str, str, str]]:
         config_check(config_module, repo),
         harness_check(harness_module, config),
         model_check(models_module, config),
-        server_check(models_module, config),
+        server_check(config_module, models_module, config),
         worktree_check(runrecord_module, repo, config),
         gate_check(config, repo),
         extensions_check(harness_module, config),

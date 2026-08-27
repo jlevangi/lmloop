@@ -1805,6 +1805,25 @@ class ThirdPartyAdapterTests(unittest.TestCase):
                 run.probe_browser()
         preflight.assert_called_once_with("http://127.0.0.1:9222")
 
+    def test_browser_cdp_url_may_point_at_its_value(self):
+        """A CDP endpoint is credentials -- see docs/operations.md's preflight
+        section -- so it gets the same `env:`/`file:`/`!command` treatment
+        `[notify] url` does; see `config.reference`."""
+        with self.registered():
+            root = Path(tempfile.mkdtemp())
+            cfg = config.load(root)
+            cfg["agent"]["harness"] = "impostor"
+            cfg["agent"]["tools"] = "peer,looking-glass"
+            cfg["agent"]["browser_cdp_url"] = "env:LMLOOP_TEST_CDP_URL"
+            run = Run(root, cfg, "objective", run_id="test-run")
+            run.rundir.path.mkdir(parents=True)
+            run.screen = mock.MagicMock()
+            with mock.patch.dict(os.environ, {"LMLOOP_TEST_CDP_URL": "http://resolved:9222"}), \
+                 mock.patch.object(loop.browser, "preflight",
+                                   return_value=(True, "attached")) as preflight:
+                run.probe_browser()
+        preflight.assert_called_once_with("http://resolved:9222")
+
     def test_a_browser_left_out_of_its_allowlist_is_not_preflighted(self):
         with self.registered():
             root = Path(tempfile.mkdtemp())
@@ -1898,6 +1917,16 @@ class LocalServerWaitTests(unittest.TestCase):
         with mock.patch.object(models, "budgets", return_value=policy),              mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_wait_for_server") as wait,              mock.patch.object(run, "_sleep_interruptibly", return_value=True):
             self.assertTrue(run._backoff(1, "agent-error"))
         wait.assert_not_called()
+
+    def test_llama_swap_url_may_point_at_its_value(self):
+        """`[models] llama_swap_url` names a host too -- see `config.reference`
+        -- and `_server_is_up` is the one place that URL reaches the network."""
+        run = self.make_run("llama-swap/local-fast")
+        run.config["models"]["llama_swap_url"] = "env:LMLOOP_TEST_SWAP_URL2"
+        with mock.patch.dict(os.environ, {"LMLOOP_TEST_SWAP_URL2": "http://resolved:2"}), \
+             mock.patch.object(models, "running") as running:
+            run._server_is_up()
+        running.assert_called_once_with("http://resolved:2", timeout=5.0)
 
 
 class ConfigValidationTests(unittest.TestCase):
@@ -2519,10 +2548,6 @@ class DestructiveGitTests(unittest.TestCase):
                 self.assertNotIn("-f", argv)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReplyCutOffTests(unittest.TestCase):
     """A reply that hits the output cap mid-iteration used to vanish.
 
@@ -2612,6 +2637,16 @@ class NotifyReferenceTests(unittest.TestCase):
                                  "topic": "env:LMLOOP_NTFY_TOPIC"})
         self.assertEqual("https://private.example/secret-topic", seen["url"])
 
+    def test_dashboard_url_can_also_come_from_a_reference(self):
+        """`dashboard_url` names a machine too, and gets the same treatment
+        as `url` and `topic` -- see `config.reference`."""
+        with unittest.mock.patch.dict(os.environ, {
+            "LMLOOP_DASHBOARD_URL": "https://dash.private.example",
+        }):
+            _, seen = self.send({"url": "https://ntfy.example", "topic": "t",
+                                  "dashboard_url": "env:LMLOOP_DASHBOARD_URL"})
+        self.assertEqual("https://dash.private.example", seen["headers"]["Click"])
+
     def test_an_unresolvable_reference_disables_rather_than_leaks(self):
         """Never post to a host literally named `env:SOMETHING`, and never
         send the reference as though it were the value."""
@@ -2619,3 +2654,7 @@ class NotifyReferenceTests(unittest.TestCase):
             problem, seen = self.send({"url": "env:NOT_SET", "topic": "t"})
         self.assertEqual("no url configured", problem)
         self.assertNotIn("url", seen)
+
+
+if __name__ == "__main__":
+    unittest.main()

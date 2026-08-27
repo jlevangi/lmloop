@@ -475,6 +475,12 @@ function patchModel(model, run) {
   }
 
   const bits = [];
+  // `run.elapsed_seconds` is the *current* iteration's own clock (see
+  // pi_runner's `started`), not the run's -- that total already has its own
+  // line above this card. Without this, the only way to notice an iteration
+  // running long was the row card in the list, one navigation away.
+  const live = run.state === "running" && run.elapsed_seconds != null;
+  if (live) bits.push(`iteration ${liveElapsed(run)}`);
   if (run.output_tokens) bits.push(`${compact(run.output_tokens)} out`);
   /* The cap is per reply and `output_tokens` is the whole iteration's total,
    * so printing the two side by side -- "13.7k out, 24.6k reply cap" -- read
@@ -492,7 +498,7 @@ function patchModel(model, run) {
   if (run.tool_calls) bits.push(`${run.tool_calls} tools`);
   if (run.writes) bits.push(plural(run.writes, "write"));
   bits.push(run.compactions ? plural(run.compactions, "overflow") : "no overflow");
-  syncSpans(model.meta, bits);
+  syncSpans(model.meta, bits, (_bit, index) => (live && index === 0 ? "clock" : ""));
 }
 
 /* Plan steps are markdown the agent wrote for itself, so they arrive with
@@ -1225,6 +1231,10 @@ setInterval(() => {
   const shown = state.runs.find((run) => run.run_id === state.route.run_id);
   const panel = document.querySelector("#view-run .detail-timing");
   if (panel && shown?.state === "running") panel.textContent = timingText(shown);
+  const modelClock = document.querySelector("#view-run .model-meta .clock");
+  if (modelClock && shown?.state === "running") {
+    modelClock.textContent = `iteration ${liveElapsed(shown)}`;
+  }
   // The strip carries the same clock, and it is on screen on every page.
   for (const [runId, parts] of runbar.rows) {
     const run = state.runs.find((item) => item.run_id === runId);

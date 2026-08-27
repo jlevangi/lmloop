@@ -73,14 +73,14 @@ class ServerCheckTests(unittest.TestCase):
     def test_a_remote_model_needs_no_server(self):
         with mock.patch.object(models, "is_local", return_value=False), \
              mock.patch.object(models, "preflight") as preflight:
-            _, status, _ = doctor.server_check(models, self.CONFIG)
+            _, status, _ = doctor.server_check(config, models, self.CONFIG)
         self.assertEqual(doctor.OK, status)
         preflight.assert_not_called()
 
     def test_an_unreachable_server_is_a_failure(self):
         with mock.patch.object(models, "is_local", return_value=True), \
              mock.patch.object(models, "preflight", return_value=(False, "unreachable")):
-            _, status, detail = doctor.server_check(models, self.CONFIG)
+            _, status, detail = doctor.server_check(config, models, self.CONFIG)
         self.assertEqual(doctor.FAIL, status)
         self.assertIn("unreachable", detail)
 
@@ -91,7 +91,7 @@ class ServerCheckTests(unittest.TestCase):
              mock.patch.object(models, "local_name", return_value="m"), \
              mock.patch.object(models, "preflight", return_value=(True, "will load")), \
              mock.patch.object(models, "available", return_value=["other", "another"]):
-            _, status, detail = doctor.server_check(models, self.CONFIG)
+            _, status, detail = doctor.server_check(config, models, self.CONFIG)
         self.assertEqual(doctor.FAIL, status)
         self.assertIn("no model named `m`", detail)
         self.assertIn("other", detail, "say what it does serve")
@@ -101,7 +101,7 @@ class ServerCheckTests(unittest.TestCase):
              mock.patch.object(models, "local_name", return_value="m"), \
              mock.patch.object(models, "preflight", return_value=(True, "already loaded")), \
              mock.patch.object(models, "available", return_value=["m", "other"]):
-            _, status, _ = doctor.server_check(models, self.CONFIG)
+            _, status, _ = doctor.server_check(config, models, self.CONFIG)
         self.assertEqual(doctor.OK, status)
 
     def test_a_catalogue_that_cannot_be_read_does_not_break_the_check(self):
@@ -110,8 +110,21 @@ class ServerCheckTests(unittest.TestCase):
              mock.patch.object(models, "local_name", return_value="m"), \
              mock.patch.object(models, "preflight", return_value=(True, "fine")), \
              mock.patch.object(models, "available", side_effect=OSError("refused")):
-            _, status, _ = doctor.server_check(models, self.CONFIG)
+            _, status, _ = doctor.server_check(config, models, self.CONFIG)
         self.assertEqual(doctor.OK, status)
+
+    def test_llama_swap_url_may_point_at_its_value(self):
+        """Naming a host is the same class of thing `[notify] url` is --
+        see `config.reference`."""
+        cfg = {"agent": {"model": "llama-swap/m"},
+               "models": {"llama_swap_url": "env:LMLOOP_TEST_SWAP_URL"}}
+        with mock.patch.dict(os.environ, {"LMLOOP_TEST_SWAP_URL": "http://resolved:1"}), \
+             mock.patch.object(models, "is_local", return_value=True), \
+             mock.patch.object(models, "local_name", return_value="m"), \
+             mock.patch.object(models, "preflight", return_value=(False, "unreachable")) as preflight, \
+             mock.patch.object(models, "available", return_value=["m"]):
+            doctor.server_check(config, models, cfg)
+        preflight.assert_called_once_with("llama-swap/m", "http://resolved:1")
 
 
 class GateCheckTests(unittest.TestCase):

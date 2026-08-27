@@ -383,6 +383,11 @@ is credentials, and anything that can reach it can read every page the browser
 has open. Leaving `browser_cdp_url` empty skips the check and leaves the tool to
 omp's own configuration.
 
+`browser_cdp_url` may point at its value instead of holding it, the same
+spellings `[notify] url` takes: `env:NAME`, `file:PATH`, `!command`. A CDP
+endpoint is exactly the kind of thing a config file should not carry as a
+literal — see "Notifications" below.
+
 ## Pointing omp at llama-swap
 
 omp reads providers from `~/.omp/agent/models.yml` — not from `--config`, which

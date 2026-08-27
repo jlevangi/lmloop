@@ -128,6 +128,11 @@ DEFAULTS: dict = {
         # Left empty, the browser tool falls back to omp's own configuration:
         # its `browser.cdpUrl` setting, its relay, or a headless Chromium it
         # launches itself.  Setting it here only adds the preflight.
+        #
+        # A CDP endpoint is credentials -- anything that can reach it can read
+        # every page the browser has open -- so, like `[notify] url`, it may
+        # point at its value instead of holding it: `env:NAME`, `file:PATH`,
+        # `!command`.  See `config.reference`.
         "browser_cdp_url": "",
     },
     "models": {
@@ -139,6 +144,11 @@ DEFAULTS: dict = {
         # which the pi extension reads too -- one place to edit when the box
         # moves, rather than one here and one in a JavaScript file nobody
         # remembers is there.  A repo's own .lmloop.toml still overrides it.
+        #
+        # Names a host, so it may point at its value the way `[notify] url`
+        # does -- `env:NAME`, `file:PATH`, `!command` -- for the operator whose
+        # GPU box is a separate machine and would rather not commit its
+        # address.  See `config.reference`.
         "llama_swap_url": models.budgets()["llama_swap_url"],
         # Which model-id prefixes mean "served by that llama-swap".  Seeded from
         # the same shared file, and overridable per repo like everything else
@@ -631,12 +641,15 @@ planner_thinking = ""
 # Only omp has a browser.  An HTTP CDP discovery endpoint -- not a ws:// URL,
 # and not one whose credential rides in the query string; omp's attach drops
 # both.  Empty leaves the browser tool to omp's own configuration and skips the
-# preflight.
+# preflight.  A CDP endpoint is credentials, so it may also point at its value
+# rather than hold it: "env:NAME", "file:PATH", "!command" -- see [notify] below.
 # browser_cdp_url = "http://127.0.0.1:9222"
 
 [models]
 # Defaults to whatever ~/.config/lmloop/model-budgets.json says, which is also
 # what the pi extension reads.  Set these only to point one repo somewhere else.
+# Also names a host, so it too may point at its value -- "env:NAME", "file:PATH",
+# "!command" -- see [notify] below.
 # llama_swap_url = "http://127.0.0.1:8080"
 #
 # Which model-id prefixes mean "served by that llama-swap", and so get a real

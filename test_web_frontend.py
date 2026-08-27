@@ -373,6 +373,35 @@ class AgentAttributionTests(unittest.TestCase):
         self.assertIn(".filter(Boolean)", self.function_body("patchModel"))
 
 
+class PlanWindowTests(unittest.TestCase):
+    """The collapsed plan view a phone sees.
+
+    It used to keep three steps -- the one just finished, the one running,
+    and the one after -- which answered a question nobody asked at the cost
+    of two of the few lines a folded plan gets before the rest scrolls off.
+    It shows only the step actually in progress now; the neighbours are one
+    tap away in the full list.
+    """
+
+    def function_body(self, name):
+        match = re.search(rf"function {name}\(.*?\) \{{(.*?)\n\}}", APP, re.S)
+        self.assertIsNotNone(match, f"{name} moved or was renamed")
+        return match.group(1)
+
+    def test_only_one_step_is_ever_appended(self):
+        body = self.function_body("planWindow")
+        self.assertEqual(1, body.count("holder.append(stepNode("),
+                         "a collapsed plan must show only the step in progress")
+
+    def test_the_neighbouring_step_lookups_are_gone(self):
+        """The window used to look a step behind (the last done one) and a
+        step ahead (`current + 1`); either surviving here means the window
+        is back to three steps without this test having been updated."""
+        body = self.function_body("planWindow")
+        self.assertNotIn("current + 1", body)
+        self.assertNotIn("filter((step) => step.done).pop()", body)
+
+
 class RunStateVocabularyTests(unittest.TestCase):
     def test_every_state_the_api_computes_is_one_the_dashboard_knows(self):
         served = set(re.findall(r'return \("?([a-z]+)"', (ROOT / "web" / "runs.py").read_text()))

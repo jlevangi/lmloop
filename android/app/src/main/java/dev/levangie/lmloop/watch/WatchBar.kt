@@ -33,9 +33,17 @@ import dev.levangie.lmloop.web.DashboardRoute
  * from just using the app. Without one, `RunWatchService` cannot
  * authenticate at all, so the button routes to `onNeedsSetup` instead of
  * starting a service that would immediately fail silently.
+ *
+ * Takes a `modifier` rather than positioning itself: a `Box` that does not
+ * fill its parent sizes itself to wrap its own content, so its own
+ * `contentAlignment` has nothing to align *against* -- positioning within
+ * the screen has to be the caller's `Modifier.align(...)` on this
+ * composable's root, resolved by the parent `Box` it actually sits in
+ * (MainActivity's). An earlier version aligned only internally and ended up
+ * pinned to the top-left of the screen instead of the bottom-right.
  */
 @Composable
-fun WatchBar(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -> Unit) {
+fun WatchBar(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var watching by remember(route) { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -49,7 +57,7 @@ fun WatchBar(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -> Unit
 
     if (route == null) return
 
-    Box(modifier = Modifier.padding(16.dp), contentAlignment = Alignment.BottomEnd) {
+    Box(modifier = modifier.padding(16.dp), contentAlignment = Alignment.BottomEnd) {
         Button(onClick = {
             when {
                 !hasToken -> onNeedsSetup()

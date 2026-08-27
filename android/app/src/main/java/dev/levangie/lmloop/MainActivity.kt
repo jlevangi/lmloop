@@ -14,8 +14,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,8 +24,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import dev.levangie.lmloop.settings.SettingsScreen
 import dev.levangie.lmloop.setup.SetupScreen
-import dev.levangie.lmloop.setup.TokenSettingsScreen
 import dev.levangie.lmloop.sync.WorkScheduler
 import dev.levangie.lmloop.watch.WatchBar
 import dev.levangie.lmloop.web.DashboardWebChromeClient
@@ -37,10 +38,10 @@ import dev.levangie.lmloop.web.currentRoute
  * `web/static/` dashboard, rendered in a WebView -- one source of truth for
  * the UI, kept in sync automatically with every change to the web app. This
  * class adds only what a browser tab cannot: first-run setup, deep-linking
- * a notification tap back into the right run, and the native "watch this
- * run" overlay (see watch/WatchBar.kt). Device-token settings are reachable
- * at any time via the small gear button, independent of the WebView's own
- * login -- see ServerConfigStore's doc comment for why the two are separate.
+ * a notification tap back into the right run, the native "watch this run"
+ * overlay (see watch/WatchBar.kt), and a settings screen (gear icon) for
+ * everything about this app's own configuration -- sign-out, server,
+ * notification permission, device token.
  */
 class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
@@ -49,6 +50,18 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Opt out of the edge-to-edge enforcement Android 15+ (API 35)
+        // applies by default to apps targeting it: without this, content --
+        // both this Activity's own composables and, worse, the WebView's
+        // page content -- draws under the status bar and the navigation
+        // bar. That's what made the settings gear unreachable behind the
+        // status bar, and is the leading suspect for the dashboard's own
+        // bottom "active runs" strip being unreachable near the navigation
+        // bar too. Restoring the classic behavior -- system bars reserve
+        // their own space, everything else lays out in what's left -- fixes
+        // both without hand-tuning inset padding on every composable and
+        // on the WebView.
+        WindowCompat.setDecorFitsSystemWindows(window, true)
         val services = lmloopServices
 
         setContent {
@@ -57,7 +70,7 @@ class MainActivity : ComponentActivity() {
             var showSettings by remember { mutableStateOf(false) }
             var hasToken by remember { mutableStateOf(services.configStore.hasToken()) }
 
-            MaterialTheme {
+            MaterialTheme(colorScheme = LmloopColorScheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     if (!configured) {
                         SetupScreen(
@@ -66,9 +79,21 @@ class MainActivity : ComponentActivity() {
                             onConfigured = { configured = true },
                         )
                     } else if (showSettings) {
-                        TokenSettingsScreen(
+                        SettingsScreen(
                             api = services.api,
                             configStore = services.configStore,
+                            onLogout = {
+                                services.configStore.loadServerUrl()?.let { url ->
+                                    webView?.loadUrl("$url/logout")
+                                }
+                                showSettings = false
+                            },
+                            onServerChanged = {
+                                services.configStore.clear()
+                                hasToken = false
+                                showSettings = false
+                                configured = false
+                            },
                             onDone = {
                                 hasToken = services.configStore.hasToken()
                                 if (hasToken) WorkScheduler.schedule(this@MainActivity)
@@ -91,12 +116,27 @@ class MainActivity : ComponentActivity() {
                                 route = route,
                                 hasToken = hasToken,
                                 onNeedsSetup = { showSettings = true },
+                                modifier = Modifier.align(Alignment.BottomEnd),
                             )
+                            TextButton(
+                                onClick = {
+                                    webView?.let { view ->
+                                        // A "hard" refresh: bypass the
+                                        // WebView's own HTTP cache, not just
+                                        // reload the last-rendered page.
+                                        view.clearCache(true)
+                                        view.reload()
+                                    }
+                                },
+                                modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 56.dp),
+                            ) {
+                                Text("⟳")
+                            }
                             TextButton(
                                 onClick = { showSettings = true },
                                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
                             ) {
-                                Text("⚙") // gear glyph -- no icon dependency needed for one button
+                                Text("⚙")
                             }
                         }
                     }

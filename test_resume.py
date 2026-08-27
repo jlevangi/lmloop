@@ -205,7 +205,13 @@ class ResumeEndToEndTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "seed"], cwd=cls.repo, check=True,
                        capture_output=True)
 
-        cls.env = dict(os.environ, PATH=f"{cls.bin}:{os.environ['PATH']}")
+        # A scratch HOME, for the same reason tools/smoke needs one: without
+        # it, `config.load` inside the subprocess reads the *operator's* real
+        # ~/.config/lmloop/config.toml, [notify] block included, and this test
+        # pushes a real notification to a real phone on every suite run.
+        cls.home = cls.work / "home"
+        cls.home.mkdir()
+        cls.env = dict(os.environ, PATH=f"{cls.bin}:{os.environ['PATH']}", HOME=str(cls.home))
         cls.first = cls.lmloop("run", "grow calc.py")
         cls.branch_after_first = cls.read_branch()
         cls.commits_after_first = cls.count_commits()
@@ -238,6 +244,18 @@ class ResumeEndToEndTests(unittest.TestCase):
     def test_both_invocations_ran_to_a_stop(self):
         self.assertIn("run stopped", self.first.stdout, self.first.stderr[-800:])
         self.assertIn("run stopped", self.second.stdout, self.second.stderr[-800:])
+
+    def test_this_is_not_reading_the_operators_real_config(self):
+        """The same claim `tools/smoke` makes, and the same reason: both
+        invocations above are real `lmloop.py` subprocesses, and without a
+        scratch `HOME` they would read the machine's own
+        `~/.config/lmloop/config.toml` -- `[notify]` included -- and push a
+        real notification to a real phone on every run of this suite."""
+        self.assertFalse((self.home / ".config" / "lmloop").exists(),
+                         "a scratch HOME must never gain a real config directory")
+        log = self.run_dir / "lmloop.log"
+        self.assertNotIn('"event": "notify"', log.read_text())
+        self.assertNotIn('"event": "notify:failed"', log.read_text())
 
     def test_a_resumed_run_continues_the_same_one(self):
         self.assertEqual(self.branch_after_first, self.read_branch(),

@@ -2519,3 +2519,51 @@ class DestructiveGitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplyCutOffTests(unittest.TestCase):
+    """A reply that hits the output cap mid-iteration used to vanish.
+
+    `_Stream.stop_reason` holds the *last* message's reason, and the
+    `truncated` outcome needs that to be `length` *and* the iteration to have
+    written nothing. So the common shape -- the model thinks its budget away,
+    the reply is cut off, it recovers and writes something smaller -- ended
+    `ok` with no record anywhere that the model had run out of room. The fix
+    for that is a wider cap or less thinking, and nobody reaches for either
+    while the log says success.
+    """
+
+    def feed(self, *messages):
+        """Fold message_end events into runner state, through the real pi
+        adapter, and hand back the state."""
+        state = pi_runner._Stream()
+        agent = harness.get("pi")
+        for output, stop in messages:
+            pi_runner._handle({
+                "type": "message_end",
+                "message": {"role": "assistant", "stopReason": stop,
+                            "usage": {"input": 100, "output": output}},
+            }, state, agent)
+        return state
+
+    def test_the_peak_is_the_largest_reply_not_the_sum(self):
+        state = self.feed((3000, "toolUse"), (3535, "toolUse"), (1482, "toolUse"))
+        self.assertEqual(8017, state.output_tokens)
+        self.assertEqual(3535, state.peak_output)
+
+    def test_a_reply_cut_off_mid_iteration_is_counted(self):
+        """The one the outcome cannot see: `length` in the middle, a clean
+        `toolUse` last."""
+        state = self.feed((8192, "length"), (400, "toolUse"))
+        self.assertEqual(1, state.truncations)
+        self.assertEqual("toolUse", state.stop_reason,
+                         "the outcome still only sees the last reason")
+
+    def test_replies_that_all_fitted_count_nothing(self):
+        state = self.feed((3000, "toolUse"), (1200, "endTurn"))
+        self.assertEqual(0, state.truncations)
+
+    def test_several_cut_off_replies_are_all_counted(self):
+        state = self.feed((8192, "length"), (8192, "length"), (500, "toolUse"))
+        self.assertEqual(2, state.truncations)
+        self.assertEqual(8192, state.peak_output)

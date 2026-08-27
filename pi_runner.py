@@ -82,6 +82,11 @@ class IterationResult:
     compactions: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # The largest single reply, and how many were cut off at the cap.  The cap
+    # is per message; `output_tokens` is the whole iteration's total, and the
+    # two are not comparable -- see `_Stream`.
+    peak_output: int = 0
+    truncations: int = 0
     elapsed_seconds: float = 0.0
     stderr_tail: str = ""
     files_touched: list[str] = field(default_factory=list)
@@ -102,7 +107,21 @@ class _Stream:
         self.error_message = ""
         self.saw_message_end = False
         self.input_tokens = 0
+        # Cumulative across every message in the iteration.  `input_tokens`
+        # above is a running *maximum* for a reason -- the window is a property
+        # of one prompt -- and the output cap is per message the same way, so
+        # comparing this total against it is comparing two different things.
+        # The number that can be compared is the peak below.
         self.output_tokens = 0
+        self.peak_output = 0
+        # Messages that ended because they hit the output cap.  Only the *last*
+        # message's `stop_reason` survives on this object, so without a count
+        # here a reply cut off mid-iteration leaves no trace at all: the agent
+        # recovers with something smaller, the iteration ends `ok`, and the one
+        # fix that would have helped -- a bigger cap or a lower thinking level
+        # -- is never reached for, because nothing said the model ran out of
+        # room.
+        self.truncations = 0
         self.stderr = ""
         self.last_tool = ""
         self.last_target = ""
@@ -218,6 +237,9 @@ def _handle(event: dict, state: _Stream, agent) -> None:
         state.error_message = note["error"]
         state.input_tokens = max(state.input_tokens, note["input"])
         state.output_tokens += note["output"]
+        state.peak_output = max(state.peak_output, note["output"])
+        if note["stop_reason"] == "length":
+            state.truncations += 1
         state.token_marks.append((time.monotonic(), state.output_tokens))
         del state.token_marks[:-64]
 
@@ -366,6 +388,8 @@ def run(
                 "last_tool": state.last_tool,
                 "last_target": state.last_target,
                 "output_tokens": state.output_tokens,
+                "peak_output": state.peak_output,
+                "truncations": state.truncations,
                 # The prompt as the model actually counted it, which is the only
                 # honest measure of how close this iteration is to the window it
                 # will compact at.
@@ -458,7 +482,8 @@ def run(
             # fix is a bigger output budget or a lower thinking level, neither
             # of which anyone reaches for while the log says success.
             outcome = "truncated"
-            detail = f"ran out of output budget after {state.output_tokens} tokens"
+            # The peak, not the total: what ran out is one message's budget.
+            detail = f"ran out of output budget after {state.peak_output} tokens"
         elif not state.tool_calls:
             # An iteration that ends cleanly having called no tool cannot have
             # changed anything, so "ok" is a lie the run then repeats in the
@@ -480,6 +505,8 @@ def run(
             compactions=state.compactions,
             input_tokens=state.input_tokens,
             output_tokens=state.output_tokens,
+            peak_output=state.peak_output,
+            truncations=state.truncations,
             elapsed_seconds=elapsed,
             stderr_tail=state.stderr[-1000:],
             files_touched=list(state.files),

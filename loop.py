@@ -920,6 +920,10 @@ class Run:
             "plan_done": plan_done,
             "plan_total": plan_total,
             "output_tokens": snap["output_tokens"],
+            # The largest single reply so far. This is the number the cap
+            # applies to; `output_tokens` is the iteration's running total.
+            "peak_output": snap.get("peak_output"),
+            "truncations": snap.get("truncations"),
             "input_tokens": snap["input_tokens"],
             "tokens_per_second": round(snap["tokens_per_second"], 2),
             "quiet_seconds": round(snap["quiet"]),
@@ -1008,6 +1012,14 @@ class Run:
         pressure = policy.context_warning(result.input_tokens, self.window)
         if pressure:
             learnings.append(pressure)
+        # Separate from `pressure` above and separate from the `truncated`
+        # outcome: that outcome fires only when the *last* reply was cut off
+        # and nothing was written, so an iteration that was cut off, recovered
+        # and committed reports `ok` with no sign this happened at all.
+        reply_pressure = policy.reply_warning(
+            result.truncations, result.peak_output, self.max_output)
+        if reply_pressure:
+            learnings.append(reply_pressure)
         if result.compactions:
             learnings.append(
                 f"context overflowed {result.compactions}x; every overflow costs the"
@@ -1052,6 +1064,11 @@ class Run:
             gate=self.gate_result,
             totalInputTokens=result.input_tokens,
             totalOutputTokens=result.output_tokens,
+            # The one comparable to the cap, and the count that says whether it
+            # was reached.  `totalOutputTokens` is the iteration's sum and the
+            # cap applies per reply, so the two never belonged side by side.
+            peakOutputTokens=result.peak_output,
+            truncations=result.truncations,
             commitCount=gitops.commit_count(self.worktree, base),
         )
         # The tool-call count is context, not evidence.  An agent can edit a

@@ -336,7 +336,8 @@ class RunFieldContractTests(unittest.TestCase):
         """A guard on the guard: an empty payload would pass everything."""
         served = self.payload_keys()
         self.assertGreaterEqual(len(served), 30, served)
-        for expected in ("state", "agent", "model", "eta_seconds"):
+        for expected in ("state", "agent", "model", "eta_seconds",
+                         "peak_output", "truncations"):
             self.assertIn(expected, served)
 
     def test_every_run_field_the_dashboard_reads_is_one_the_api_sends(self):

@@ -476,7 +476,19 @@ function patchModel(model, run) {
 
   const bits = [];
   if (run.output_tokens) bits.push(`${compact(run.output_tokens)} out`);
-  if (run.max_output_tokens) bits.push(`${compact(run.max_output_tokens)} reply cap`);
+  /* The cap is per reply and `output_tokens` is the whole iteration's total,
+   * so printing the two side by side -- "13.7k out, 24.6k reply cap" -- read
+   * as a budget half spent when the largest single reply was 14% of it. The
+   * pair shown now is the pair that can actually be compared. */
+  if (run.max_output_tokens && run.peak_output) {
+    bits.push(`${compact(run.peak_output)}/${compact(run.max_output_tokens)} peak reply`);
+  } else if (run.max_output_tokens) {
+    bits.push(`${compact(run.max_output_tokens)} reply cap`);
+  }
+  // `plural` appends an "s"; this word does not take one.
+  if (run.truncations) {
+    bits.push(`${run.truncations} ${run.truncations === 1 ? "reply" : "replies"} cut off`);
+  }
   if (run.tool_calls) bits.push(`${run.tool_calls} tools`);
   if (run.writes) bits.push(plural(run.writes, "write"));
   bits.push(run.compactions ? plural(run.compactions, "overflow") : "no overflow");

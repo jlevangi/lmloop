@@ -210,6 +210,56 @@ class NoPlanBudgetTests(unittest.TestCase):
         )
 
 
+class ReplyPressureTests(unittest.TestCase):
+    """Saying an iteration ran out of room to *answer*, not to read.
+
+    The other budget, and the one nothing watched. `max_output_tokens` applies
+    per reply; `output_tokens` is the whole iteration's total, and lmloop
+    reported them side by side as though they were the same scale -- 13,747
+    out, 24,576 reply cap -- on a run whose largest single reply was 3,535
+    tokens, 14% of the cap. Read as a budget half spent when it was barely
+    touched.
+
+    And the real failure was the other way round: only the *last* message's
+    stop reason reaches the outcome, so a reply cut off mid-iteration left no
+    trace at all once the agent recovered and wrote something.
+    """
+
+    def test_replies_that_all_fitted_say_nothing(self):
+        self.assertEqual("", policy.reply_warning(0, 3535, 24576))
+
+    def test_one_reply_cut_off_says_so(self):
+        said = policy.reply_warning(1, 24576, 24576)
+        self.assertIn("1 reply", said)
+        self.assertIn("24576", said)
+
+    def test_it_counts_them_and_gets_the_plural_right(self):
+        self.assertIn("3 replies", policy.reply_warning(3, 24576, 24576))
+
+    def test_it_names_the_budget_rather_than_the_work(self):
+        """The fix is a wider cap or less thinking, not a smaller objective --
+        the same reason `context_warning` names the model."""
+        said = policy.reply_warning(1, 8192, 8192)
+        self.assertIn("output budget", said)
+        self.assertIn("thinking", said)
+
+    def test_it_is_not_a_threshold(self):
+        """A reply either hit the cap or it did not, and the agent says which.
+        A percentage here would add a false alarm to a certain signal -- and
+        the archive has exactly one truncation to fit one from."""
+        # Enormous peak, nothing cut off: silence.
+        self.assertEqual("", policy.reply_warning(0, 24575, 24576))
+        # Tiny peak, something cut off: still said.
+        self.assertNotEqual("", policy.reply_warning(1, 10, 24576))
+
+    def test_an_unknown_cap_still_reports_what_happened(self):
+        """`Run.max_output` is 0 for a model nobody measured. That is a reason
+        to omit the cap from the sentence, not to swallow the sentence."""
+        said = policy.reply_warning(1, 8192, 0)
+        self.assertNotEqual("", said)
+        self.assertNotIn("0-token", said)
+
+
 class ContextPressureTests(unittest.TestCase):
     """Saying an iteration is running out of room, before it runs out.
 

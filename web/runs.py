@@ -426,6 +426,8 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "defects": _defects(events),
         "quiet_seconds": status.get("quiet_seconds"),
         "output_tokens": status.get("output_tokens"),
+        "peak_output": status.get("peak_output"),
+        "truncations": status.get("truncations"),
         "elapsed_seconds": status.get("elapsed_seconds"),
         "run_elapsed_seconds": round(run_elapsed_seconds),
         "tool_calls": status.get("tool_calls"),
@@ -506,6 +508,8 @@ def _iterations(run_dir: Path) -> list[dict]:
                 "plan_total": event.get("planTotal"),
                 "input_tokens": event.get("totalInputTokens"),
                 "output_tokens": event.get("totalOutputTokens"),
+                "peak_output": event.get("peakOutputTokens"),
+                "truncations": event.get("truncations"),
             })
         elif event.get("event") == "context:pressure":
             share = policy.context_pressure(

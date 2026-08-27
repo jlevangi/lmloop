@@ -257,6 +257,33 @@ def context_pressure(input_tokens: int, window: int) -> float:
     return input_tokens / window
 
 
+def reply_warning(truncations: int, peak_output: int, max_output: int) -> str:
+    """What to say when replies are being cut off at the output cap, or "".
+
+    The sibling of `context_warning`, and deliberately not a threshold. The
+    window warning has to predict an overflow that has not happened yet, so it
+    needs a number chosen from evidence. This one does not: a reply either hit
+    the cap or it did not, and the agent says which. Guessing a percentage
+    would add a false alarm to a signal that is already certain.
+
+    Worth saying because only the *last* message's stop reason reaches the
+    outcome, so a reply cut off mid-iteration leaves no other trace: the agent
+    recovers with something smaller, the iteration ends `ok`, and the fix --
+    a wider output budget or a lower thinking level -- is never reached for.
+
+    Names the budget rather than the work, for the same reason
+    `context_warning` names the model: a run does not fix this by being asked
+    for less.
+    """
+    if truncations <= 0:
+        return ""
+    replies = "reply" if truncations == 1 else "replies"
+    room = f" of the {max_output}-token cap" if max_output else ""
+    return (f"{truncations} {replies} stopped at the output cap"
+            f" (largest was {peak_output} tokens{room}); the model ran out of"
+            " room to answer, so raise the output budget or lower thinking")
+
+
 def context_warning(input_tokens: int, window: int) -> str:
     """What to say when an iteration is running out of room, or "".
 

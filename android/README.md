@@ -11,19 +11,28 @@ Modeled on `~/git/jlevangi/personal-health-collector`'s Gradle/signing/CI
 setup: same Kotlin DSL, same env-var-driven release signing, same release
 workflow shape.
 
-## Requirements on the server side
+## Getting started
 
-The app needs a `LMLOOP_WEB_DEVICE_TOKENS` entry on your `lmloop-web`
-deployment (see `web/deploy/web.env.example`) -- generate one with:
+The setup screen asks for only your server's URL, confirmed with an
+unauthenticated `GET /health`. That's enough to use the app: once loaded,
+the WebView logs in exactly like a browser tab would -- OIDC, a
+trusted-proxy header, or nothing, whatever your `LMLOOP_WEB_AUTH_MODE` is.
+No device token is needed for this, and the app never asks for one up front.
+
+A device token (tap the ⚙ in the top-right corner any time) is **optional**
+and enables two extra things a browser tab can't do: the foreground "watch
+this run" live-progress notification, and notifications while the app is
+fully closed. Generate one on your server and add it to
+`LMLOOP_WEB_DEVICE_TOKENS` (see `web/deploy/web.env.example`):
 
 ```sh
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Enter your server's URL and that token into the app's setup screen. This
-token is read-only by construction (see `web/device_auth.py`): it can never
-start, stop, pause, archive, delete, or open a PR on a run, however it's
-configured.
+then restart `lmloop-web` and paste the token into the app's settings
+screen. It's read-only by construction (see `web/device_auth.py`): it can
+never start, stop, pause, archive, delete, or open a PR on a run, however
+it's configured.
 
 ## Building locally
 

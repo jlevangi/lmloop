@@ -26,11 +26,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * First-run (and re-configure) screen: server URL + device token, tested in
- * two steps before anything is saved -- `GET /health` (unauthenticated;
- * confirms the URL is even an lmloop server) then `GET /api/config` with the
- * candidate token (confirms the token itself). Both are read-only, so a
- * wrong guess here costs nothing on the server.
+ * First-run screen: server URL only. Confirmed with an unauthenticated
+ * `GET /health` -- just "is this an lmloop server" -- and nothing more,
+ * because nothing more is needed: once `MainActivity` loads this URL into
+ * the WebView, the page itself handles login exactly like a browser tab
+ * would (OIDC, a trusted-proxy header, or nothing at all, whatever this
+ * deployment uses). A device token, if the operator wants the live-watch
+ * notification or closed-app polling, is configured separately and later
+ * from `TokenSettingsScreen` -- see `ServerConfigStore`'s doc comment for
+ * why this screen used to (wrongly) ask for one here too.
  */
 @Composable
 fun SetupScreen(
@@ -39,7 +43,6 @@ fun SetupScreen(
     onConfigured: () -> Unit,
 ) {
     var serverUrl by remember { mutableStateOf("") }
-    var token by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -56,38 +59,23 @@ fun SetupScreen(
             placeholder = { Text("https://lmloop.example.com") },
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
         )
-        OutlinedTextField(
-            value = token,
-            onValueChange = { token = it },
-            label = { Text("Device token") },
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        )
         if (status != null) {
             Text(status.orEmpty(), modifier = Modifier.padding(top = 8.dp))
         }
         Button(
-            enabled = !testing && serverUrl.isNotBlank() && token.isNotBlank(),
+            enabled = !testing && serverUrl.isNotBlank(),
             onClick = {
                 testing = true
                 status = null
                 scope.launch {
                     val normalized = serverUrl.trim().trimEnd('/')
                     val reachable = withContext(Dispatchers.IO) { api.health(normalized) }
-                    if (reachable !is ApiResult.Success) {
-                        status = "Could not reach that server."
-                        testing = false
-                        return@launch
-                    }
-                    val authorized = withContext(Dispatchers.IO) { api.config(normalized, token.trim()) }
                     testing = false
-                    when (authorized) {
-                        is ApiResult.Success -> {
-                            configStore.save(normalized, token.trim().toCharArray())
-                            onConfigured()
-                        }
-                        is ApiResult.HttpError ->
-                            status = "The server reachable but rejected that token (HTTP ${authorized.status})."
-                        is ApiResult.NetworkError -> status = "Network error: ${authorized.reason}"
+                    if (reachable is ApiResult.Success) {
+                        configStore.saveServerUrl(normalized)
+                        onConfigured()
+                    } else {
+                        status = "Could not reach that server."
                     }
                 }
             },

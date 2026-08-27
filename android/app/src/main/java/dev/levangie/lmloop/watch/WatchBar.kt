@@ -27,9 +27,15 @@ import dev.levangie.lmloop.web.DashboardRoute
  * by any of this. "Which run is on screen" comes from `route`, parsed
  * one-directionally from the WebView's own URL (see `web/DashboardRoute.kt`);
  * this never navigates the page, only reads where it already is.
+ *
+ * `hasToken` is whether a device token is configured -- see
+ * `ServerConfigStore`'s doc comment for why this is optional and separate
+ * from just using the app. Without one, `RunWatchService` cannot
+ * authenticate at all, so the button routes to `onNeedsSetup` instead of
+ * starting a service that would immediately fail silently.
  */
 @Composable
-fun WatchBar(route: DashboardRoute?) {
+fun WatchBar(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -> Unit) {
     val context = LocalContext.current
     var watching by remember(route) { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -45,20 +51,23 @@ fun WatchBar(route: DashboardRoute?) {
 
     Box(modifier = Modifier.padding(16.dp), contentAlignment = Alignment.BottomEnd) {
         Button(onClick = {
-            if (watching) {
-                RunWatchService.stop(context)
-                watching = false
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            } else {
-                RunWatchService.start(context, route.project, route.runId)
-                watching = true
+            when {
+                !hasToken -> onNeedsSetup()
+                watching -> {
+                    RunWatchService.stop(context)
+                    watching = false
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED ->
+                    permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                else -> {
+                    RunWatchService.start(context, route.project, route.runId)
+                    watching = true
+                }
             }
         }) {
-            Text(if (watching) "Watching" else "Watch this run")
+            Text(if (!hasToken) "Set up notifications" else if (watching) "Watching" else "Watch this run")
         }
     }
 }

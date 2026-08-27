@@ -11,15 +11,21 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.levangie.lmloop.setup.SetupScreen
+import dev.levangie.lmloop.setup.TokenSettingsScreen
 import dev.levangie.lmloop.sync.WorkScheduler
 import dev.levangie.lmloop.watch.WatchBar
 import dev.levangie.lmloop.web.DashboardWebChromeClient
@@ -32,7 +38,9 @@ import dev.levangie.lmloop.web.currentRoute
  * the UI, kept in sync automatically with every change to the web app. This
  * class adds only what a browser tab cannot: first-run setup, deep-linking
  * a notification tap back into the right run, and the native "watch this
- * run" overlay (see watch/WatchBar.kt).
+ * run" overlay (see watch/WatchBar.kt). Device-token settings are reachable
+ * at any time via the small gear button, independent of the WebView's own
+ * login -- see ServerConfigStore's doc comment for why the two are separate.
  */
 class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
@@ -46,6 +54,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             var configured by remember { mutableStateOf(services.configStore.isConfigured()) }
             var route by remember { mutableStateOf(currentRoute(null)) }
+            var showSettings by remember { mutableStateOf(false) }
+            var hasToken by remember { mutableStateOf(services.configStore.hasToken()) }
 
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -53,9 +63,16 @@ class MainActivity : ComponentActivity() {
                         SetupScreen(
                             api = services.api,
                             configStore = services.configStore,
-                            onConfigured = {
-                                WorkScheduler.schedule(this@MainActivity)
-                                configured = true
+                            onConfigured = { configured = true },
+                        )
+                    } else if (showSettings) {
+                        TokenSettingsScreen(
+                            api = services.api,
+                            configStore = services.configStore,
+                            onDone = {
+                                hasToken = services.configStore.hasToken()
+                                if (hasToken) WorkScheduler.schedule(this@MainActivity)
+                                showSettings = false
                             },
                         )
                     } else {
@@ -70,7 +87,17 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                             )
-                            WatchBar(route = route)
+                            WatchBar(
+                                route = route,
+                                hasToken = hasToken,
+                                onNeedsSetup = { showSettings = true },
+                            )
+                            TextButton(
+                                onClick = { showSettings = true },
+                                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                            ) {
+                                Text("⚙") // gear glyph -- no icon dependency needed for one button
+                            }
                         }
                     }
                 }

@@ -8,6 +8,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -36,6 +37,36 @@ class ServerConfigStoreTest {
     }
 
     @Test
+    fun aServerUrlAloneIsEnoughToBeConfigured() {
+        // The whole point of the split: the WebView only needs a URL, and
+        // its page handles login on its own -- no token required.
+        assertFalse(store.isConfigured())
+        store.saveServerUrl("https://lmloop.example.com")
+        assertTrue(store.isConfigured())
+        assertFalse(store.hasToken())
+    }
+
+    @Test
+    fun aTokenCanBeAddedLaterIndependently() {
+        store.saveServerUrl("https://lmloop.example.com")
+        store.saveToken("secret-token".toCharArray())
+        assertEquals("secret-token", store.loadToken())
+        assertTrue(store.hasToken())
+        assertEquals("https://lmloop.example.com", store.loadServerUrl())
+    }
+
+    @Test
+    fun clearTokenLeavesTheServerUrlAndAppConfiguredState() {
+        store.saveServerUrl("https://lmloop.example.com")
+        store.saveToken("secret-token".toCharArray())
+        store.clearToken()
+        assertFalse(store.hasToken())
+        assertNull(store.loadToken())
+        assertTrue(store.isConfigured())
+        assertEquals("https://lmloop.example.com", store.loadServerUrl())
+    }
+
+    @Test
     fun saveLoadRoundTripsBothTheUrlAndTheToken() {
         store.save("https://lmloop.example.com/", "secret-token".toCharArray())
         assertEquals("https://lmloop.example.com", store.loadServerUrl())
@@ -50,38 +81,39 @@ class ServerConfigStoreTest {
     }
 
     @Test
-    fun isConfiguredReflectsBothThePrefsAndTheKeystoreEntry() {
-        assertFalse(store.isConfigured())
+    fun hasTokenReflectsBothThePrefsAndTheKeystoreEntry() {
+        assertFalse(store.hasToken())
         store.save("https://lmloop.example.com", "secret-token".toCharArray())
-        assertTrue(store.isConfigured())
+        assertTrue(store.hasToken())
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         assertTrue(keyStore.containsAlias("lmloop_device_token_key_test"))
     }
 
     @Test
-    fun clearRemovesBothThePrefsAndTheKey() {
+    fun clearRemovesEverythingIncludingTheKey() {
         store.save("https://lmloop.example.com", "secret-token".toCharArray())
         store.clear()
         assertFalse(store.isConfigured())
+        assertFalse(store.hasToken())
         assertFalse(KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias("lmloop_device_token_key_test"))
     }
 
     @Test
     fun emptyTokenIsRejectedAndZeroed() {
         val token = CharArray(0)
-        assertThrows(IllegalArgumentException::class.java) { store.save("https://lmloop.example.com", token) }
+        assertThrows(IllegalArgumentException::class.java) { store.saveToken(token) }
     }
 
     @Test
     fun blankServerUrlIsRejected() {
-        assertThrows(IllegalArgumentException::class.java) { store.save("   ", "secret-token".toCharArray()) }
+        assertThrows(IllegalArgumentException::class.java) { store.saveServerUrl("   ") }
     }
 
     @Test
-    fun incompletePreferencesPairIsNotConfigured() {
+    fun incompletePreferencesPairIsNotAToken() {
         context.getSharedPreferences("lmloop_server_config_test", Context.MODE_PRIVATE)
             .edit().putString("ciphertext", "incomplete").commit()
-        assertFalse(store.isConfigured())
+        assertFalse(store.hasToken())
     }
 
     @Test

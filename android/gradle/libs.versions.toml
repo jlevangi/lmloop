@@ -16,6 +16,7 @@ androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = 
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
 androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
 androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-compose-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version = "1.12.0" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version = "1.17.0" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
@@ -31,4 +32,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 
 [bundles]
-compose = ["androidx-compose-ui", "androidx-compose-ui-tooling-preview", "androidx-compose-material3"]
+compose = ["androidx-compose-ui", "androidx-compose-ui-tooling-preview", "androidx-compose-material3", "androidx-compose-material-icons-core"]

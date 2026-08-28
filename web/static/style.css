@@ -44,7 +44,12 @@
   font-size: 15px;
 }
 
-* { box-sizing: border-box; }
+/* Chrome's mobile/WebView default: a translucent blue flash on anything
+   tappable, the instant a finger lands. Every press already gets its own
+   `:active`/`:hover` treatment (see `.back:active`, `.act:hover`, etc.), so
+   this only ever doubled that up with a colour nothing else on the page
+   uses. */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 /* `hidden` is a presentation hint that any `display` rule silently outranks,
    and several components here set one. Without this, hiding a progress bar or
@@ -57,7 +62,10 @@
 html { background: var(--ink); }
 
 body {
-  margin: 0; min-height: 100dvh;
+  /* `vh`/`dvh` resolve to a flat 0px on at least one real Android WebView
+     build -- confirmed live, not a support gap -- so this reads a
+     JS-computed pixel value instead; see app.js's setViewportUnit(). */
+  margin: 0; min-height: calc(var(--vh1, 6px) * 100);
   background: var(--ink); color: var(--text);
   padding-bottom: env(safe-area-inset-bottom, 0px);
   -webkit-text-size-adjust: 100%;
@@ -75,6 +83,14 @@ body {
   background: var(--ink);
   border-bottom: 1px solid var(--line);
 }
+/* MainActivity floats its new-run/watch and settings icons over this bar's
+   trailing corner rather than reserving a bar of its own -- see app.js's
+   `native-shell` comment. `#new-run` is hidden outright there since native
+   owns that action, but this bar's other trailing content (`#bar-state` on
+   a run) has nothing to be hidden in favour of; reserving room instead
+   keeps it from ending up underneath the icons. ~100dp of icon row, plus a
+   few px of slack. */
+html.native-shell .bar { padding-right: 108px; }
 /* Content scrolled underneath needs saying, and a hairline that is already
    there cannot say it.  The shadow appears only once the page has moved, so a
    page sitting at the top keeps the flat surface the design asks for. */
@@ -148,7 +164,25 @@ body {
   font-family: var(--mono); font-size: .66rem; font-weight: 600;
   text-transform: uppercase; letter-spacing: .13em;
 }
-.bar .act.bar-chip { padding: 7px 11px; }
+/* 44px is the documented touch-target floor (see .runbar-strip below) --
+   padding alone got there on wider screens where the label is on, but
+   icon-only at narrow widths needs it added back explicitly. */
+.bar .act.bar-chip {
+  display: flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 7px 11px;
+}
+.bar .act.bar-chip svg {
+  width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+/* Icon-only below 640px -- the same phone-vs-wide split the plan's folded
+   window already uses (see the plan-window rule further down) -- so the
+   corner control stays reachable at arm's length without crowding the
+   title on the narrowest screens. */
+@media (max-width: 640px) {
+  .bar .act.bar-chip { min-width: 44px; padding: 7px; justify-content: center; }
+  .bar .act.bar-chip span { display: none; }
+}
 
 /* The header's bottom hairline, doing double duty as the plan's progress bar.
    Absolutely positioned over the existing border rather than added to the flow,
@@ -445,7 +479,7 @@ td.bad { color: var(--bad); }
 .iter-row { cursor: pointer; }
 .iter-row:hover { background: var(--line-soft); }
 .iter-detail td { white-space: normal; background: var(--ink-sink); }
-.iter-detail pre { margin: 0; max-height: 40dvh; }
+.iter-detail pre { margin: 0; max-height: calc(var(--vh1, 6px) * 40); }
 
 /* ── Sections ───────────────────────────────────────────────────────────
    Every block on the run page folds, and they all look the same folded or not,
@@ -501,7 +535,7 @@ summary { cursor: pointer; font-size: .78rem; color: var(--text-dim); }
 summary:hover { color: var(--text); }
 pre {
   margin: 11px 0 0; white-space: pre-wrap; word-break: break-word;
-  font-size: .73rem; line-height: 1.6; max-height: 60dvh; overflow: auto;
+  font-size: .73rem; line-height: 1.6; max-height: calc(var(--vh1, 6px) * 60); overflow: auto;
   color: var(--text-dim);
 }
 
@@ -555,6 +589,18 @@ main > section { animation: settle .18s ease both; }
   display: flex; flex-direction: column;
   background: var(--ink); border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+/* Closed, the strip sits flush against reserved space below the list (see
+   `body.has-runbar main`'s padding) -- nothing is ever actually behind it.
+   Open, the panel grows upward over content that never reserved room for
+   it, and a flat `--ink` fill on a page whose own background is the same
+   `--ink` made the two indistinguishable: a border-top was the only edge.
+   The blur plus a lifted shadow give the open state real depth instead. */
+.runbar.open {
+  background: color-mix(in srgb, var(--ink) 82%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 -16px 32px -12px #000c;
 }
 /* Reserve the strip's height only while it is on the page, so a quiet machine
    gets the full screen back. */
@@ -640,7 +686,15 @@ body.has-runbar main { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0
               border-color .26s linear;
 }
 .runbar.open .runbar-panel {
-  max-height: min(50dvh, 380px); overflow-y: auto; visibility: visible;
+  /* Confirmed live on a real device: this WebView build reports `dvh`
+     support (`CSS.supports` says true) but resolves any bare `vh`/`dvh`
+     value on `max-height` to a flat 0px -- an engine bug, not a support
+     gap, and no less true of plain `vh` than of `dvh`. `--vh1` is a
+     JS-computed pixel value (see app.js's setViewportUnit()); routing
+     through calc() sidesteps the bug entirely because no vh/dvh token
+     ever reaches the resolver. This was the actual cause of "the caret
+     flips but the panel doesn't expand." */
+  max-height: min(calc(var(--vh1, 6px) * 50), 380px); overflow-y: auto; visibility: visible;
   border-bottom-color: var(--line-soft);
   transition: max-height .26s cubic-bezier(.22, .61, .36, 1),
               visibility 0s linear,
@@ -699,6 +753,11 @@ body.has-runbar main { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0
        which would break the phone shape to fix the desktop one. */
     flex-direction: column-reverse;
   }
+  /* The rail is a true split, not an overlay (see `body.has-runbar`'s own
+     padding-right above) -- nothing sits behind it to blur, and a shadow
+     drawn for lifting off the *bottom* edge reads as a stray dark smear on
+     a panel anchored to the *right* one. Flip it to the edge that's real. */
+  .runbar.open { box-shadow: -16px 0 32px -12px #000c; }
   /* Header, not a control: in rail mode there is nothing to open. */
   .runbar-strip {
     min-height: 0; padding: 14px 16px; cursor: default;

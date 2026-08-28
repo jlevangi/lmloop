@@ -3,5 +3,16 @@
          `prefers-color-scheme`; see its :root token comment), so the
          native chrome around the WebView matches rather than flashing
          light on launch. -->
-    <style name="Theme.Lmloop" parent="android:style/Theme.Material.NoActionBar" />
+    <style name="Theme.Lmloop" parent="android:style/Theme.Material.NoActionBar">
+        <!-- The decor view's own background: what paints behind the
+             system status/nav bars before enableEdgeToEdge's explicit
+             SystemBarStyle takes over, and the safety net if it doesn't
+             (an OEM WebView/skin quirk, the same class of surprise this
+             app has already hit twice with system-bar insets). Left
+             unset, it defaulted to the platform's own dark grey, not
+             this app's near-black ink, visible as a grey strip behind
+             the gesture bar. -->
+        <item name="android:windowBackground">@color/ink</item>
+    </style>
+
 </resources>

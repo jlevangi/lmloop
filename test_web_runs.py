@@ -32,8 +32,8 @@ class PwaResumeRecoveryTests(unittest.TestCase):
     # change the shell and forget.  A digest of the shell itself fails on
     # exactly the case that matters.  It caught its first one immediately --
     # three shell files changed in this session's own work with no bump.
-    SHELL_VERSION = "lmloop-shell-v11"
-    SHELL_DIGEST = "94b79cf19c61082758b38d5145741cd3fa3077fecb1d20df0d6a27d77c08591d"
+    SHELL_VERSION = "lmloop-shell-v16"
+    SHELL_DIGEST = "454e6ee19a090dec50947a8a0e1cc6f55622653e60a145320fc99d1cbd2ba23d"
 
     def test_the_shell_version_covers_the_shell_as_it_stands(self):
         static = Path(__file__).parent / "web" / "static"

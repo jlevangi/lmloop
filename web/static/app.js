@@ -19,10 +19,36 @@
  */
 
 const $ = (id) => document.getElementById(id);
+// Present only inside the Android app's WebView (see NativeShellBridge.kt,
+// bound before this script ever runs), absent in every browser tab and the
+// installed PWA -- those paths are unaffected by anything gated on this.
+const NATIVE_SHELL = Boolean(window.LmloopNative);
+// MainActivity floats a couple of icon buttons over the header's trailing
+// corner (new-run/watch, settings) instead of reserving its own bar -- see
+// its "icons float directly over the WebView" comment. `#new-run` itself is
+// hidden below since native owns that action outright, but other trailing
+// content (`#bar-state` on a run) has no native equivalent and would just
+// get covered -- this class reserves room for the icons so nothing the web
+// page draws there is ever actually underneath them.
+document.documentElement.classList.toggle("native-shell", NATIVE_SHELL);
 const state = {
   config: null, runs: [], project: null, timer: null,
   route: { name: "list" }, rows: new Map(), detailKey: null, shell: null,
 };
+
+// `vh`/`dvh` compute to a bogus 0px on at least one real Android WebView
+// build (confirmed live: `CSS.supports("height", "100dvh")` reports true and
+// the declaration is accepted, but `getComputedStyle` resolves it to 0
+// regardless) -- so every viewport-relative cap in style.css reads this
+// custom property, set from window.innerHeight, through calc() instead of a
+// bare vh/dvh token. Re-run on resize/rotation, the only ways this WebView's
+// allotted height actually changes (it owns no dynamic show/hide toolbar).
+function setViewportUnit() {
+  document.documentElement.style.setProperty("--vh1", `${window.innerHeight / 100}px`);
+}
+setViewportUnit();
+addEventListener("resize", setViewportUnit);
+addEventListener("orientationchange", setViewportUnit);
 
 /* ── Fetch ─────────────────────────────────────────────────────────────── */
 
@@ -1186,7 +1212,9 @@ async function route({ quiet = false } = {}) {
   // place rather than pushing it aside, which is what keeps the title still.
   $("back").hidden = next.name === "list";
   $("moon").hidden = next.name !== "list";
-  $("new-run").hidden = next.name !== "list" || Boolean(state.config?.read_only);
+  // The native app's TopAppBar owns this action when embedded -- see
+  // MainActivity.kt's Scaffold, which drives the same go('#new') route.
+  $("new-run").hidden = next.name !== "list" || Boolean(state.config?.read_only) || NATIVE_SHELL;
 
   paintBar(next.name === "run"
     ? state.runs.find((run) => run.run_id === next.run_id)

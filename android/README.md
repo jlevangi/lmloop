@@ -88,9 +88,12 @@ git push origin android-v1.0.0
 
 ## Obtainium
 
-Obtainium tracks a GitHub repo's Releases. Add this repo by URL, then set
-its **release tag filter** to a regex so it only ever considers Android
-release tags, never anything else this repo might one day tag:
+[<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="60">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/jlevangi/lmloop)
+
+Obtainium tracks a GitHub repo's Releases. The badge above adds this repo by
+URL directly; either way, set its **release tag filter** to a regex so it
+only ever considers Android release tags, never anything else this repo
+might one day tag:
 
 ```
 ^android-v

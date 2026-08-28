@@ -8,17 +8,26 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,9 +39,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import dev.levangie.lmloop.settings.SettingsScreen
 import dev.levangie.lmloop.setup.SetupScreen
 import dev.levangie.lmloop.sync.WorkScheduler
-import dev.levangie.lmloop.watch.WatchBar
+import dev.levangie.lmloop.watch.WatchBarAction
 import dev.levangie.lmloop.web.DashboardWebChromeClient
 import dev.levangie.lmloop.web.DashboardWebViewClient
+import dev.levangie.lmloop.web.NativeShellBridge
 import dev.levangie.lmloop.web.currentRoute
 
 /**
@@ -40,25 +50,68 @@ import dev.levangie.lmloop.web.currentRoute
  * `web/static/` dashboard, rendered in a WebView -- one source of truth for
  * the UI, kept in sync automatically with every change to the web app. This
  * class adds only what a browser tab cannot: first-run setup, deep-linking
- * a notification tap back into the right run, the native "watch this run"
- * overlay (see watch/WatchBar.kt), and a settings screen (gear icon) for
- * everything about this app's own configuration -- sign-out, server,
- * notification permission, device token.
+ * a notification tap back into the right run, a native TopAppBar (new run /
+ * watch-this-run / settings actions -- see watch/WatchBar.kt) that replaces
+ * the dashboard's own header controls it would otherwise collide with, and a
+ * settings screen (gear icon) for everything about this app's own
+ * configuration -- sign-out, server, notification permission, device token.
+ *
+ * The dashboard tells this shell apart from a plain browser tab or the
+ * installed PWA via `window.LmloopNative` (see web/NativeShellBridge.kt) --
+ * bound only here, so both of those other paths are unaffected by anything
+ * gated on it.
  */
 class MainActivity : ComponentActivity() {
     private var webView: WebView? = null
     private var consumedInitialDeepLink = false
 
+    // --ink from web/static/style.css and Theme.kt's LmloopColorScheme --
+    // duplicated as a raw Int because enableEdgeToEdge takes one before any
+    // Compose color type is available.
+    private val inkColor = 0xFF0C0C0F.toInt()
+
+    @OptIn(ExperimentalMaterial3Api::class)
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val services = lmloopServices
+
+        // Targeting API 35+ forces edge-to-edge regardless of what we ask
+        // for, and left alone the system paints its own grey scrim behind
+        // the status/nav bars rather than this app's near-black ink -- this
+        // is what replaces that scrim with an explicit, matching one instead
+        // of leaving it to the platform default.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(inkColor),
+            navigationBarStyle = SystemBarStyle.dark(inkColor),
+        )
+
+        // Lets desktop Chrome's chrome://inspect attach to the on-device
+        // WebView -- the only way to see how *this* system WebView build
+        // actually resolves things like the `dvh` unit; Chrome DevTools'
+        // device emulation runs desktop Chromium and cannot reproduce it.
+        // Two prior inset bugs (see MainActivity's edge-to-edge comment
+        // below) shipped looking fixed until checked this way.
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
 
         setContent {
             var configured by remember { mutableStateOf(services.configStore.isConfigured()) }
             var route by remember { mutableStateOf(currentRoute(null)) }
             var showSettings by remember { mutableStateOf(false) }
             var hasToken by remember { mutableStateOf(services.configStore.hasToken()) }
+            var isRefreshing by remember { mutableStateOf(false) }
+
+            // Without this, the system gesture-back swipe on the Settings
+            // screen fell through to the imperative WebView-history callback
+            // below -- which, with the WebView detached from composition
+            // while Settings is showing, found no history and exited the
+            // app instead of closing Settings. A composable BackHandler
+            // registers ahead of that callback and only intercepts while
+            // enabled, so it takes over exactly when Settings is open and
+            // steps aside otherwise.
+            BackHandler(enabled = showSettings) { showSettings = false }
 
             MaterialTheme(colorScheme = LmloopColorScheme) {
                 // Apps targeting API 35+ get edge-to-edge forced by the
@@ -100,25 +153,29 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     } else {
+                        // Icons float directly over the WebView -- no
+                        // separate bar. A TopAppBar here, even title-less
+                        // and transparent, still reserved its own ~64dp row
+                        // above the dashboard's own header, which read as
+                        // a tall dead band rather than "one header": the
+                        // web page's own sticky bar was still a fixed
+                        // distance further down regardless. Floating the
+                        // icons directly at the top edge instead means they
+                        // sit right at the same height as the web header
+                        // they're the trailing corner of.
+                        //
+                        // This is only safe from repeating the original
+                        // overlap bug because the dashboard's own `#new-run`
+                        // is hidden here (see NativeShellBridge / app.js's
+                        // NATIVE_SHELL) -- there is exactly one control in
+                        // this corner, native, not the native icons landing
+                        // on top of the page's own.
                         Box(modifier = Modifier.fillMaxSize()) {
-                            AndroidView(
+                            PullToRefreshBox(
                                 modifier = Modifier.fillMaxSize(),
-                                factory = { context ->
-                                    WebView(context).also { view ->
-                                        webView = view
-                                        configureWebView(view) { route = it }
-                                        services.configStore.loadServerUrl()?.let(view::loadUrl)
-                                    }
-                                },
-                            )
-                            WatchBar(
-                                route = route,
-                                hasToken = hasToken,
-                                onNeedsSetup = { showSettings = true },
-                                modifier = Modifier.align(Alignment.BottomEnd),
-                            )
-                            TextButton(
-                                onClick = {
+                                isRefreshing = isRefreshing,
+                                onRefresh = {
+                                    isRefreshing = true
                                     webView?.let { view ->
                                         // A "hard" refresh: bypass the
                                         // WebView's own HTTP cache, not just
@@ -127,15 +184,44 @@ class MainActivity : ComponentActivity() {
                                         view.reload()
                                     }
                                 },
-                                modifier = Modifier.align(Alignment.TopEnd).padding(top = 8.dp, end = 56.dp),
                             ) {
-                                Text("⟳")
+                                AndroidView(
+                                    modifier = Modifier.fillMaxSize(),
+                                    factory = { context ->
+                                        WebView(context).also { view ->
+                                            webView = view
+                                            configureWebView(view) {
+                                                route = it
+                                                isRefreshing = false
+                                            }
+                                            services.configStore.loadServerUrl()?.let(view::loadUrl)
+                                        }
+                                    },
+                                )
                             }
-                            TextButton(
-                                onClick = { showSettings = true },
-                                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                            Row(
+                                modifier = Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text("⚙")
+                                if (route == null) {
+                                    IconButton(onClick = {
+                                        webView?.evaluateJavascript(
+                                            "if (window.go) { go('#new'); }",
+                                            null,
+                                        )
+                                    }) {
+                                        Icon(Icons.Filled.Add, contentDescription = "New run")
+                                    }
+                                } else {
+                                    WatchBarAction(
+                                        route = route,
+                                        hasToken = hasToken,
+                                        onNeedsSetup = { showSettings = true },
+                                    )
+                                }
+                                IconButton(onClick = { showSettings = true }) {
+                                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                                }
                             }
                         }
                     }
@@ -174,6 +260,9 @@ class MainActivity : ComponentActivity() {
         view.settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
+        // Bound before `loadUrl` so `window.LmloopNative` exists for every
+        // page script, including inline ones -- see NativeShellBridge's doc.
+        view.addJavascriptInterface(NativeShellBridge(), "LmloopNative")
         view.webViewClient = DashboardWebViewClient(
             onPageFinished = {
                 // The WebView's cookie jar is not synchronously flushed to

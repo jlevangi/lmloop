@@ -1,0 +1,4 @@
+<resources>
+    <!-- The `ink` token from web/static/style.css's :root; see Theme.kt. -->
+    <color name="ink">#0C0C0F</color>
+</resources>

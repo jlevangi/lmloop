@@ -75,7 +75,7 @@ DELTA_MARKER = b'_delta"'
 
 @dataclass
 class IterationResult:
-    outcome: str  # ok | agent-error | timeout | stalled | thrashing
+    outcome: str  # ok | agent-error | provider-unavailable | timeout | stalled | thrashing
     detail: str = ""
     tool_calls: int = 0
     writes: int = 0

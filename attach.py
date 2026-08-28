@@ -56,6 +56,8 @@ def _line(status: dict, spinner: str, age: float | None, paint) -> list[tuple[in
 
     if stale:
         detail = paint.red(f"no update for {display.elapsed(age)}")
+    elif status.get("phase") == "provider-unavailable":
+        detail = paint.yellow("provider unavailable")
     elif status.get("phase") == "loading":
         detail = paint.yellow("loading model")
     elif status.get("last_tool"):
@@ -100,10 +102,10 @@ def _describe(event: dict) -> str:
                 + (f"committed {commit}" if commit else "nothing to commit"))
     if name == "git:commit:blocked":
         return f"    gate {event.get('gate')} blocked the commit"
-    if name == "server:wait":
-        return f"    model server is not there; holding ({event.get('detail')})"
-    if name == "server:back":
-        return f"    model server is back after {display.elapsed(event.get('waited', 0))}"
+    if name == "provider:pause":
+        return f"    local model provider unavailable; paused ({event.get('detail')})"
+    if name == "provider:resume":
+        return f"    local model provider resumed after {display.elapsed(event.get('waited', 0))}"
     if name == "backoff:start":
         return f"    {event.get('detail')}; retrying in {event.get('seconds', 0) // 60}m"
     if name == "run:complete":

@@ -72,6 +72,13 @@ class AttachTests(unittest.TestCase):
         run = self.make_run(iterations_done=4)
         self.assertEqual(4, self.attach(run))
 
+    def test_provider_paused_iteration_is_retried_after_process_loss(self):
+        run = self.make_run(
+            state={"pending_iteration": 4}, iterations_done=4,
+        )
+        self.assertEqual(3, self.attach(run))
+        self.assertEqual(4, run.pending_iteration)
+
     def test_a_run_that_never_started_an_iteration_resumes_from_zero(self):
         self.assertEqual(0, self.attach(self.make_run(iterations_done=0)))
 

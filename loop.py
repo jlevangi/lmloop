@@ -113,6 +113,8 @@ class Run:
         # at six real hours while reporting 11.4h.
         self.elapsed_before = 0.0
         self._segment_started: float | None = None
+        self._inactive_seconds = 0.0
+        self.pending_iteration = 0
         self.linked: list[str] = []
         self.defects: list[str] = []
         self.screen = display.Screen()
@@ -247,6 +249,11 @@ class Run:
         )
         self.objective = (self.rundir.path / "prompt.md").read_text().strip()
         state = self.rundir.read_run_state()
+        self.pending_iteration = int(state.get("pending_iteration", 0))
+        if self.pending_iteration:
+            # A provider outage writes the prompt before the request fails.  It
+            # is evidence of an attempt, not proof the iteration completed.
+            done = min(done, self.pending_iteration - 1)
         prior_ceiling = int(state.get("hard_turn_ceiling", done))
         self.iteration_ceiling = max(done, prior_ceiling) + extra_iterations
         self.iteration_floor = min(self.iteration_ceiling, done + extra_iterations)
@@ -319,7 +326,7 @@ class Run:
         """Why this run should stop now, or None -- see `policy.abort_reason`."""
         done, total = self.rundir.plan_progress()
         return policy.abort_reason(
-            iteration, started,
+            iteration, started + self._inactive_seconds,
             interrupted=self.interrupted,
             stop_now_requested=self.rundir.stop_now_requested(),
             stop_requested=self.rundir.stop_requested(),
@@ -744,6 +751,8 @@ class Run:
             on_progress=lambda snap: self._show(number, snap),
         )
 
+        self._classify_provider_loss(result)
+
         # Which step defeated the window, and how often.  Recorded from the step
         # that was in play when the iteration started, not the one in play now:
         # a thrashing iteration writes nothing, so the plan has not moved, but
@@ -1105,12 +1114,13 @@ class Run:
     def _save_run_state(self) -> None:
         elapsed = self.elapsed_before
         if self._segment_started is not None:
-            elapsed += time.monotonic() - self._segment_started
+            elapsed += time.monotonic() - self._segment_started - self._inactive_seconds
         self.rundir.write_run_state({
             "active_elapsed_seconds": elapsed,
             "no_diff_streak": self.no_diff_streak,
             "thrashed_steps": self.thrashed_steps,
             "hard_turn_ceiling": self.iteration_ceiling,
+            "pending_iteration": self.pending_iteration,
             # Which agent, and what it was allowed to use.  A resume that reads
             # these back cannot hand omp's worktree, session directory and
             # handoff chain to pi because the file on disk said pi -- which it
@@ -1157,6 +1167,22 @@ class Run:
                         break
                     iteration -= 1
                     continue
+                if self.last_outcome == "provider-unavailable":
+                    self.pending_iteration = iteration if not self.last_commit else 0
+                    self._save_run_state()
+                    if not self._wait_for_server(
+                        iteration, self.last_detail or "local model provider unavailable"
+                    ):
+                        reason = "local model provider unavailable; paused run was stopped"
+                        break
+                    # Useful partial work was committed and should not be
+                    # repeated.  A barren provider failure retries this number.
+                    if not self.last_commit:
+                        iteration -= 1
+                    continue
+                if self.pending_iteration:
+                    self.pending_iteration = 0
+                    self._save_run_state()
                 transport = self._transport_failure()
                 if transport:
                     # The server, not the work.  Same backoff as a failed preflight,
@@ -1369,6 +1395,21 @@ class Run:
         """
         return policy.transport_failure(self.last_outcome, self.last_commit, self.last_detail)
 
+    def _classify_provider_loss(self, result) -> None:
+        """Turn an opaque local-agent failure into an actionable run state.
+
+        Agent error wording is not a stable interface.  The provider's own cheap
+        health endpoint is: if a local request failed and that endpoint is gone,
+        the provider disappeared underneath the iteration.  Cloud models never
+        touch the local endpoint.
+        """
+        if (
+            result.outcome in {"agent-error", "stalled", "timeout"}
+            and models.is_local(self.model)
+            and not self._server_is_up()
+        ):
+            result.outcome = "provider-unavailable"
+
     def _server_is_up(self) -> bool:
         """Does llama-swap answer at all?  Free, and never triggers a swap."""
         try:
@@ -1386,44 +1427,52 @@ class Run:
         return True
 
     def _wait_for_server(self, iteration: int, detail: str) -> bool:
-        """Hold until the local server comes back.  True if it did, False if we gave up.
+        """Pause for an absent local provider until the operator resumes the run.
 
         Only reached for a run whose model is served locally -- see `_backoff`.
         This is the case where the machine's owner needs the GPU: the server is
         stopped deliberately, for as long as a game lasts.  Nothing is wrong and
         nothing needs escalating -- the iteration simply cannot run yet, so the
-        loop parks on a cheap `GET /running` poll and resumes when the server is
-        back.  The iteration number is not consumed by the caller, so a two-hour
-        gap costs the run nothing but time.
-
-        Polling every 30s rather than every second: the recovery is a human
-        starting a service, so half a minute of extra latency is invisible, and
-        it keeps a six-hour wait to a few hundred requests against a port that
-        is not listening.
+        loop creates the same PAUSE sentinel used by the dashboard and keyboard
+        controls.  Recovery is explicit: start the provider, then resume.  The
+        iteration number and active wall-clock budget are not consumed.
         """
-        limit = int(self.config["models"].get("server_wait_seconds", 0))
-        if limit <= 0:
-            return False  # feature off: fall back to the short backoff
+        if int(self.config["models"].get("server_wait_seconds", 0)) <= 0:
+            return False
 
-        self.rundir.event("server:wait", iteration=iteration, detail=detail, limit=limit)
-        self.screen.log(f"    model server is not there; holding for it ({detail})")
-        waited, step = 0, 30
-        while waited < limit:
-            if not self._sleep_interruptibly(step):
-                return False
-            waited += step
-            if self._server_is_up():
-                self.rundir.event("server:back", iteration=iteration, waited=waited)
-                self.screen.log(f"    model server is back after {display.elapsed(waited)}; carrying on")
-                # A recovered server is a clean slate.  Without this, three
-                # separate gaming sessions across one run would exhaust the
-                # short backoff counter and kill it on the third.
-                self._errors = 0
-                return True
-            if waited % 600 == 0:
-                self.screen.log(f"    still waiting for the model server ({display.elapsed(waited)})")
-        self.rundir.event("server:gaveup", iteration=iteration, waited=waited)
-        return False
+        since = time.monotonic()
+        self.rundir.pause_path.touch()
+        self.rundir.write_status({
+            "run_id": self.run_id,
+            "iteration": iteration,
+            "max_iterations": self.max_iterations,
+            "model": self.model,
+            "phase": "provider-unavailable",
+            "provider_detail": detail,
+            "paused": True,
+            "stopping": self.rundir.stop_requested(),
+        })
+        self.rundir.event("provider:pause", iteration=iteration, detail=detail)
+        self.screen.log(f"    local model provider unavailable; paused ({detail})")
+
+        display.wait_while_paused(
+            self.rundir, self.screen,
+            lambda: self.interrupted or self.rundir.stop_requested(),
+        )
+        waited = time.monotonic() - since
+        self._inactive_seconds += waited
+        if self.interrupted or self.rundir.stop_requested():
+            return False
+        if not self._server_is_up():
+            # The operator may resume before starting the provider.  Retry the
+            # same iteration; its preflight will immediately restore the pause.
+            self.rundir.event("provider:still-unavailable", iteration=iteration)
+            return True
+
+        self.rundir.event("provider:resume", iteration=iteration, waited=round(waited))
+        self.screen.log(f"    local model provider is back; resuming iteration {iteration}")
+        self._errors = 0
+        return True
 
     def _backoff(self, iteration: int, detail: str) -> bool:
         """Hold after a server-side failure.  True to retry, False to end the run.

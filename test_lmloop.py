@@ -140,6 +140,36 @@ class RunPolicyTests(unittest.TestCase):
         run.last_commit = "abc123"
         self.assertEqual("", run._transport_failure())
 
+    def test_agent_error_becomes_provider_unavailable_when_local_server_is_gone(self):
+        """Provider loss is an operating state, not a failed model turn."""
+        run = self.make_run()
+        run.model = "llama-swap/local-fast"
+        result = pi_runner.IterationResult(outcome="agent-error", detail="unknown wording")
+        with mock.patch.object(run, "_server_is_up", return_value=False):
+            run._classify_provider_loss(result)
+        self.assertEqual("provider-unavailable", result.outcome)
+        run.last_outcome = result.outcome
+        run.last_detail = result.detail
+        run.last_commit = None
+        self.assertEqual("unknown wording", run._transport_failure())
+
+    def test_local_timeout_also_becomes_provider_unavailable_when_server_is_gone(self):
+        run = self.make_run()
+        run.model = "llama-swap/local-fast"
+        result = pi_runner.IterationResult(outcome="timeout")
+        with mock.patch.object(run, "_server_is_up", return_value=False):
+            run._classify_provider_loss(result)
+        self.assertEqual("provider-unavailable", result.outcome)
+
+    def test_cloud_agent_error_is_not_relabelled_from_local_server_state(self):
+        run = self.make_run()
+        run.model = "openrouter/anthropic/claude"
+        result = pi_runner.IterationResult(outcome="agent-error", detail="request failed")
+        with mock.patch.object(run, "_server_is_up") as up:
+            run._classify_provider_loss(result)
+        self.assertEqual("agent-error", result.outcome)
+        up.assert_not_called()
+
     def test_uncommitted_work_is_still_progress(self):
         run = self.make_run()
         run.last_outcome = "ok"
@@ -1899,6 +1929,59 @@ class LocalServerWaitTests(unittest.TestCase):
         with mock.patch.object(run, "_server_is_up", return_value=False),              mock.patch.object(run, "_wait_for_server", return_value=True) as wait:
             self.assertTrue(run._backoff(3, "server down"))
         wait.assert_called_once_with(3, "server down")
+
+    def test_provider_outage_creates_a_visible_pause_until_operator_resumes(self):
+        run = self.make_run("llama-swap/local-fast")
+        run.rundir.write_status({"iteration": 3, "phase": "working"})
+
+        def resume(*_args):
+            self.assertTrue(run.rundir.pause_path.exists())
+            status = json.loads(run.rundir.status_path.read_text())
+            self.assertEqual("provider-unavailable", status["phase"])
+            self.assertTrue(status["paused"])
+            run.rundir.pause_path.unlink()
+
+        with mock.patch.object(loop.display, "wait_while_paused", side_effect=resume), \
+             mock.patch.object(run, "_server_is_up", return_value=True):
+            self.assertTrue(run._wait_for_server(3, "connection refused"))
+
+        events = run.rundir.read_events()
+        self.assertTrue(any(event["event"] == "provider:pause" for event in events))
+        self.assertTrue(any(event["event"] == "provider:resume" for event in events))
+
+    def test_provider_pause_does_not_resume_when_run_was_stopped(self):
+        run = self.make_run("llama-swap/local-fast")
+
+        def stop(*_args):
+            run.rundir.stop_path.touch()
+
+        with mock.patch.object(loop.display, "wait_while_paused", side_effect=stop):
+            self.assertFalse(run._wait_for_server(3, "connection refused"))
+
+    def test_pending_provider_iteration_is_persisted_for_process_recovery(self):
+        run = self.make_run("llama-swap/local-fast")
+        run.pending_iteration = 3
+        run._save_run_state()
+        self.assertEqual(3, run.rundir.read_run_state()["pending_iteration"])
+
+    def test_provider_pause_time_is_not_charged_to_active_wall_clock(self):
+        run = self.make_run("llama-swap/local-fast")
+        run._segment_started = 100.0
+        run.elapsed_before = 10.0
+        run.rundir.write_status({"iteration": 3})
+
+        def resume(*_args):
+            run.rundir.pause_path.unlink()
+
+        with mock.patch.object(loop.time, "monotonic", side_effect=[120.0, 3720.0]), \
+             mock.patch.object(loop.display, "wait_while_paused", side_effect=resume), \
+             mock.patch.object(run, "_server_is_up", return_value=True):
+            self.assertTrue(run._wait_for_server(3, "connection refused"))
+        with mock.patch.object(loop.time, "monotonic", return_value=3730.0):
+            run._save_run_state()
+
+        state = run.rundir.read_run_state()
+        self.assertEqual(40.0, state["active_elapsed_seconds"])
 
     def test_a_local_model_with_a_live_server_still_takes_the_short_backoff(self):
         """A server that answers and misbehaves does not fix itself by being

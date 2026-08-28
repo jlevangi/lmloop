@@ -30,6 +30,12 @@ touch <run-dir>/STOP-NOW # cut the current iteration short, commit, exit
 Pausing mid-iteration is deliberately not offered: the model is mid-generation
 and there is nothing honest to freeze.
 
+If a configured local provider disappears during generation, lmloop preserves
+and commits any partial work, records `provider-unavailable`, and creates
+`PAUSE`. Restart the provider, then use the normal resume control (`r`, the
+dashboard Resume button, or remove `PAUSE`). A provider outage does not consume
+an empty iteration or active wall-clock budget.
+
 Stopping mid-iteration is offered, under a different name. `STOP` waits for the
 boundary — gate, checks, handoff, commit — which is where an hour of generation
 turns into something the next run can start from, and is worth the wait unless

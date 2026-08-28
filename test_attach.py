@@ -70,6 +70,10 @@ class StatusLineTests(unittest.TestCase):
     def test_a_loading_model_says_so_rather_than_thinking(self):
         self.assertIn("loading model", self.rendered({"phase": "loading"}))
 
+    def test_provider_unavailable_is_visible_on_the_status_line(self):
+        self.assertIn("provider unavailable", self.rendered(
+            {"phase": "provider-unavailable"}))
+
     def test_a_stale_run_says_so_instead_of_pretending(self):
         """status.json is the last thing a crashed run wrote, and it says
         "working" -- the age is the only thing that knows better."""
@@ -117,11 +121,12 @@ class EventDescriptionTests(unittest.TestCase):
         self.assertIn("turn ceiling hit", attach._describe(
             {"event": "run:complete", "status": "turn ceiling hit"}))
 
-    def test_a_server_wait_is_worth_interrupting_for(self):
-        """Otherwise a run that is holding for a stopped llama-swap looks
+    def test_a_provider_pause_is_worth_interrupting_for(self):
+        """Otherwise a run paused for a stopped llama-swap looks
         identical to one that has hung."""
-        self.assertIn("holding", attach._describe(
-            {"event": "server:wait", "detail": "connection refused"}))
+        self.assertIn("paused", attach._describe(
+            {"event": "provider:pause", "detail": "connection refused"}))
+
 
     def test_per_iteration_noise_is_not(self):
         for name in ("preflight", "checks:failed", "git:commit", "env:withheld"):

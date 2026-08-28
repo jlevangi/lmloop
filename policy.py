@@ -145,10 +145,8 @@ def abort_reason(
     return None
 
 
-# What the agent says when the model server went away underneath it, rather
-# than when the model did something wrong.  pi retries these itself a few
-# times; these are the ones that outlast its retries, which means the server
-# was gone for minutes -- a restart, a reload, a swap -- not a blip.
+# Wording fallback for providers whose health endpoint lmloop cannot inspect,
+# and for local servers that still answer while one upstream route is failing.
 TRANSPORT = (
     "stream ended without finish_reason",
     "connection refused",
@@ -193,7 +191,11 @@ def transport_failure(outcome: str, commit: str | None, detail: str | None) -> s
     files, the iteration is worth keeping whatever killed it, and redoing it
     would mean redoing work that is already in git.
     """
-    if outcome != "agent-error" or commit:
+    if commit:
+        return ""
+    if outcome == "provider-unavailable":
+        return detail or "local model provider unavailable"
+    if outcome != "agent-error":
         return ""
     lowered = (detail or "").lower()
     return detail if any(marker in lowered for marker in TRANSPORT) else ""

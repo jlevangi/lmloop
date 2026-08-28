@@ -157,7 +157,7 @@ DEFAULTS: dict = {
         # local path off: no preflight, no measured window, every model's
         # metadata from the agent's own catalogue.
         "local_providers": models.budgets()["local_providers"],
-        # How long to hold when the model server is simply NOT THERE, as opposed
+        # Whether to pause when the model server is simply NOT THERE, as opposed
         # to there and failing.  On a workstation whose GPU is also the machine
         # its owner plays games on, llama-swap being stopped for an hour or two
         # is routine, not an incident -- so the loop waits it out and picks the
@@ -170,8 +170,11 @@ DEFAULTS: dict = {
         # server which is up and broken does not fix itself by being waited on.
         # The two are told apart by whether `GET /running` answers at all.
         #
-        # 0 restores the old behaviour (give up after the short backoff).
-        "server_wait_seconds": 21600,   # 6h
+        # A positive value enables the hold; 0 restores the old bounded backoff.
+        # The historical name remains config-compatible, but an enabled hold is
+        # now an explicit PAUSE and has no timer: restart the provider, then
+        # resume through the ordinary dashboard/keyboard control.
+        "server_wait_seconds": 21600,
     },
     "worktree": {
         "root": "{repo}/.worktrees/{run_id}",

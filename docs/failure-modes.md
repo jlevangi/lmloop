@@ -235,6 +235,7 @@ page that browser has open.
 | `stalled` | silent for `stall_seconds` after the model was demonstrably alive |
 | `timeout` | exceeded `timeout_seconds` |
 | `interrupted` | STOP-NOW sentinel or signal, mid-iteration |
+| `provider-unavailable` | a configured local provider disappeared during the request; the run pauses |
 | `agent-error` | pi reported an error, or produced no assistant message |
 
 Collapsing these to pass/fail throws away the diagnosis, and they imply
@@ -243,16 +244,22 @@ output budget or less thinking, `stalled` wants investigating.
 
 ### When the server went away, not the model
 
-`agent-error` covers two unrelated things: the agent did something wrong, and
-the model server disappeared underneath it. Only the first is worth spending an
-iteration on.
+An agent failure can mean two unrelated things: the agent did something wrong,
+or the model provider disappeared underneath it. Only the first is worth
+spending an iteration on.
 
-A run whose iteration ends in `agent-error`, left no commit, and whose detail
-names a transport failure — `Stream ended without finish_reason`, a refused or
-reset connection, a timeout, an unresolvable host, a 502/503/504 — is retried on
-the same backoff as a failed preflight (1m, 2m, 4m, then give up), reusing the
-iteration number. pi retries these itself first, so one that reaches lmloop
-means the server was gone for minutes: a restart, a reload, a model swap.
+For configured local models, lmloop verifies an `agent-error` against the
+provider's cheap health endpoint instead of trusting the agent's unstable error
+wording. If the endpoint is gone, the outcome becomes `provider-unavailable`,
+any partial work is still gated and committed, and the run creates `PAUSE` with
+`status.json.phase = "provider-unavailable"`. The operator can use the normal
+dashboard or keyboard resume control after restarting the provider. The same
+iteration number is retried, and time spent paused does not consume the active
+wall-clock budget.
+
+If the local endpoint still answers, known transient transport failures keep
+the bounded 1m/2m/4m backoff. Non-local providers cannot be health-checked here,
+so they retain wording-based classification and bounded backoff.
 
 Observed here: fifty minutes of generation ended by a llama-server being
 swapped for a faster build mid-stream. That cost one of twelve iterations for a

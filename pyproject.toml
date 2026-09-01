@@ -30,9 +30,10 @@ lmloop-web = "lmloop:web_main"
 
 [tool.setuptools]
 py-modules = [
-    "lmloop", "loop", "policy", "pi_runner", "prompts", "rundir", "runrecord",
-    "attach",
-    "gitops", "checks", "models", "browser", "harness", "config", "env",
+    "lmloop", "loop", "policy", "pi_runner", "runner_stream", "prompts",
+    "rundir", "runrecord", "run_history", "run_identity", "attach",
+    "gitops", "checks", "models", "browser", "harness", "harness_base",
+    "harness_pi", "harness_omp", "harness_opencode", "config", "config_defaults", "env",
     "display", "doctor", "eta", "notify", "prune", "webpush",
 ]
 

@@ -12,16 +12,22 @@ loop.
 | `lmloop.py` | CLI. Subcommands, config overrides, and the narrow-terminal output for `status`/`list`. |
 | `loop.py` | The run lifecycle: worktree, iterate, gate, check, commit, stop. Owns the model-role decision. |
 | `policy.py` | Pure stop/budget/retry policy, extracted from `loop.Run`: no filesystem, no `self` — a function of its arguments, so it is testable without a worktree or an hour of wall clock. |
-| `pi_runner.py` | Runs one iteration of pi and reduces its event stream to an outcome. Supervises the timeout, stall and compaction clocks. |
+| `pi_runner.py` | Runs one agent iteration and supervises its process, timeout, stall, tool, compaction, and repetition clocks. |
+| `runner_stream.py` | Reduces streamed JSON events into agent-neutral iteration state; owns byte filtering and live token-rate accounting. |
 | `prompts.py` | Builds the iteration prompt. Every section here exists because an agent wasted tool calls re-deriving it. |
-| `rundir.py` | Everything a run leaves behind, plus the plan and handoff accessors. Delegates its reading half to `runrecord.py`. |
-| `runrecord.py` | The run-record contract shared by the runner and the WebUI: canonical readers for liveness, plan progress, control sentinels, and `run:start`-recorded worktree/branch/owner, plus the `schema_version` marker. Takes a bare run directory path, not a `RunDir`, so it works the same for a live worktree or an archived copy with none. |
+| `rundir.py` | Mutable run-directory API: artifacts, plan/handoff state, ownership, status, and controls. |
+| `runrecord.py` | The read-only run-record contract shared by the runner and WebUI. |
+| `run_history.py` | Bounded prior-run digests included in iteration prompts. |
+| `run_identity.py` | Readable, collision-resistant run slugs and IDs. |
 | `gitops.py` | Every git invocation the loop makes. **No reset, no clean, no worktree removal** — and a test parses the argv lists to keep it so, across the whole project, with `web/workspace.py` as the one exception. |
 | `checks.py` | "Did the edit land intact", on the files git says changed, whatever the project configured. |
 | `models.py` | Local-provider preflight and context measurement, plus the per-agent catalogue cache for models it cannot measure. Which provider is "local" is a setting, not a literal. |
 | `browser.py` | Whether omp's browser tool can attach to the CDP endpoint it was given. Redacts before it reports. |
-| `harness.py` | What lmloop needs from an agent: an argv, what its events mean, and the capabilities the rest of the system used to hardcode by name — default tool allowlist, browser tool, model-listing argv, environment namespace. One small adapter per agent. |
-| `config.py` | Defaults → global TOML → the repo's `.lmloop.toml`. Validates both, and resolves secrets a config points at rather than holds. |
+| `harness.py` | Stable adapter facade and registry. Re-exports the shared contract and concrete adapters so callers import one module. |
+| `harness_base.py` | Agent-neutral adapter contract and normalized event vocabulary. |
+| `harness_pi.py`, `harness_omp.py`, `harness_opencode.py` | One concrete adapter per agent: argv, event translation, catalogue, and capabilities. |
+| `config.py` | Global/project TOML loading, validation, references, and command-line overrides. |
+| `config_defaults.py` | Shipped configuration data and the operational evidence behind each value. |
 | `tools/fake-agent` | An agent that needs no model: same argv shape and event stream as pi, scripted by `.fake-agent.json`. |
 | `tools/smoke` | The whole loop against it, in about five seconds, asserting on the commit and the run directory. |
 | `attach.py` | `lmloop attach`: the foreground screen and controls for a detached run, from its files. Never claims it, never writes its status, and Ctrl-C detaches. |

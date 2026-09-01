@@ -20,6 +20,8 @@ import unittest.mock
 from pathlib import Path
 
 import harness
+import harness_omp
+import harness_pi
 
 TESTDATA = Path(__file__).parent / "testdata"
 
@@ -277,7 +279,7 @@ class DeclaredWindowContractTests(unittest.TestCase):
         ]})
         completed = unittest.mock.Mock(stdout=payload)
         with unittest.mock.patch.object(
-            harness.subprocess, "run", return_value=completed,
+            harness_omp.subprocess, "run", return_value=completed,
         ) as run:
             windows = harness.get("omp").declared_windows()
         self.assertEqual({"9router/xmtp/mimo-v2.5": (1048576, 131072)}, windows)
@@ -286,14 +288,14 @@ class DeclaredWindowContractTests(unittest.TestCase):
     def test_omp_survives_not_being_installed_or_answering_rubbish(self):
         """A run with no window metadata still runs, so this can never raise."""
         for failure in (OSError("no such binary"),
-                        harness.subprocess.TimeoutExpired("omp", 60)):
+                        harness_omp.subprocess.TimeoutExpired("omp", 60)):
             with self.subTest(failure=type(failure).__name__):
                 with unittest.mock.patch.object(
-                    harness.subprocess, "run", side_effect=failure,
+                    harness_omp.subprocess, "run", side_effect=failure,
                 ):
                     self.assertEqual({}, harness.get("omp").declared_windows())
         with unittest.mock.patch.object(
-            harness.subprocess, "run", return_value=unittest.mock.Mock(stdout="not json"),
+            harness_omp.subprocess, "run", return_value=unittest.mock.Mock(stdout="not json"),
         ):
             self.assertEqual({}, harness.get("omp").declared_windows())
 
@@ -426,8 +428,9 @@ class CatalogueTests(unittest.TestCase):
 
     def run_with(self, adapter, stdout):
         """The adapter's catalogue, with the agent's real output handed back."""
-        with unittest.mock.patch(
-            "harness.subprocess.run",
+        module = harness_omp if adapter.name == "omp" else harness_pi
+        with unittest.mock.patch.object(
+            module.subprocess, "run",
             return_value=unittest.mock.Mock(stdout=stdout),
         ):
             return adapter.catalogue()
@@ -464,8 +467,8 @@ class CatalogueTests(unittest.TestCase):
         and not the other means the two readers have drifted apart."""
         stdout = self.stdout("omp-models.json")
         adapter = harness.get("omp")
-        with unittest.mock.patch(
-            "harness.subprocess.run",
+        with unittest.mock.patch.object(
+            harness_omp.subprocess, "run",
             return_value=unittest.mock.Mock(stdout=stdout),
         ):
             self.assertEqual(set(adapter.catalogue()), set(adapter.declared_windows()))
@@ -478,14 +481,15 @@ class CatalogueTests(unittest.TestCase):
         """The dashboard tells "could not be run" from "knows no models" apart,
         and can only do that if the adapter does not swallow the difference."""
         for agent in ("pi", "omp"):
+            module = harness_omp if agent == "omp" else harness_pi
             with self.subTest(agent=agent), \
-                 unittest.mock.patch("harness.subprocess.run", side_effect=OSError):
+                 unittest.mock.patch.object(module.subprocess, "run", side_effect=OSError):
                 with self.assertRaises(OSError):
                     harness.get(agent).catalogue()
 
     def test_omp_answering_with_something_other_than_json_reaches_the_caller(self):
-        with unittest.mock.patch(
-            "harness.subprocess.run",
+        with unittest.mock.patch.object(
+            harness_omp.subprocess, "run",
             return_value=unittest.mock.Mock(stdout="Error: unknown flag: --json"),
         ):
             with self.assertRaises(ValueError):

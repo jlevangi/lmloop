@@ -129,6 +129,32 @@ fix, because decomposition is the loop's job.
 reading files*, then does the first unchecked step and nothing else. The same
 broad objective then produced 124 passing tests over 14 iterations.
 
+## The agent goes in a circle
+
+**Shape.** The model calls one tool on one target, reads the result, and calls
+it again — unchanged — because it is not treating the result as new
+information. It is not silent and not overflowing, so every clock the loop had
+watches it work and sees nothing wrong.
+
+**Evidence.** One iteration: 222 tool calls in 1h45m, the same reads cycling,
+two context overflows along the way, ending `agent-error` only because the final
+request exceeded the window. `stall_seconds` never fired (the agent was never
+quiet), `tool_seconds` never fired (each call returned promptly), and
+`max_compactions` counts overflows, which this was not primarily about.
+
+**Fix.** `max_repeats`. The same tool on the same target that many times running
+ends the iteration as `looping`. A state-changing call between two identical
+ones clears the streak — after an edit or a shell command the same question can
+honestly have a new answer, which is what makes read-after-write and
+edit-then-retest legitimate rather than a loop. The counting lives in
+`policy.repeating_call`, so the rule is testable without a model.
+
+**Why not just raise the ceiling.** A model in a circle does not leave it with
+more turns; it leaves it with different input. Ending the iteration is what
+produces different input: the work so far is gated, checked and committed, and
+the next prompt carries a handoff written from git rather than from the state
+the model had talked itself into.
+
 ## One tool result is too big to compact
 
 **Shape.** The iteration has already made useful edits, then one broad search or
@@ -230,6 +256,7 @@ page that browser has open.
 |---|---|
 | `ok` | finished, called at least one tool, did not hit a cap |
 | `thrashing` | overflowed `max_compactions` times with no writes |
+| `looping` | repeated one tool call `max_repeats` times with nothing between |
 | `truncated` | ran out of output budget mid-message |
 | `no-action` | ended cleanly having called no tool at all |
 | `stalled` | silent for `stall_seconds` after the model was demonstrably alive |

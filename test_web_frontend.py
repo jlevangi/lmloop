@@ -73,7 +73,7 @@ class OutcomeVocabularyTests(unittest.TestCase):
         for outcome in ("stalled", "timeout", "tool-timeout", "agent-error"):
             with self.subTest(outcome=outcome):
                 self.assertEqual("bad", classes.get(outcome))
-        for outcome in ("thrashing", "truncated", "no-action"):
+        for outcome in ("thrashing", "looping", "truncated", "no-action"):
             with self.subTest(outcome=outcome):
                 self.assertEqual("warn", classes.get(outcome))
 
@@ -85,7 +85,7 @@ class OutcomeVocabularyTests(unittest.TestCase):
         warn = " ".join(line for line in rules if "--warn" in line)
         for outcome, expected in (("stalled", bad), ("timeout", bad),
                                   ("tool-timeout", bad), ("agent-error", bad),
-                                  ("thrashing", warn), ("truncated", warn),
+                                  ("thrashing", warn), ("looping", warn), ("truncated", warn),
                                   ("no-action", warn)):
             with self.subTest(outcome=outcome):
                 # Either an exact class, or a substring selector naming the

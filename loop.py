@@ -740,6 +740,7 @@ class Run:
             stall_seconds=self.config["iteration"]["stall_seconds"],
             tool_seconds=self.config["iteration"].get("tool_seconds", 0),
             max_compactions=self.config["iteration"]["max_compactions"],
+            max_repeats=self.config["iteration"].get("max_repeats", 3),
             env=self.env(),
             # Only the *hard* stop reaches in here.  A plain STOP means "end the
             # run", and the boundary -- where the gate runs, the handoff is

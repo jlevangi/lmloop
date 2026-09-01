@@ -304,5 +304,78 @@ class ContextPressureTests(unittest.TestCase):
         self.assertAlmostEqual(0.5, policy.context_pressure(100, 200))
 
 
+class RepeatingCallTests(unittest.TestCase):
+    """The circle a context clock cannot see: the agent is busy, not silent."""
+
+    @staticmethod
+    def _calls(*pairs):
+        return [f"{name}\x00{target}" for name, target in pairs]
+
+    def test_three_identical_reads_running_is_a_loop(self):
+        calls = self._calls(("read", "a.py"), ("read", "a.py"), ("read", "a.py"))
+        self.assertEqual("read\x00a.py", policy.repeating_call(calls))
+
+    def test_two_is_a_retry_not_a_loop(self):
+        """A read that raced a write, a flaky command run twice.  Cutting an
+        iteration for this would cost more runs than it saved."""
+        calls = self._calls(("read", "a.py"), ("read", "a.py"))
+        self.assertEqual("", policy.repeating_call(calls))
+
+    def test_a_write_between_two_reads_excuses_the_repeat(self):
+        """The file changed, so reading it again is a new question -- this is
+        the read-after-write every honest edit loop makes."""
+        calls = self._calls(
+            ("read", "a.py"), ("edit", "a.py"), ("read", "a.py"),
+            ("edit", "a.py"), ("read", "a.py"),
+        )
+        self.assertEqual("", policy.repeating_call(calls))
+
+    def test_the_same_command_re_run_after_an_edit_is_fine(self):
+        """Edit, re-run the build, edit, re-run: identical argv, and the answer
+        is expected to differ."""
+        calls = self._calls(
+            ("bash", "pytest"), ("edit", "a.py"), ("bash", "pytest"),
+            ("edit", "a.py"), ("bash", "pytest"),
+        )
+        self.assertEqual("", policy.repeating_call(calls))
+
+    def test_the_same_file_read_three_times_around_other_reads_is_still_a_loop(self):
+        """Interleaving reads changes nothing: none of them touched the file,
+        so the third read of it cannot have a new answer."""
+        calls = self._calls(
+            ("read", "a.py"), ("read", "b.py"), ("read", "a.py"),
+            ("read", "b.py"), ("read", "a.py"),
+        )
+        self.assertEqual("read\x00a.py", policy.repeating_call(calls))
+
+    def test_different_targets_are_not_a_repeat(self):
+        calls = self._calls(("read", "a.py"), ("read", "b.py"), ("read", "c.py"))
+        self.assertEqual("", policy.repeating_call(calls))
+
+    def test_a_limit_of_zero_or_one_disables_rather_than_fires_on_everything(self):
+        """0 is the documented off switch; 1 would call every first call a loop."""
+        calls = self._calls(("read", "a.py"), ("read", "a.py"), ("read", "a.py"))
+        self.assertEqual("", policy.repeating_call(calls, 0))
+        self.assertEqual("", policy.repeating_call(calls, 1))
+
+    def test_an_empty_iteration_is_not_a_loop(self):
+        self.assertEqual("", policy.repeating_call([]))
+
+    def test_only_the_streak_ending_now_counts(self):
+        """A loop the agent already broke out of is not this iteration's
+        problem -- it wrote something and moved on."""
+        calls = self._calls(
+            ("read", "a.py"), ("read", "a.py"), ("read", "a.py"),
+            ("edit", "a.py"), ("read", "b.py"),
+        )
+        self.assertEqual("", policy.repeating_call(calls))
+
+    def test_a_configured_limit_above_eight_still_works(self):
+        """The setting is public; an internal history cap must not silently
+        turn a valid larger value into an off switch."""
+        calls = self._calls(*(("read", "a.py"),) * 12)
+        self.assertEqual("read\x00a.py", policy.repeating_call(calls, 12))
+
+
 if __name__ == "__main__":
     unittest.main()

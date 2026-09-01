@@ -485,6 +485,34 @@ class RunDirCharacterizationTests(unittest.TestCase):
         rd = self.make_rundir()
         self.assertEqual(0, rd.holder())
 
+    def test_a_short_handoff_is_carried_verbatim(self):
+        rd = self.make_rundir()
+        rd.handoff_path.write_text("  did the thing; do the next thing  ")
+        self.assertEqual("did the thing; do the next thing", rd.read_handoff())
+
+    def test_a_long_handoff_is_capped(self):
+        """Uncapped, this grew to 23.5% of a measured 25.5K prompt and kept
+        rising -- on a model whose whole window is 16-32K."""
+        rd = self.make_rundir()
+        rd.handoff_path.write_text("x" * 20000)
+        carried = rd.read_handoff()
+        self.assertLess(len(carried), 20000)
+        self.assertIn("[earlier handoff truncated]", carried)
+
+    def test_the_cap_keeps_the_end_not_the_beginning(self):
+        """A handoff closes with what the next iteration should do first.
+        Truncating from the end would cut exactly the part that is an
+        instruction and keep the part that is a report."""
+        rd = self.make_rundir()
+        rd.handoff_path.write_text("OLD-REPORT" + "x" * 20000 + "NEXT-STEP-HERE")
+        carried = rd.read_handoff()
+        self.assertIn("NEXT-STEP-HERE", carried)
+        self.assertNotIn("OLD-REPORT", carried)
+
+    def test_a_missing_handoff_is_empty_not_an_error(self):
+        rd = self.make_rundir()
+        self.assertEqual("", rd.read_handoff())
+
     def test_holder_never_reports_its_own_pid(self):
         rd = self.make_rundir()
         rd.pid_path.write_text(f"{os.getpid()}\n")
@@ -2448,6 +2476,56 @@ class HungToolCallTests(unittest.TestCase):
         """A real build or test suite is a tool call too, and killing one of
         those is worse than waiting."""
         self.assertGreaterEqual(config.DEFAULTS["iteration"]["tool_seconds"], 900)
+
+
+class RepeatingCallIntegrationTests(unittest.TestCase):
+    """The runner records the adapter's normalized tool signatures.
+
+    Policy-only tests cannot catch a missing `_handle` wire, which would leave
+    a perfect detector looking at an empty list forever.
+    """
+
+    def reduce(self, events, agent="pi"):
+        state = pi_runner._Stream()
+        adapter = harness.get(agent)
+        for event in events:
+            pi_runner._handle(event, state, adapter)
+        return state
+
+    @staticmethod
+    def start(name, target):
+        args = {"path": target} if name == "read" else {"command": target}
+        return {"type": "tool_execution_start", "toolName": name, "args": args}
+
+    def test_three_real_pi_events_reach_the_policy(self):
+        state = self.reduce([self.start("read", "a.py")] * 3)
+        self.assertTrue(policy.repeating_call(state.signatures).startswith("read\x00"))
+
+    def test_same_basename_in_different_directories_does_not_collide(self):
+        state = self.reduce([
+            self.start("read", "one/a.py"),
+            self.start("read", "two/a.py"),
+            self.start("read", "three/a.py"),
+        ])
+        self.assertEqual("", policy.repeating_call(state.signatures))
+
+    def test_read_offsets_are_part_of_the_identity(self):
+        events = [
+            {"type": "tool_execution_start", "toolName": "read",
+             "args": {"path": "large.py", "offset": offset}}
+            for offset in (1, 100, 200)
+        ]
+        self.assertEqual("", policy.repeating_call(self.reduce(events).signatures))
+
+    def test_a_real_edit_event_breaks_the_repeat(self):
+        state = self.reduce([
+            self.start("bash", "python3 -m unittest"),
+            self.start("edit", "a.py"),
+            self.start("bash", "python3 -m unittest"),
+            self.start("edit", "a.py"),
+            self.start("bash", "python3 -m unittest"),
+        ])
+        self.assertEqual("", policy.repeating_call(state.signatures))
 
 
 class DeletedSymbolTests(unittest.TestCase):

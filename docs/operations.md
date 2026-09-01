@@ -253,6 +253,47 @@ lmloop reports this and does not fix it. Routing an agent around a security
 control the operator installed is not lmloop's call to make — but neither is
 letting somebody lose an afternoon to it silently.
 
+### An extension worth adding: `write-guard`
+
+Not shipped with lmloop — it lives in the agent's own configuration, like every
+other extension above — but it answers a failure this loop sees often enough on
+small models to name here.
+
+An 8B-class model changing three lines in a 400-line file will frequently reach
+for `write` rather than `edit`, passing the whole file *as it remembers it*.
+Everything it did not recall is dropped, the file still parses, `checks.py`
+finds nothing structurally wrong, and the loss only shows up in the diff — by
+which time later iterations have built on top of it.
+
+The model is not being careless. `write` is the simpler tool: one argument, no
+matching, no failure it has to reason about. `edit` requires holding the exact
+current text, which is the thing a 16K window has been discarding all iteration.
+
+`~/.pi/agent/extensions/write-guard.ts` makes the shortcut unavailable rather
+than discouraged: `tool_call` returns `{block: true, reason}` when `write`
+targets an existing file inside the worktree that the model has not read this
+session. pi feeds `reason` back as the tool result, so the model reads why and
+retries with `edit` in the same turn — one wasted call, not one wasted
+iteration.
+
+The read exemption is what keeps it from being a nuisance: a model that just
+read the file has the exact text in context, which is the same condition that
+makes a whole-file write safe. Files over 40000 bytes are guarded regardless,
+because past roughly 10k tokens "it read it" stops being evidence that it is
+holding the file accurately.
+
+**The bash redirect gap.** When `write` is blocked, an 8B-class model will
+immediately try `cat > file << 'EOF'` — the same blind overwrite through a
+different tool. The guard now also hooks `bash` and scans commands for
+unquoted `>`, `tee`, and `dd of=` targeting existing in-tree files. Appends
+(`>>`, `tee -a`) are allowed because they cannot drop existing content;
+`2>&1`, `/dev/null`, and device files are exempt. New files are always allowed.
+
+Verified against `llama-swap/Qwen3.8-27B`: a `write` with no prior read is
+blocked and the file is left byte-identical; a `write` after a `read` passes
+through. The extension is in `extras/write-guard.ts` and loads from
+`~/.pi/agent/extensions/`.
+
 ## Choosing the agent
 
 lmloop drives three, selected by name and never inferred:

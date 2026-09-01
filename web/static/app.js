@@ -613,6 +613,7 @@ function pressureClass(share) {
 
 const OUTCOME_CLASS = {
   ok: "ok", thrashing: "warn", truncated: "warn", "no-action": "warn",
+  looping: "warn",
   stalled: "bad", timeout: "bad", "tool-timeout": "bad", "agent-error": "bad",
   interrupted: "",
 };

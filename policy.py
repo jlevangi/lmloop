@@ -303,3 +303,49 @@ def context_warning(input_tokens: int, window: int) -> str:
         return ""
     return (f"prompt used {used:.0%} of the {window}-token window "
             f"({input_tokens} tokens); the next tool result is likely to overflow it")
+
+
+# Tools that change state the environment then depends on.  A verbatim repeat
+# after one of *these* is legitimate: edit a file, re-run the same build; the
+# command is identical and the answer is not.  Everything else repeating itself
+# byte for byte is the model going in a circle.
+STATE_CHANGING_TOOLS = frozenset({
+    "edit", "write", "replace", "multiedit", "apply_patch", "bash", "shell",
+})
+
+# How many identical calls in a row before the iteration is cut.  Two is a
+# retry -- a read that raced a write, a flaky command run twice.  Three is a
+# model that has stopped taking the answer as input.
+REPEAT_LIMIT = 3
+
+def repeating_call(signatures: list[str], limit: int = REPEAT_LIMIT) -> str:
+    """The tool signature that has repeated `limit` times with nothing between.
+
+    `signatures` is the iteration's tool calls in order, each one
+    ``name\\x00target`` -- the name and what it was pointed at, which is as much
+    identity as the event stream gives us.  A state-changing call clears the
+    streak, because after one the same question can honestly have a new answer.
+
+    Returns the offending signature, or "".  Pure: the caller owns the counting
+    and the killing, this only says whether the pattern is there.
+
+    Observed on one run: 222 tool calls in 1h45m, the same three reads cycling
+    while the context overflowed twice.  Nothing in the loop noticed, because
+    every clock it had was about *silence* and the agent was not silent -- it
+    was busy, in a circle.
+    """
+    if limit < 2 or len(signatures) < limit:
+        return ""
+    latest = signatures[-1]
+    streak = 0
+    for signature in reversed(signatures):
+        if signature == latest:
+            streak += 1
+            if streak >= limit:
+                return latest
+            continue
+        # A state-changing call between two identical ones is the excuse: the
+        # world moved, so asking again is not the same question.
+        if signature.split("\x00", 1)[0].lower() in STATE_CHANGING_TOOLS:
+            return ""
+    return ""

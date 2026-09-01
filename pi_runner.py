@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import harness
+import policy
 
 # pi's built-in mutating tools, plus `replace` from pi-hashline-edit-pro and the
 # names other edit extensions use.  Which one is live depends on what is
@@ -103,6 +104,11 @@ class _Stream:
         self.writes = 0
         self.compactions = 0
         self.files: list[str] = []
+        # Every tool call this iteration, as `name\x00target`, newest last.
+        # Even pathological iterations produce only a few KB of signatures;
+        # retaining all of them keeps arbitrary `max_repeats` values honest.
+        self.signatures: list[str] = []
+        self.repeated = ""
         self.stop_reason = ""
         self.error_message = ""
         self.saw_message_end = False
@@ -217,6 +223,8 @@ def _handle(event: dict, state: _Stream, agent) -> None:
         state.tool_calls += 1
         state.last_tool = note["name"]
         state.last_target = note["target"]
+        identity = note.get("identity", note["target"])
+        state.signatures.append(f"{note['name']}\x00{identity}")
         # Only for an agent that will also say when the call finished.  For
         # one that does not, every completed call would look like a call still
         # running, and `tool_seconds` would fire on a healthy iteration.
@@ -331,6 +339,7 @@ def run(
     stall_seconds: int,
     tool_seconds: int = 0,
     max_compactions: int = 0,
+    max_repeats: int = policy.REPEAT_LIMIT,
     env: dict | None = None,
     should_stop=lambda: False,
     on_progress=None,
@@ -380,6 +389,8 @@ def run(
             writes = state.writes
             compactions = state.compactions
             tool_started = state.tool_started_at
+            repeated = policy.repeating_call(state.signatures, max_repeats) if max_repeats else ""
+            state.repeated = repeated
             snapshot = {
                 "elapsed": now - started,
                 "tool_calls": state.tool_calls,
@@ -440,6 +451,18 @@ def run(
             # wrong is one iteration ended early, which the next one resumes
             # from; the cost of not firing is a wasted hour.
             killed = "thrashing"
+        elif max_repeats and repeated:
+            # The model going in a circle: the same tool pointed at the same
+            # thing, `max_repeats` times, with nothing between that could have
+            # changed the answer.  A different failure from thrashing, which is
+            # the window losing to the codebase -- this one fits fine and is
+            # simply not reading its own results.  Observed on one run: 222
+            # tool calls in 1h45m, the same reads cycling, every clock the loop
+            # had watching for silence while the agent was busy.
+            #
+            # Safe by construction like every other cut here: the iteration's
+            # work is gated, checked and committed on the way out.
+            killed = "looping"
         elif should_stop():
             killed = "stopped"
 
@@ -465,6 +488,11 @@ def run(
         elif killed == "thrashing":
             outcome = "thrashing"
             detail = f"{state.compactions} context overflows with no writes"
+        elif killed == "looping":
+            outcome = "looping"
+            name, _, _identity = state.repeated.partition("\x00")
+            what = " ".join(part for part in (name, state.last_target) if part)
+            detail = f"repeated `{what}` {max_repeats}x with nothing between"
         elif killed == "stopped":
             outcome, detail = "interrupted", "stop requested mid-iteration"
         elif state.stop_reason in ("error", "aborted"):

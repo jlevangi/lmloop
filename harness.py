@@ -345,6 +345,10 @@ class PiHarness(Harness):
                 "kind": TOOL,
                 "name": event.get("toolName", ""),
                 "target": self._target(args),
+                # `target` is deliberately shortened for a phone screen.  It
+                # is not enough to identify repetition: two directories can
+                # both contain foo.py, and commands can differ after byte 60.
+                "identity": json.dumps(args, sort_keys=True, separators=(",", ":")),
                 "path": self._path(args),
             }
         if kind == "tool_execution_end":
@@ -434,11 +438,13 @@ class OpencodeHarness(Harness):
         part = event.get("part") or {}
         if kind == "tool_use":
             state = part.get("state") or {}
+            tool_input = state.get("input") or {}
             return {
                 "kind": TOOL,
                 "name": part.get("tool", ""),
-                "target": self._target(state.get("input") or {}),
-                "path": (state.get("input") or {}).get("filePath"),
+                "target": self._target(tool_input),
+                "identity": json.dumps(tool_input, sort_keys=True, separators=(",", ":")),
+                "path": tool_input.get("filePath"),
             }
         if kind == "step_finish":
             tokens = part.get("tokens") or {}

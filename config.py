@@ -222,6 +222,15 @@ DEFAULTS: dict = {
         # the agent had read, so the third one is not a slow start, it is a loop.
         # 0 disables the check.
         "max_compactions": 3,
+        # Cut an iteration short when the agent calls the same tool on the same
+        # target this many times running with nothing between that could have
+        # changed the answer.  Different failure from `max_compactions`: that one
+        # is the window losing to the codebase, this one is a model that fits
+        # fine and is not reading its own tool results.  Observed: 222 tool
+        # calls in 1h45m cycling the same reads, while every clock the loop had
+        # watched for silence and the agent was never silent.  2 would fire on
+        # an honest retry; 0 disables the check.
+        "max_repeats": 3,
         # Cut an iteration short when a single tool call has been running this
         # long without returning.  A different question from `stall_seconds`,
         # which asks how long the *agent* may be silent and is routinely raised
@@ -680,6 +689,7 @@ timeout_seconds = 14400   # 4h backstop
 stall_seconds   = 1200    # 20m of silence from the agent
 tool_seconds    = 1800    # 30m for a single tool call; 0 disables
 max_compactions = 3       # give up after N context overflows with no writes
+max_repeats     = 3       # give up after N unchanged calls to one tool/target
 
 [planning]
 pre_write_file_limit = 3  # files allowed before the first write

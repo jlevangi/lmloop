@@ -37,6 +37,13 @@ import runrecord
 # produced it.
 _SUMMARY_LIMIT = 12000
 
+# The agent-written handoff, which is a different budget from the compaction
+# summary above: that one replaces reads the agent would otherwise redo, so it
+# earns its size.  This one is prose the agent chose to write, it is carried
+# every iteration, and on a 16-32K local window 4000 characters (~1k tokens) is
+# already 3-6% of everything the model has.
+_HANDOFF_LIMIT = 4000
+
 
 def _cap(text: str, limit: int = _SUMMARY_LIMIT) -> str:
     """Bound anything carried into the next prompt.
@@ -181,10 +188,26 @@ class RunDir:
     # -- handoff ----------------------------------------------------------
 
     def read_handoff(self) -> str:
+        """The previous iteration's handoff, bounded.
+
+        Capped for the same reason the synthesised one is, and it was not:
+        this file is whatever the agent chose to write, and on a long run that
+        grows.  Measured on one 32-iteration run, the handoff section peaked at
+        6355 characters -- 23.5% of a 25.5K prompt, second only to the file
+        inventory, and rising, on a model whose whole window is 16-32K.
+
+        The *tail* is kept rather than the head.  A handoff opens with what the
+        iteration did and closes with what the next one should do first, and
+        only the second half is instruction; truncating from the end would cut
+        exactly the part the next iteration acts on.
+        """
         try:
-            return self.handoff_path.read_text().strip()
+            text = self.handoff_path.read_text().strip()
         except OSError:
             return ""
+        if len(text) <= _HANDOFF_LIMIT:
+            return text
+        return "[earlier handoff truncated]\n\n" + text[-_HANDOFF_LIMIT:].lstrip()
 
     def handoff_mtime(self) -> float:
         try:

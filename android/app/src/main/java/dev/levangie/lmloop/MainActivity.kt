@@ -128,7 +128,10 @@ class MainActivity : ComponentActivity() {
                         SetupScreen(
                             api = services.api,
                             configStore = services.configStore,
-                            onConfigured = { configured = true },
+                            onConfigured = {
+                                WorkScheduler.schedule(this@MainActivity)
+                                configured = true
+                            },
                         )
                     } else if (showSettings) {
                         SettingsScreen(

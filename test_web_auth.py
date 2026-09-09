@@ -129,8 +129,40 @@ class ProxyAuthTests(unittest.TestCase):
         self.assertFalse(self.build().interactive)
 
 
+class EnvironmentPathTests(unittest.TestCase):
+    def test_env_file_paths_expand_variables_and_home(self):
+        with mock.patch.dict(os.environ, {"HOME": "/home/tester"}, clear=True):
+            with mock.patch.object(server.Path, "read_text", return_value=(
+                "LMLOOP_WEB_ROOTS=$HOME/git:~/work\n"
+                "LMLOOP_WEB_ARCHIVE=$HOME/archive\n"
+                "LMLOOP_WEB_PUSH_STORE=~/push.json\n"
+            )):
+                server.load_env(server.Path("unused"))
+            self.assertEqual(
+                [server.Path("/home/tester/git"), server.Path("/home/tester/work")],
+                server.configure()["roots"],
+            )
+            self.assertEqual(server.Path("/home/tester/archive"), server.runs_module.archive_root())
+            self.assertEqual(server.Path("/home/tester/push.json"), server.push_store.default_path())
+
+
 class NetworkBindTests(unittest.TestCase):
     """The invariant the modes exist to serve."""
+
+    def test_startup_always_reports_the_plain_http_listener(self):
+        with mock.patch.dict(os.environ, {
+            "LMLOOP_WEB_HOST": "0.0.0.0",
+            "LMLOOP_WEB_AUTH_MODE": "proxy",
+            "LMLOOP_WEB_TRUSTED_PROXIES": "127.0.0.1",
+        }, clear=True), mock.patch.object(server, "ThreadingHTTPServer") as made, \
+             mock.patch("builtins.print") as printed:
+            made.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.serve(server.configure())
+        self.assertTrue(any(
+            "lmloop web on http://0.0.0.0:8082" in str(call)
+            for call in printed.call_args_list
+        ))
+        self.assertFalse(any("lmloop web on https://" in str(call) for call in printed.call_args_list))
 
     def serve_with(self, env):
         with mock.patch.dict(os.environ, env, clear=True):

@@ -19,9 +19,8 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.optional-dependencies]
-# Only the dashboard, and only when it is exposed beyond loopback.  Without
-# these OIDC is unavailable and the server refuses to bind anything else, which
-# is the safe failure and not an error.
+# Dashboard integrations: PyJWT and requests provide OIDC; pywebpush provides
+# optional Web Push. The unauthenticated dashboard still works on loopback.
 web = ["PyJWT[crypto]>=2.7,<3", "requests>=2.31,<3", "pywebpush>=2.0,<3"]
 
 [project.scripts]

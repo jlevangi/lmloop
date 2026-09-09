@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import dev.levangie.lmloop.config.ServerConfigStore
 import dev.levangie.lmloop.net.ApiResult
 import dev.levangie.lmloop.net.LmloopApiClient
+import dev.levangie.lmloop.net.normalizeServerUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,14 +69,20 @@ fun SetupScreen(
                 testing = true
                 status = null
                 scope.launch {
-                    val normalized = serverUrl.trim().trimEnd('/')
-                    val reachable = withContext(Dispatchers.IO) { api.health(normalized) }
+                    val normalized = normalizeServerUrl(serverUrl)
+                    if (normalized.isFailure) {
+                        testing = false
+                        status = normalized.exceptionOrNull()?.message
+                        return@launch
+                    }
+                    val url = normalized.getOrThrow()
+                    val reachable = withContext(Dispatchers.IO) { api.health(url) }
                     testing = false
                     if (reachable is ApiResult.Success) {
-                        configStore.saveServerUrl(normalized)
+                        configStore.saveServerUrl(url)
                         onConfigured()
                     } else {
-                        status = "Could not reach that server."
+                        status = "That URL did not return an lmloop /health response."
                     }
                 }
             },

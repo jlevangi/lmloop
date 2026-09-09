@@ -4,10 +4,12 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.decodeFromStream
 
 sealed interface ApiResult<out T> {
     data class Success<T>(val value: T) : ApiResult<T>
@@ -16,6 +18,30 @@ sealed interface ApiResult<out T> {
 }
 
 private val json = Json { ignoreUnknownKeys = true }
+
+@Serializable
+private data class HealthResponse(
+    val status: String,
+    val auth: String,
+    val oidc: Boolean,
+    val read_only: Boolean,
+)
+
+fun normalizeServerUrl(value: String): Result<String> = runCatching {
+    val normalized = value.trim().trimEnd('/')
+    val uri = URI(normalized)
+    require(uri.host != null && uri.userInfo == null && uri.rawQuery == null && uri.rawFragment == null) {
+        "Enter a server URL without credentials, query parameters, or a fragment."
+    }
+    val host = uri.host.removeSurrounding("[", "]")
+    val loopback = host.equals("localhost", ignoreCase = true) ||
+        host == "127.0.0.1" || host == "::1"
+    require(uri.scheme.equals("https", ignoreCase = true) ||
+        (uri.scheme.equals("http", ignoreCase = true) && loopback)) {
+        "Use HTTPS for a remote server; HTTP is allowed only for loopback."
+    }
+    normalized
+}
 
 /**
  * Talks to the same `/api/` surface the dashboard's own `app.js` does, over
@@ -34,16 +60,20 @@ class LmloopApiClient(
     private val cookieProvider: (String) -> String? = { null },
     private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
 ) {
-    fun health(baseUrl: String): ApiResult<Unit> = request(baseUrl, "/health", token = null, sendAuth = false) {}
+    fun health(baseUrl: String): ApiResult<Unit> =
+        request(baseUrl, "/health", token = null, sendAuth = false) {
+            val response = json.decodeFromString<HealthResponse>(it.bufferedReader().readText())
+            if (response.status != "ok") throw SerializationException("not an lmloop server")
+        }
 
     fun config(baseUrl: String, token: String? = null): ApiResult<ServerInfo> =
-        request(baseUrl, "/api/config", token) { json.decodeFromStream(ServerInfo.serializer(), it) }
+        request(baseUrl, "/api/config", token) { json.decodeFromString(it.bufferedReader().readText()) }
 
     fun runs(baseUrl: String, token: String? = null): ApiResult<RunsResponse> =
-        request(baseUrl, "/api/runs", token) { json.decodeFromStream(RunsResponse.serializer(), it) }
+        request(baseUrl, "/api/runs", token) { json.decodeFromString(it.bufferedReader().readText()) }
 
     fun run(baseUrl: String, token: String? = null, project: String, runId: String): ApiResult<RunSummary> =
-        request(baseUrl, "/api/runs/$project/$runId", token) { json.decodeFromStream(RunSummary.serializer(), it) }
+        request(baseUrl, "/api/runs/$project/$runId", token) { json.decodeFromString(it.bufferedReader().readText()) }
 
     private fun <T> request(
         baseUrl: String,

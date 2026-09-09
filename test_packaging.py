@@ -59,10 +59,11 @@ class DependencyTests(unittest.TestCase):
         """Standard library only is what lets this be installed by cloning it."""
         self.assertEqual([], PYPROJECT["project"]["dependencies"])
 
-    def test_the_dashboard_extras_are_the_two_it_actually_imports(self):
+    def test_the_dashboard_extra_covers_oidc_and_web_push(self):
         extras = " ".join(PYPROJECT["project"]["optional-dependencies"]["web"]).lower()
         self.assertIn("pyjwt", extras)
         self.assertIn("requests", extras)
+        self.assertIn("pywebpush", extras)
 
     def test_the_python_floor_matches_what_the_code_needs(self):
         """`tomllib` is 3.11; claiming less would install and then fail on
@@ -98,7 +99,8 @@ class ExampleFileTests(unittest.TestCase):
     IDENTIFYING = re.compile(r"pierce|levangie|\b172\.\d+\.\d+\.\d+\b")
     # This file names them in order to look for them.
     # The Android package namespace is dev.levangie.lmloop and exempt from this identity check.
-    EXEMPT = {"test_packaging.py"}
+    # LICENSE is the one intentional identity: its legal copyright notice.
+    EXEMPT = {"test_packaging.py", "LICENSE"}
 
     def test_nothing_in_the_repository_carries_a_real_identity(self):
         """The example files were guarded and nothing else was, which is the

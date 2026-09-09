@@ -194,27 +194,36 @@ def route_id(project: Path, run_dir: Path) -> str:
 
 import os
 
-ARCHIVE_ROOT = Path(
-    os.environ.get("LMLOOP_WEB_ARCHIVE", str(Path.home() / "lmloop-archive" / "runs"))
-).expanduser()
+# Tests and callers may override this; the deployment setting itself is read at
+# call time because web.server imports this module before it loads web.env.
+ARCHIVE_ROOT: Path | None = None
+
+
+def archive_root() -> Path:
+    if ARCHIVE_ROOT is not None:
+        return ARCHIVE_ROOT
+    configured = os.environ.get(
+        "LMLOOP_WEB_ARCHIVE", str(Path.home() / "lmloop-archive" / "runs")
+    )
+    return Path(os.path.expandvars(configured)).expanduser()
 
 
 def archived_dirs(project_id: str) -> list[Path]:
     """Archived run directories for one project, newest run id first."""
     try:
-        found = [path for path in (ARCHIVE_ROOT / project_id).iterdir() if path.is_dir()]
+        found = [path for path in (archive_root() / project_id).iterdir() if path.is_dir()]
     except OSError:
         return []
     return sorted(found, key=lambda path: path.name, reverse=True)
 
 
 def archive_target(project_id: str, run_id: str) -> Path:
-    return ARCHIVE_ROOT / project_id / run_id
+    return archive_root() / project_id / run_id
 
 
 def is_archived(run_dir: Path) -> bool:
     try:
-        return ARCHIVE_ROOT in run_dir.parents
+        return archive_root() in run_dir.parents
     except (OSError, ValueError):
         return False
 

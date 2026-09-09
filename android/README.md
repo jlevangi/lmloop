@@ -37,6 +37,10 @@ it's configured.
 
 ## Building locally
 
+Requires **JDK 17** and **Android SDK 36** (API level 36 / Baklava). The
+`android/gradle/libs.versions.toml` pins `compileSdk`, `minSdk`, and
+`targetSdk` — nothing in the project names a different level.
+
 ```sh
 cd android
 ./gradlew testDebugUnitTest lintDebug assembleDebug
@@ -77,8 +81,8 @@ Actions):
 | `ANDROID_KEY_ALIAS` | `lmloop-android` (or whatever alias you used) |
 | `ANDROID_KEY_PASSWORD` | the key password you chose above |
 
-`android-ci.yml` runs on every PR/push touching `android/**` and needs no
-secrets. `android-release.yml` triggers on tags matching `android-v*`
+`android-ci.yml` runs on PRs and pushes to `main` that touch `android/**`
+and needs no secrets. `android-release.yml` triggers on tags matching `android-v*`
 (strict `android-vMAJOR.MINOR.PATCH`) and publishes a signed, verified APK
 plus checksum as a GitHub Release:
 

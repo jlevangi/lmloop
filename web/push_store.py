@@ -27,7 +27,7 @@ _LOCK = threading.Lock()
 def default_path() -> Path:
     override = os.environ.get("LMLOOP_WEB_PUSH_STORE", "")
     if override:
-        return Path(override).expanduser()
+        return Path(os.path.expandvars(override)).expanduser()
     return Path.home() / ".config" / "lmloop" / "push_subscriptions.json"
 
 

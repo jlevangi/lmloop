@@ -7,7 +7,7 @@ worktree, and commits what it actually did.
 lmloop run "refactor the dashboard stat grid into two rows"
 ```
 
-It drives [`pi`](https://github.com/earendil-works) and nothing else. Tools,
+It drives [`pi`](https://github.com/badlogic/pi-mono) and nothing else. Tools,
 skills, models and prompts belong to the agent; the loop's only jobs are
 isolation, iteration, and never throwing work away.
 
@@ -57,20 +57,25 @@ and the change guard read.
 
 ## Install
 
-```bash
-pipx install lmloop            # or: pip install --user lmloop
-pipx install 'lmloop[web]'     # if you want the dashboard on a network
+lmloop is not published on PyPI. Install the dashboard-capable command directly
+from GitHub:
 
+```bash
+pipx install 'lmloop[web] @ git+https://github.com/jlevangi/lmloop.git'
 lmloop init                    # writes ~/.config/lmloop/config.toml
 lmloop doctor                  # says what is still missing
 ```
 
-Or run it out of a clone, which stays supported — the modules are flat at the
-repo root and nothing needs building:
+Or clone it for development. Running directly keeps the dependency-free core;
+an editable `.[web]` install adds OIDC and optional Web Push support:
 
 ```bash
-git clone <this repo> ~/git/lmloop
-python3 ~/git/lmloop/lmloop.py doctor
+git clone https://github.com/jlevangi/lmloop.git ~/git/lmloop
+cd ~/git/lmloop
+python3 lmloop.py doctor
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[web]'
 ```
 
 Optional files, all of which fall back to a working default:
@@ -83,15 +88,18 @@ cp web/deploy/web.env.example ~/.config/lmloop/web.env      # only for the dashb
 Nothing in the repo hardcodes an address for your machine: the defaults are
 loopback.
 
-Python 3.11+ (for `tomllib`), stdlib only, no build step. The one optional
-dependency is PyJWT and requests, and only for the dashboard on a network —
-without them OIDC is unavailable and the server refuses to bind anything but
+Python 3.11+ (for `tomllib`), stdlib only for the core, no build step. The
+`web` extra adds PyJWT and requests for OIDC plus pywebpush for optional Web
+Push. Without an authentication mode the server refuses to bind anything but
 loopback, which is the safe failure rather than an error.
 
 ### What else you need
 
-- **[`pi`](https://github.com/earendil-works) on `PATH`.** The loop drives it and
-  nothing else. Everything about tools, skills and prompts is pi's business.
+- **[`pi`](https://github.com/badlogic/pi-mono) on `PATH`.** The loop drives the
+  pi coding agent from that repository, not the unrelated `earendil-works`
+  organization page. Install its current package with:
+  `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`. Everything
+  about tools, skills and prompts is pi's business.
 - **Somewhere to get a model.** Any provider pi can reach works, but the loop is
   built for a local one — `lmloop models` lists what pi can see. If you serve
   local models with [llama-swap](https://github.com/mostlygeek/llama-swap), point
@@ -200,18 +208,13 @@ The last of those is the one that predicts trouble: past about three quarters of
 the window, the next tool result is what triggers a compaction, and a compaction
 is where a slow run starts thrashing.
 
-Without OIDC configured the server binds loopback only, and says so rather than
-quietly listening on every interface. A dashboard with a launch button does not
-belong on a network unauthenticated. To expose it, set the `LMLOOP_WEB_OIDC_*`
-variables in `~/.config/lmloop/web.env` (see `web/deploy/web.env.example`) and
-install its only two dependencies for the interpreter that runs it:
-
-```bash
-/usr/bin/python3 -m pip install "PyJWT[crypto]>=2.7,<3" "requests>=2.31,<3"
-```
-
-lmloop itself stays stdlib-only: those are imported in `web/auth.py` and nowhere
-else, and a missing one disables authentication rather than breaking the loop.
+Without authentication configured the server binds loopback only. A dashboard
+with a launch button does not belong on a network unauthenticated. For a remote
+deployment, configure proxy or OIDC authentication, bind behind a TLS reverse
+proxy, and use the reverse proxy's `https://` URL. lmloop's internal listener is
+always plain HTTP; authentication does not add TLS. Install `.[web]` for PyJWT
+and requests (OIDC) plus pywebpush (optional Web Push). The core remains
+stdlib-only.
 
 `web/deploy/lmloop-web.service` runs it under systemd.
 

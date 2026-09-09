@@ -1,6 +1,6 @@
 # lmloop dashboard, as a systemd *user* unit:
 #
-#   pipx install 'lmloop[web]'          # or: pip install --user 'lmloop[web]'
+#   pipx install 'lmloop[web] @ git+https://github.com/jlevangi/lmloop.git'
 #   mkdir -p ~/.config/systemd/user
 #   cp lmloop-web.service ~/.config/systemd/user/
 #   systemctl --user enable --now lmloop-web

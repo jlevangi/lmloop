@@ -74,7 +74,7 @@ def _flag(name: str, default: bool) -> bool:
 
 def configure() -> dict:
     roots = [
-        Path(item).expanduser()
+        Path(os.path.expandvars(item)).expanduser()
         for item in os.environ.get("LMLOOP_WEB_ROOTS", str(Path.home() / "git")).split(":")
         if item.strip()
     ]
@@ -535,8 +535,7 @@ def serve(config: dict | None = None) -> int:
     Handler.device_tokens = build_device_tokens()
     Handler.push = build_push()
     httpd = ThreadingHTTPServer((config["host"], config["port"]), Handler)
-    scheme = "https" if auth.trusted else "http"
-    print(f"lmloop web on {scheme}://{config['host']}:{config['port']}")
+    print(f"lmloop web on http://{config['host']}:{config['port']}")
     print(f"  roots     {', '.join(str(root) for root in config['roots'])}")
     print(f"  auth      {auth.mode}"
           + ("" if auth.trusted else " (loopback only)"))

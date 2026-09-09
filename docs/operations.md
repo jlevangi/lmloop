@@ -225,6 +225,11 @@ Nothing in `oidc` mode knows a provider by name — discovery is
 The two secrets accept a reference rather than a value (`env:`, `file:`,
 `!command`), so neither has to sit in the file.
 
+**TLS is the operator's job.** lmloop's listener is always plain HTTP; every
+non-loopback deployment must sit behind a TLS-terminating reverse proxy and use
+the proxy's `https://` URL for `LMLOOP_WEB_PUBLIC_URL` and the Android
+client's server setting. Authentication does not add TLS.
+
 ## What the agent is allowed to do
 
 An agent runs inside whatever its own configuration allows, and lmloop can see

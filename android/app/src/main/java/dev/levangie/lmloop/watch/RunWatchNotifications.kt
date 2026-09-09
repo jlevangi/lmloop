@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -20,14 +21,9 @@ import dev.levangie.lmloop.notify.NotificationText
  * One notification, reused across every poll -- `setOnlyAlertOnce(true)` is
  * the whole trick: without it, `notify()`-ing the same id again re-alerts as
  * if it were new, and a run polled every few seconds would buzz the phone
- * every few seconds. `setOngoing(true)` is what makes this Android's answer
- * to a "Live Activity": a presence in the status bar for as long as the run
- * is being watched, not just a one-shot alert.
- *
- * A future Android Live Updates API (promoted, progress-centric
- * notifications, Android 16+) could wrap this same builder later without
- * touching `RunWatchService`'s polling loop -- not built now, no hard
- * dependency on it existing.
+ * every few seconds. `setOngoing(true)` keeps it present for as long as the
+ * run is watched. Android 16's promoted ongoing request and ProgressStyle let
+ * System UI render it as a Live Update on the status bar and lock screen.
  */
 class RunWatchNotifications(private val context: Context) {
     init {
@@ -39,23 +35,9 @@ class RunWatchNotifications(private val context: Context) {
         val showIterationOnAod = configStore.isShowIterationOnAod()
         val promoteLiveActivity = configStore.isPromoteLiveActivity()
 
-        val baseTitle = run?.title?.takeIf { it.isNotBlank() } ?: "$project · $runId"
-        val iterPart = if ((run?.maxIterations ?: 0) > 0) {
-            "iter ${run?.iteration ?: 0}/${run?.maxIterations}"
-        } else if (run?.iteration != null && run.iteration > 0) {
-            "iter ${run.iteration}"
-        } else null
-
-        // If user enabled iteration on AOD, put it in title and omit from subText to avoid duplicate.
-        // Otherwise keep title clean and let subText display it.
-        val title = if (showIterationOnAod && iterPart != null) {
-            "[$iterPart] $baseTitle"
-        } else {
-            baseTitle
-        }
-
+        val title = run?.title?.takeIf { it.isNotBlank() } ?: "$project · $runId"
         val text = run?.let(RunWatchFormatting::describe) ?: "Connecting…"
-        val subText = run?.let { RunWatchFormatting.subText(it, includeIteration = !showIterationOnAod) }
+        val subText = run?.let(RunWatchFormatting::subText)
         val expandedText = run?.let(RunWatchFormatting::expandedBody)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -68,7 +50,7 @@ class RunWatchNotifications(private val context: Context) {
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setColor(0xFFF0DFA8.toInt())
-            .setColorized(true)
+            .setRequestPromotedOngoing(promoteLiveActivity)
             .setContentIntent(openIntent(context, project, runId))
             .addAction(0, "Stop watching", stopIntent(context))
 
@@ -76,7 +58,18 @@ class RunWatchNotifications(private val context: Context) {
             builder.setSubText(subText)
         }
 
-        if (expandedText != null) {
+        val maxIterations = run?.maxIterations ?: 0
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            val progressStyle = NotificationCompat.ProgressStyle()
+            if (maxIterations > 0) {
+                progressStyle
+                    .addProgressSegment(NotificationCompat.ProgressStyle.Segment(maxIterations))
+                    .setProgress((run?.iteration ?: 0).coerceIn(0, maxIterations))
+            } else {
+                progressStyle.setProgressIndeterminate(true)
+            }
+            builder.setStyle(progressStyle)
+        } else if (expandedText != null) {
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(expandedText))
         }
 
@@ -87,43 +80,34 @@ class RunWatchNotifications(private val context: Context) {
             builder.setUsesChronometer(true)
         }
 
-        val maxIterations = run?.maxIterations ?: 0
-        when {
-            run == null -> Unit
-            maxIterations > 0 -> builder.setProgress(maxIterations, (run.iteration ?: 0).coerceIn(0, maxIterations), false)
-            else -> builder.setProgress(0, 0, true)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+            when {
+                run == null -> Unit
+                maxIterations > 0 -> builder.setProgress(maxIterations, (run.iteration ?: 0).coerceIn(0, maxIterations), false)
+                else -> builder.setProgress(0, 0, true)
+            }
         }
 
         val shortChipText = when {
-            run == null -> "Waiting…"
-            (run.iteration ?: 0) > 0 -> "${run.iteration}/${run.maxIterations ?: "?"}"
-            else -> run.state
+            run == null -> "Waiting"
+            showIterationOnAod && (run.iteration ?: 0) > 0 -> "${run.iteration}/${run.maxIterations ?: "?"}"
+            else -> run.state.take(7)
         }
+        builder.setShortCriticalText(shortChipText)
 
-        // Apply short critical text on builder
-        try {
-            val setShortMethod = builder.javaClass.getMethod("setShortCriticalText", String::class.java)
-            setShortMethod.invoke(builder, shortChipText)
-        } catch (_: Throwable) {}
+        // AOD and lock-screen surfaces decide their own compact layout, but
+        // this public version guarantees the run and iteration remain visible.
+        builder.setPublicVersion(
+            NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_moon)
+                .setContentTitle(title)
+                .setContentText(listOfNotNull(subText, text).joinToString(" · "))
+                .setOngoing(true)
+                .setColor(0xFFF0DFA8.toInt())
+                .build(),
+        )
 
-        val notification = builder.build()
-
-        if (promoteLiveActivity) {
-            notification.flags = notification.flags or 0x00040000 // Notification.FLAG_PROMOTED_ONGOING
-        }
-        notification.extras.putCharSequence("android.shortCriticalText", shortChipText)
-
-        // Set public notification explicitly for Lock Screen & AOD
-        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_moon)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setOngoing(true)
-            .setColor(0xFFF0DFA8.toInt())
-            .build()
-        notification.publicVersion = publicNotification
-
-        return notification
+        return builder.build()
     }
 
     /** Replaces the ongoing notification in place with a dismissible one --

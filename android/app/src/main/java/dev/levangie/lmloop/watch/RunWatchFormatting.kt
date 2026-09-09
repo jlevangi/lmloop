@@ -3,13 +3,11 @@ package dev.levangie.lmloop.watch
 import dev.levangie.lmloop.net.RunSummary
 
 object RunWatchFormatting {
-    fun subText(run: RunSummary, includeIteration: Boolean = true): String? {
-        val iterPart = if (includeIteration) {
-            if ((run.maxIterations ?: 0) > 0) {
-                "iter ${run.iteration ?: 0}/${run.maxIterations}"
-            } else if (run.iteration != null && run.iteration > 0) {
-                "iter ${run.iteration}"
-            } else null
+    fun subText(run: RunSummary): String? {
+        val iterPart = if ((run.maxIterations ?: 0) > 0) {
+            "iter ${run.iteration ?: 0}/${run.maxIterations}"
+        } else if (run.iteration != null && run.iteration > 0) {
+            "iter ${run.iteration}"
         } else null
 
         val agentOrModel = run.agent.ifBlank {

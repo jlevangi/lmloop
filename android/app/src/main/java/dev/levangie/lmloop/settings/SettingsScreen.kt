@@ -199,7 +199,7 @@ fun SettingsScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Show iteration on Always-on Display", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "Keep iteration count in the primary title and public lock screen card.",
+                        "Show iteration in the Live Update chip and public lock screen card.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }

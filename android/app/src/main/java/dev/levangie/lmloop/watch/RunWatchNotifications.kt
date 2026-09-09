@@ -39,16 +39,15 @@ class RunWatchNotifications(private val context: Context) {
         val showIterationOnAod = configStore.isShowIterationOnAod()
         val promoteLiveActivity = configStore.isPromoteLiveActivity()
 
+        val baseTitle = run?.title?.takeIf { it.isNotBlank() } ?: "$project · $runId"
         val iterPart = if ((run?.maxIterations ?: 0) > 0) {
             "iter ${run?.iteration ?: 0}/${run?.maxIterations}"
         } else if (run?.iteration != null && run.iteration > 0) {
             "iter ${run.iteration}"
         } else null
 
-        // On Always-On Display and lock screen cards, Android prominently shows the title
-        // while body text and progress bars may be hidden or dimmed. Putting the iteration
-        // in the title guarantees instant visibility on AOD.
-        val baseTitle = run?.title?.takeIf { it.isNotBlank() } ?: "$project · $runId"
+        // If user enabled iteration on AOD, put it in title and omit from subText to avoid duplicate.
+        // Otherwise keep title clean and let subText display it.
         val title = if (showIterationOnAod && iterPart != null) {
             "[$iterPart] $baseTitle"
         } else {
@@ -56,7 +55,7 @@ class RunWatchNotifications(private val context: Context) {
         }
 
         val text = run?.let(RunWatchFormatting::describe) ?: "Connecting…"
-        val subText = run?.let(RunWatchFormatting::subText)
+        val subText = run?.let { RunWatchFormatting.subText(it, includeIteration = !showIterationOnAod) }
         val expandedText = run?.let(RunWatchFormatting::expandedBody)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)

@@ -102,6 +102,16 @@ class ServerConfigStore(
 
     fun loadServerUrl(): String? = prefs.getString("server_url", null)
 
+    fun isPromoteLiveActivity(): Boolean = prefs.getBoolean("promote_live_activity", true)
+    fun setPromoteLiveActivity(enabled: Boolean) {
+        prefs.edit().putBoolean("promote_live_activity", enabled).apply()
+    }
+
+    fun isShowIterationOnAod(): Boolean = prefs.getBoolean("show_iteration_on_aod", true)
+    fun setShowIterationOnAod(enabled: Boolean) {
+        prefs.edit().putBoolean("show_iteration_on_aod", enabled).apply()
+    }
+
     /** Enough to show the WebView -- the page handles its own login from
      * here. Does not require a device token; see the class doc comment. */
     fun isConfigured(): Boolean = prefs.contains("server_url")

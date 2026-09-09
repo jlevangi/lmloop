@@ -35,7 +35,26 @@ class RunWatchNotifications(private val context: Context) {
     }
 
     fun building(project: String, runId: String, run: RunSummary?): Notification {
-        val title = run?.title?.takeIf { it.isNotBlank() } ?: "$project · $runId"
+        val configStore = dev.levangie.lmloop.config.ServerConfigStore(context)
+        val showIterationOnAod = configStore.isShowIterationOnAod()
+        val promoteLiveActivity = configStore.isPromoteLiveActivity()
+
+        val iterPart = if ((run?.maxIterations ?: 0) > 0) {
+            "iter ${run?.iteration ?: 0}/${run?.maxIterations}"
+        } else if (run?.iteration != null && run.iteration > 0) {
+            "iter ${run.iteration}"
+        } else null
+
+        // On Always-On Display and lock screen cards, Android prominently shows the title
+        // while body text and progress bars may be hidden or dimmed. Putting the iteration
+        // in the title guarantees instant visibility on AOD.
+        val baseTitle = run?.title?.takeIf { it.isNotBlank() } ?: "$project · $runId"
+        val title = if (showIterationOnAod && iterPart != null) {
+            "[$iterPart] $baseTitle"
+        } else {
+            baseTitle
+        }
+
         val text = run?.let(RunWatchFormatting::describe) ?: "Connecting…"
         val subText = run?.let(RunWatchFormatting::subText)
         val expandedText = run?.let(RunWatchFormatting::expandedBody)
@@ -78,18 +97,32 @@ class RunWatchNotifications(private val context: Context) {
 
         val shortChipText = when {
             run == null -> "Waiting…"
-            (run.iteration ?: 0) > 0 -> "iter ${run.iteration}/${run.maxIterations ?: "?"}"
+            (run.iteration ?: 0) > 0 -> "${run.iteration}/${run.maxIterations ?: "?"}"
             else -> run.state
         }
 
+        // Apply short critical text on builder
         try {
             val setShortMethod = builder.javaClass.getMethod("setShortCriticalText", String::class.java)
             setShortMethod.invoke(builder, shortChipText)
         } catch (_: Throwable) {}
 
         val notification = builder.build()
-        notification.flags = notification.flags or 0x00040000 // Notification.FLAG_PROMOTED_ONGOING
+
+        if (promoteLiveActivity) {
+            notification.flags = notification.flags or 0x00040000 // Notification.FLAG_PROMOTED_ONGOING
+        }
         notification.extras.putCharSequence("android.shortCriticalText", shortChipText)
+
+        // Set public notification explicitly for Lock Screen & AOD
+        val publicNotification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_moon)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOngoing(true)
+            .setColor(0xFFF0DFA8.toInt())
+            .build()
+        notification.publicVersion = publicNotification
 
         return notification
     }

@@ -167,6 +167,53 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
 
+            var promoteLiveActivity by remember { mutableStateOf(configStore.isPromoteLiveActivity()) }
+            var showIterationOnAod by remember { mutableStateOf(configStore.isShowIterationOnAod()) }
+
+            Text("Live status & Display", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Live Activity status bar chip", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Promote active run to a compact chip in the status bar on Pixel / Android 16+.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Switch(
+                    checked = promoteLiveActivity,
+                    onCheckedChange = {
+                        promoteLiveActivity = it
+                        configStore.setPromoteLiveActivity(it)
+                    },
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Show iteration on Always-on Display", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Keep iteration count in the primary title and public lock screen card.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Switch(
+                    checked = showIterationOnAod,
+                    onCheckedChange = {
+                        showIterationOnAod = it
+                        configStore.setShowIterationOnAod(it)
+                    },
+                )
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))
+
             Text("Device token", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 4.dp))
             Text(
                 if (hasToken) {

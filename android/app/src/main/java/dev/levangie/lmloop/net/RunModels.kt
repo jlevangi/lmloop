@@ -28,6 +28,8 @@ data class RunSummary(
     val stopping: Boolean = false,
     val model: String = "",
     val agent: String = "",
+    @SerialName("plan_done") val planDone: Int = 0,
+    @SerialName("plan_total") val planTotal: Int = 0,
     @SerialName("eta_seconds") val etaSeconds: Int? = null,
     val defects: List<String> = emptyList(),
     @SerialName("tool_calls") val toolCalls: Int? = null,

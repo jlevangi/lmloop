@@ -33,6 +33,8 @@ class RunSummaryParsingTest {
           "paused": false,
           "stopping": false,
           "commits": 2,
+          "plan_done": 3,
+          "plan_total": 7,
           "eta_seconds": 240,
           "defects": ["checks: syntax error"],
           "tool_calls": 14,
@@ -54,6 +56,8 @@ class RunSummaryParsingTest {
         assertEquals(20, run.maxIterations)
         assertEquals(754, run.runElapsedSeconds)
         assertEquals(2, run.commits)
+        assertEquals(3, run.planDone)
+        assertEquals(7, run.planTotal)
         assertEquals(false, run.paused)
         assertEquals("local/model", run.model)
         assertEquals("pi", run.agent)

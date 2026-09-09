@@ -8,30 +8,29 @@ import org.junit.Test
 class RunWatchFormattingTest {
 
     @Test
-    fun subTextFormatsIterationAndModelCorrectly() {
+    fun subTextFormatsPlanStepAndModelCorrectly() {
         val runWithModel = RunSummary(
-            iteration = 3,
-            maxIterations = 10,
+            planDone = 3,
+            planTotal = 7,
             model = "llama-swap:meta-llama/Llama-3-8B-Instruct",
             agent = "pi",
         )
         val subText = RunWatchFormatting.subText(runWithModel)
-        assertEquals("iter 3/10 · pi", subText)
+        assertEquals("step 3/7 · pi", subText)
 
         val runWithoutAgent = RunSummary(
-            iteration = 2,
-            maxIterations = 5,
+            planDone = 1,
+            planTotal = 5,
             model = "provider/custom-model",
             agent = "",
         )
-        assertEquals("iter 2/5 · custom-model", RunWatchFormatting.subText(runWithoutAgent))
+        assertEquals("step 1/5 · custom-model", RunWatchFormatting.subText(runWithoutAgent))
 
-        val runWithoutMaxIterations = RunSummary(
-            iteration = 4,
-            maxIterations = null,
+        val runWithStepOnly = RunSummary(
+            currentStep = "fixing tests",
             agent = "pi",
         )
-        assertEquals("iter 4 · pi", RunWatchFormatting.subText(runWithoutMaxIterations))
+        assertEquals("step in progress · pi", RunWatchFormatting.subText(runWithStepOnly))
 
         val emptyRun = RunSummary()
         assertNull(RunWatchFormatting.subText(emptyRun))

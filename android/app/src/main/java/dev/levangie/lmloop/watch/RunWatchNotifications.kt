@@ -59,9 +59,15 @@ class RunWatchNotifications(private val context: Context) {
         }
 
         val maxIterations = run?.maxIterations ?: 0
+        val planTotal = run?.planTotal ?: 0
+        val planDone = run?.planDone ?: 0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             val progressStyle = NotificationCompat.ProgressStyle()
-            if (maxIterations > 0) {
+            if (planTotal > 0) {
+                progressStyle
+                    .addProgressSegment(NotificationCompat.ProgressStyle.Segment(planTotal))
+                    .setProgress(planDone.coerceIn(0, planTotal))
+            } else if (maxIterations > 0) {
                 progressStyle
                     .addProgressSegment(NotificationCompat.ProgressStyle.Segment(maxIterations))
                     .setProgress((run?.iteration ?: 0).coerceIn(0, maxIterations))
@@ -83,6 +89,7 @@ class RunWatchNotifications(private val context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
             when {
                 run == null -> Unit
+                planTotal > 0 -> builder.setProgress(planTotal, planDone.coerceIn(0, planTotal), false)
                 maxIterations > 0 -> builder.setProgress(maxIterations, (run.iteration ?: 0).coerceIn(0, maxIterations), false)
                 else -> builder.setProgress(0, 0, true)
             }
@@ -90,13 +97,14 @@ class RunWatchNotifications(private val context: Context) {
 
         val shortChipText = when {
             run == null -> "Waiting"
+            showIterationOnAod && planTotal > 0 -> "${planDone}/${planTotal}"
             showIterationOnAod && (run.iteration ?: 0) > 0 -> "${run.iteration}/${run.maxIterations ?: "?"}"
             else -> run.state.take(7)
         }
         builder.setShortCriticalText(shortChipText)
 
         // AOD and lock-screen surfaces decide their own compact layout, but
-        // this public version guarantees the run and iteration remain visible.
+        // this public version guarantees the run and plan step remain visible.
         builder.setPublicVersion(
             NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_moon)

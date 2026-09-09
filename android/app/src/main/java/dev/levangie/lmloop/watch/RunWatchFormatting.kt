@@ -4,17 +4,17 @@ import dev.levangie.lmloop.net.RunSummary
 
 object RunWatchFormatting {
     fun subText(run: RunSummary): String? {
-        val iterPart = if ((run.maxIterations ?: 0) > 0) {
-            "iter ${run.iteration ?: 0}/${run.maxIterations}"
-        } else if (run.iteration != null && run.iteration > 0) {
-            "iter ${run.iteration}"
+        val stepPart = if (run.planTotal > 0) {
+            "step ${run.planDone}/${run.planTotal}"
+        } else if (run.currentStep.isNotBlank()) {
+            "step in progress"
         } else null
 
         val agentOrModel = run.agent.ifBlank {
             run.model.substringAfterLast('/').substringAfterLast(':')
         }.takeIf { it.isNotBlank() }
 
-        return listOfNotNull(iterPart, agentOrModel).joinToString(" · ").ifBlank { null }
+        return listOfNotNull(stepPart, agentOrModel).joinToString(" · ").ifBlank { null }
     }
 
     fun describe(run: RunSummary): String {

@@ -46,8 +46,11 @@ class RunWatchNotifications(private val context: Context) {
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setColor(0xFFF0DFA8.toInt())
+            .setColorized(true)
             .setContentIntent(openIntent(context, project, runId))
             .addAction(0, "Stop watching", stopIntent(context))
 
@@ -72,7 +75,16 @@ class RunWatchNotifications(private val context: Context) {
             maxIterations > 0 -> builder.setProgress(maxIterations, (run.iteration ?: 0).coerceIn(0, maxIterations), false)
             else -> builder.setProgress(0, 0, true)
         }
-        return builder.build()
+
+        val notification = builder.build()
+        // On Android 16+ / Pixel Live Updates (SystemUI chip & status bar Live Activity),
+        // invoke setRequestPromote(true) via reflection so older compile targets build cleanly.
+        try {
+            val method = notification.javaClass.getMethod("setRequestPromote", Boolean::class.javaPrimitiveType)
+            method.invoke(notification, true)
+        } catch (_: Throwable) {}
+
+        return notification
     }
 
     /** Replaces the ongoing notification in place with a dismissible one --
@@ -104,14 +116,20 @@ class RunWatchNotifications(private val context: Context) {
 
     companion object {
         const val NOTIFICATION_ID = 1001
-        const val CHANNEL_ID = "run-watch"
+        const val CHANNEL_ID = "run-watch-live"
 
         fun ensureChannel(context: Context) {
             val manager = context.getSystemService(NotificationManager::class.java)
             if (manager.getNotificationChannel(CHANNEL_ID) != null) return
-            manager.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Run progress", NotificationManager.IMPORTANCE_LOW),
-            )
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Run progress (Live Activity)",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Shows live running progress for watched lmloop tasks"
+                setShowBadge(true)
+            }
+            manager.createNotificationChannel(channel)
         }
 
         fun notify(context: Context, notification: Notification) {

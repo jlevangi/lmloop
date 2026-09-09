@@ -16,7 +16,7 @@ from web import runs
 
 class PwaResumeRecoveryTests(unittest.TestCase):
     def test_gets_retry_and_resume_events_poll_immediately(self):
-        app = (Path(__file__).parent / "web" / "static" / "app.js").read_text()
+        app = (Path(__file__).parent.parent / "web" / "static" / "app.js").read_text()
         self.assertIn('method === "GET" ? [0, 250, 750] : [0]', app)
         self.assertIn('window.addEventListener("pageshow"', app)
         self.assertIn('window.addEventListener("online", resumePolling)', app)
@@ -36,7 +36,7 @@ class PwaResumeRecoveryTests(unittest.TestCase):
     SHELL_DIGEST = "6db3579b1b5926ef615abc8d9769dedbbaae74cbf8b366506979f67da834ffff"
 
     def test_the_shell_version_covers_the_shell_as_it_stands(self):
-        static = Path(__file__).parent / "web" / "static"
+        static = Path(__file__).parent.parent / "web" / "static"
         worker = (static / "sw.js").read_text()
         self.assertIn(f'const SHELL = "{self.SHELL_VERSION}"', worker)
         digest = hashlib.sha256()
@@ -50,7 +50,7 @@ class PwaResumeRecoveryTests(unittest.TestCase):
 
     def test_every_asset_the_worker_precaches_is_one_this_test_covers(self):
         """A guard on the guard: a fourth shell file would be uncovered."""
-        worker = (Path(__file__).parent / "web" / "static" / "sw.js").read_text()
+        worker = (Path(__file__).parent.parent / "web" / "static" / "sw.js").read_text()
         listed = set(re.findall(r'"(/[^"]*)"', worker.split("const ASSETS = [")[1].split("]")[0]))
         self.assertEqual({"/", "/static/app.js", "/static/style.css",
                           "/static/icon-192.png", "/manifest.json",

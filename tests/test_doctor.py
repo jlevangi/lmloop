@@ -252,7 +252,7 @@ class ExtensionsCheckTests(unittest.TestCase):
         directory = Path(tempfile.mkdtemp())
         (directory / "extensions").mkdir()
         (directory / "settings.json").write_text(
-            (Path(__file__).parent / "testdata" / "pi-settings.json").read_text())
+            (Path(__file__).parent.parent / "testdata" / "pi-settings.json").read_text())
         return mock.patch.object(type(harness.get("pi")), "config_dir", directory)
 
     def test_installed_extensions_are_named(self):

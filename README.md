@@ -7,9 +7,11 @@ worktree, and commits what it actually did.
 lmloop run "refactor the dashboard stat grid into two rows"
 ```
 
-It drives [`pi`](https://github.com/badlogic/pi-mono) and nothing else. Tools,
-skills, models and prompts belong to the agent; the loop's only jobs are
-isolation, iteration, and never throwing work away.
+It drives [`pi`](https://github.com/badlogic/pi-mono),
+[`omp`](https://github.com/can1357/oh-my-pi) (a pi fork with its own browser and
+tools), and [`opencode`](https://github.com/opencode-ai/opencode). Tools, skills,
+models and prompts belong to the agent; the loop's only jobs are isolation,
+iteration, and never throwing work away.
 
 ## Documentation
 

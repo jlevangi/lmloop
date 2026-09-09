@@ -23,7 +23,7 @@ import harness
 import harness_omp
 import harness_pi
 
-TESTDATA = Path(__file__).parent / "testdata"
+TESTDATA = Path(__file__).parent.parent / "testdata"
 
 
 def load(name):

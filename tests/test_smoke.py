@@ -18,7 +18,7 @@ from pathlib import Path
 
 import harness
 
-FAKE = Path(__file__).parent / "tools" / "fake-agent"
+FAKE = Path(__file__).parent.parent / "tools" / "fake-agent"
 
 
 def run_fake(scenario, cwd):

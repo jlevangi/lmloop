@@ -2596,7 +2596,7 @@ class RetiredSettingTests(unittest.TestCase):
         """
         import ast
 
-        source = Path(__file__).parent.joinpath("gitops.py").read_text()
+        source = Path(__file__).parent.parent.joinpath("gitops.py").read_text()
         tree = ast.parse(source)
         # The module docstring says "grep this file for reset and you should
         # find only this docstring", so it is the one place the words are
@@ -2637,7 +2637,7 @@ class DestructiveGitTests(unittest.TestCase):
     ALLOWED = {"web/workspace.py"}
 
     def sources(self):
-        root = Path(__file__).parent
+        root = Path(__file__).parent.parent
         for path in sorted(root.rglob("*.py")):
             relative = path.relative_to(root)
             parts = set(relative.parts)
@@ -2683,7 +2683,7 @@ class DestructiveGitTests(unittest.TestCase):
     def test_gitops_runs_no_git_subcommand_that_can_lose_work(self):
         """Stricter than the rule above: this file may not hold one at all,
         not even the ones the dashboard is allowed."""
-        source = Path(__file__).parent.joinpath("gitops.py").read_text()
+        source = Path(__file__).parent.parent.joinpath("gitops.py").read_text()
         for argv in self.argv_lists(source):
             with self.subTest(argv=argv[:3]):
                 self.assertFalse(set(argv) & self.DESTRUCTIVE, argv)
@@ -2691,7 +2691,7 @@ class DestructiveGitTests(unittest.TestCase):
     def test_the_allowed_file_really_does_hold_them(self):
         """So the rule cannot be satisfied by the operations quietly moving
         somewhere the check does not look, or disappearing."""
-        source = Path(__file__).parent.joinpath("web", "workspace.py").read_text()
+        source = Path(__file__).parent.parent.joinpath("web", "workspace.py").read_text()
         subcommands = {tuple(argv[:2]) for argv in self.argv_lists(source)}
         for expected in (("git", "worktree"), ("git", "branch"),
                          ("git", "push"), ("gh", "pr")):
@@ -2702,7 +2702,7 @@ class DestructiveGitTests(unittest.TestCase):
         """Git's refusal is load-bearing: it declines while the worktree still
         holds files nobody has accounted for, which is exactly the case where
         removing it would discard an agent's work."""
-        source = Path(__file__).parent.joinpath("web", "workspace.py").read_text()
+        source = Path(__file__).parent.parent.joinpath("web", "workspace.py").read_text()
         for argv in self.argv_lists(source):
             if argv[:2] == ["git", "worktree"]:
                 self.assertNotIn("--force", argv)

@@ -11,7 +11,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())
 
 
@@ -100,7 +100,7 @@ class ExampleFileTests(unittest.TestCase):
     # This file names them in order to look for them.
     # The Android package namespace is dev.levangie.lmloop and exempt from this identity check.
     # LICENSE is the one intentional identity: its legal copyright notice.
-    EXEMPT = {"test_packaging.py", "LICENSE"}
+    EXEMPT = {"tests/test_packaging.py", "LICENSE"}
 
     def test_nothing_in_the_repository_carries_a_real_identity(self):
         """The example files were guarded and nothing else was, which is the

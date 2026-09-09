@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 APP = (ROOT / "web" / "static" / "app.js").read_text()
 CSS = (ROOT / "web" / "static" / "style.css").read_text()
 RUNNER = (ROOT / "pi_runner.py").read_text()

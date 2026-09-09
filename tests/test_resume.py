@@ -24,7 +24,7 @@ import gitops
 from loop import Run
 from rundir import RunDir
 
-FAKE = Path(__file__).parent / "tools" / "fake-agent"
+FAKE = Path(__file__).parent.parent / "tools" / "fake-agent"
 
 
 class AttachTests(unittest.TestCase):
@@ -236,7 +236,7 @@ class ResumeEndToEndTests(unittest.TestCase):
     @classmethod
     def lmloop(cls, *args, timeout=180):
         return subprocess.run(
-            [sys.executable, str(Path(__file__).parent / "lmloop.py"), *args],
+            [sys.executable, str(Path(__file__).parent.parent / "lmloop.py"), *args],
             cwd=cls.repo, capture_output=True, text=True, timeout=timeout, env=cls.env,
         )
 

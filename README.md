@@ -215,6 +215,18 @@ else, and a missing one disables authentication rather than breaking the loop.
 
 `web/deploy/lmloop-web.service` runs it under systemd.
 
+## Android app
+
+A native Android client lives in [`android/`](android/README.md). It embeds the
+dashboard PWA and adds native foreground service "Live Activity" progress
+tracking in the status bar/lock screen, plus background polling for finished runs.
+
+Install and keep it updated via [Obtainium](https://github.com/ImranR98/Obtainium):
+
+[<img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="60">](https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/jlevangi/lmloop)
+
+Set Obtainium's **release tag filter** to `^android-v` to track Android releases.
+
 ## Checks
 
 Every iteration, whatever the project configured, the files git says changed are

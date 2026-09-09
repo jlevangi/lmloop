@@ -46,7 +46,9 @@ fun WatchBarAction(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -
     if (route == null) return
 
     val context = LocalContext.current
-    var watching by remember(route) { mutableStateOf(false) }
+    var watching by remember(route) {
+        mutableStateOf(RunWatchService.isWatching(route.project, route.runId))
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->

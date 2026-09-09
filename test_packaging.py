@@ -97,6 +97,7 @@ class ExampleFileTests(unittest.TestCase):
     # somebody's network.
     IDENTIFYING = re.compile(r"pierce|levangie|\b172\.\d+\.\d+\.\d+\b")
     # This file names them in order to look for them.
+    # The Android package namespace is dev.levangie.lmloop and exempt from this identity check.
     EXEMPT = {"test_packaging.py"}
 
     def test_nothing_in_the_repository_carries_a_real_identity(self):
@@ -110,7 +111,7 @@ class ExampleFileTests(unittest.TestCase):
         self.assertGreater(len(listed), 40, "git ls-files returned almost nothing")
         offenders = {}
         for name in listed:
-            if name in self.EXEMPT:
+            if name in self.EXEMPT or name.startswith("android/"):
                 continue
             try:
                 text = (ROOT / name).read_text(errors="ignore")

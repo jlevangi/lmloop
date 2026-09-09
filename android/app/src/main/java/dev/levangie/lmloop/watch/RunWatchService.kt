@@ -105,6 +105,7 @@ class RunWatchService : Service() {
     }
 
     private fun stopWatching() {
+        currentlyWatching = null
         job?.cancel()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -115,7 +116,13 @@ class RunWatchService : Service() {
         const val EXTRA_RUN_ID = "run_id"
         const val ACTION_STOP = "dev.levangie.lmloop.watch.STOP"
 
+        private var currentlyWatching: Pair<String, String>? = null
+
+        fun isWatching(project: String, runId: String): Boolean =
+            currentlyWatching == Pair(project, runId)
+
         fun start(context: Context, project: String, runId: String) {
+            currentlyWatching = Pair(project, runId)
             val intent = Intent(context, RunWatchService::class.java)
                 .putExtra(EXTRA_PROJECT, project)
                 .putExtra(EXTRA_RUN_ID, runId)
@@ -123,6 +130,7 @@ class RunWatchService : Service() {
         }
 
         fun stop(context: Context) {
+            currentlyWatching = null
             context.startService(Intent(context, RunWatchService::class.java).setAction(ACTION_STOP))
         }
     }

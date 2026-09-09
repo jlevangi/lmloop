@@ -33,6 +33,10 @@ class RunSummaryParsingTest {
           "paused": false,
           "stopping": false,
           "commits": 2,
+          "eta_seconds": 240,
+          "defects": ["checks: syntax error"],
+          "tool_calls": 14,
+          "writes": 3,
           "updated_at": "2026-01-01T00:00:00+00:00"
         }
     """.trimIndent()
@@ -51,6 +55,12 @@ class RunSummaryParsingTest {
         assertEquals(754, run.runElapsedSeconds)
         assertEquals(2, run.commits)
         assertEquals(false, run.paused)
+        assertEquals("local/model", run.model)
+        assertEquals("pi", run.agent)
+        assertEquals(240, run.etaSeconds)
+        assertEquals(listOf("checks: syntax error"), run.defects)
+        assertEquals(14, run.toolCalls)
+        assertEquals(3, run.writes)
     }
 
     @Test

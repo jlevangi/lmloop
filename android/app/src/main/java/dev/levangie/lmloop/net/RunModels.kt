@@ -26,6 +26,12 @@ data class RunSummary(
     val commits: Int = 0,
     val paused: Boolean = false,
     val stopping: Boolean = false,
+    val model: String = "",
+    val agent: String = "",
+    @SerialName("eta_seconds") val etaSeconds: Int? = null,
+    val defects: List<String> = emptyList(),
+    @SerialName("tool_calls") val toolCalls: Int? = null,
+    val writes: Int? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
 )
 

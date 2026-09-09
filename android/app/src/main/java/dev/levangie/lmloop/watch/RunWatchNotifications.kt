@@ -36,15 +36,35 @@ class RunWatchNotifications(private val context: Context) {
 
     fun building(project: String, runId: String, run: RunSummary?): Notification {
         val title = run?.title?.takeIf { it.isNotBlank() } ?: "$project · $runId"
-        val text = run?.let(::describe) ?: "Connecting…"
+        val text = run?.let(RunWatchFormatting::describe) ?: "Connecting…"
+        val subText = run?.let(RunWatchFormatting::subText)
+        val expandedText = run?.let(RunWatchFormatting::expandedBody)
+
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_moon)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(openIntent(context, project, runId))
             .addAction(0, "Stop watching", stopIntent(context))
+
+        if (subText != null) {
+            builder.setSubText(subText)
+        }
+
+        if (expandedText != null) {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(expandedText))
+        }
+
+        val elapsed = run?.runElapsedSeconds
+        if (elapsed != null && elapsed > 0) {
+            builder.setShowWhen(true)
+            builder.setWhen(System.currentTimeMillis() - (elapsed * 1000L))
+            builder.setUsesChronometer(true)
+        }
 
         val maxIterations = run?.maxIterations ?: 0
         when {
@@ -53,12 +73,6 @@ class RunWatchNotifications(private val context: Context) {
             else -> builder.setProgress(0, 0, true)
         }
         return builder.build()
-    }
-
-    private fun describe(run: RunSummary): String {
-        val phase = run.phase.ifBlank { run.state }
-        val step = run.currentStep.takeIf { it.isNotBlank() }
-        return listOfNotNull(phase.ifBlank { null }, step).joinToString(" · ").ifBlank { "Working…" }
     }
 
     /** Replaces the ongoing notification in place with a dismissible one --
@@ -70,6 +84,7 @@ class RunWatchNotifications(private val context: Context) {
             .setContentTitle(NotificationText.title(run))
             .setContentText(NotificationText.body(run))
             .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(openIntent(context, project, runId))
             .build()
         notify(context, notification)
@@ -81,6 +96,7 @@ class RunWatchNotifications(private val context: Context) {
             .setContentTitle("Watch lost")
             .setContentText("Could not reach the server for $project · $runId. Tap to retry.")
             .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(openIntent(context, project, runId))
             .build()
         notify(context, notification)

@@ -1,4 +1,8 @@
-# lmloop
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
+  <img alt="lmloop" src="docs/assets/logo-light.svg" width="400">
+</picture>
 
 A loop that hands one objective to a local model, works on it for hours in a git
 worktree, and commits what it actually did.

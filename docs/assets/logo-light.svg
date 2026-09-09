@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 120" width="480" height="120">
+  <defs>
+    <mask id="crescent">
+      <circle cx="52" cy="60" r="44" fill="white"/>
+      <circle cx="78" cy="44" r="44" fill="black"/>
+    </mask>
+  </defs>
+  <circle cx="52" cy="60" r="44" fill="#f0dfa8" mask="url(#crescent)"/>
+  <text x="120" y="80" font-family="system-ui, sans-serif" font-size="68" font-weight="700" fill="#1f1f1f" letter-spacing="-2">lmloop</text>
+</svg>

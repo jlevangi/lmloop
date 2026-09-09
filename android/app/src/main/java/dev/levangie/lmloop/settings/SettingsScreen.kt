@@ -172,11 +172,9 @@ fun SettingsScreen(
                 if (hasToken) {
                     "Configured. Live-progress and closed-app notifications are available."
                 } else {
-                    "Optional -- enables the live-progress notification for a " +
-                        "watched run and notifications while the app is fully " +
-                        "closed. Generate one on your server, add it to " +
-                        "LMLOOP_WEB_DEVICE_TOKENS in web.env, and restart " +
-                        "lmloop-web -- see android/README.md."
+                    "Optional -- only needed if you want background notifications " +
+                        "when the app is completely closed without an active web session. " +
+                        "Active live activities and in-app watching use your existing login session automatically."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(bottom = 8.dp),

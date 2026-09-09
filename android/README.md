@@ -17,13 +17,14 @@ The setup screen asks for only your server's URL, confirmed with an
 unauthenticated `GET /health`. That's enough to use the app: once loaded,
 the WebView logs in exactly like a browser tab would -- OIDC, a
 trusted-proxy header, or nothing, whatever your `LMLOOP_WEB_AUTH_MODE` is.
-No device token is needed for this, and the app never asks for one up front.
+No device token is needed to use the dashboard or run the Live Activity
+notification: the app reuses your active login session automatically.
 
 A device token (tap the ⚙ in the top-right corner any time) is **optional**
-and enables two extra things a browser tab can't do: the foreground "watch
-this run" live-progress notification, and notifications while the app is
-fully closed. Generate one on your server and add it to
-`LMLOOP_WEB_DEVICE_TOKENS` (see `web/deploy/web.env.example`):
+and only needed for notifications while the app is fully closed if your
+deployment does not maintain a long-lived web session. To configure one,
+generate it on your server and add it to `LMLOOP_WEB_DEVICE_TOKENS` (see
+`web/deploy/web.env.example`):
 
 ```sh
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"

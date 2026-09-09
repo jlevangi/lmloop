@@ -65,7 +65,7 @@ class RunWatchService : Service() {
         val services = lmloopServices
         val serverUrl = services.configStore.loadServerUrl()
         val token = services.configStore.loadToken()
-        if (serverUrl == null || token == null) {
+        if (serverUrl == null) {
             stopWatching()
             return
         }

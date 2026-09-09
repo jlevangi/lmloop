@@ -1,6 +1,7 @@
 package dev.levangie.lmloop
 
 import android.app.Application
+import android.webkit.CookieManager
 import dev.levangie.lmloop.config.ServerConfigStore
 import dev.levangie.lmloop.net.LmloopApiClient
 import dev.levangie.lmloop.sync.WorkScheduler
@@ -25,7 +26,15 @@ class LmloopApplication : Application() {
 
 class LmloopServices(context: Application) {
     val configStore = ServerConfigStore(context)
-    val api = LmloopApiClient()
+    val api = LmloopApiClient(
+        cookieProvider = { url ->
+            try {
+                CookieManager.getInstance().getCookie(url)
+            } catch (_: Exception) {
+                null
+            }
+        },
+    )
 }
 
 val android.content.Context.lmloopServices: LmloopServices

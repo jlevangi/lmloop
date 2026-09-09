@@ -42,7 +42,7 @@ import dev.levangie.lmloop.web.DashboardRoute
  * starting a service that would immediately fail silently.
  */
 @Composable
-fun WatchBarAction(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -> Unit) {
+fun WatchBarAction(route: DashboardRoute?) {
     if (route == null) return
 
     val context = LocalContext.current
@@ -60,7 +60,6 @@ fun WatchBarAction(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -
 
     IconButton(onClick = {
         when {
-            !hasToken -> onNeedsSetup()
             watching -> {
                 RunWatchService.stop(context)
                 watching = false
@@ -82,7 +81,7 @@ fun WatchBarAction(route: DashboardRoute?, hasToken: Boolean, onNeedsSetup: () -
         Icon(
             imageVector = Icons.Filled.Notifications,
             tint = if (watching) MaterialTheme.colorScheme.primary else LocalContentColor.current,
-            contentDescription = if (!hasToken) "Set up notifications" else if (watching) "Watching" else "Watch this run",
+            contentDescription = if (watching) "Watching" else "Watch this run",
         )
     }
 }

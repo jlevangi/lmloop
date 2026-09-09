@@ -16,7 +16,7 @@ class RunPollWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     override suspend fun doWork(): Result {
         val services = applicationContext.lmloopServices
         val serverUrl = services.configStore.loadServerUrl() ?: return Result.success()
-        val token = services.configStore.loadToken() ?: return Result.success()
+        val token = services.configStore.loadToken()
 
         val runs = when (val response = services.api.runs(serverUrl, token)) {
             is ApiResult.Success -> response.value.runs

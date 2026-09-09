@@ -31,22 +31,30 @@ private val json = Json { ignoreUnknownKeys = true }
  * tried, because there is nothing here that sends anything but GET.
  */
 class LmloopApiClient(
+    private val cookieProvider: (String) -> String? = { null },
     private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
 ) {
-    fun health(baseUrl: String): ApiResult<Unit> = request(baseUrl, "/health", token = null) {}
+    fun health(baseUrl: String): ApiResult<Unit> = request(baseUrl, "/health", token = null, sendAuth = false) {}
 
-    fun config(baseUrl: String, token: String): ApiResult<ServerInfo> =
+    fun config(baseUrl: String, token: String? = null): ApiResult<ServerInfo> =
         request(baseUrl, "/api/config", token) { json.decodeFromStream(ServerInfo.serializer(), it) }
 
-    fun runs(baseUrl: String, token: String): ApiResult<RunsResponse> =
+    fun runs(baseUrl: String, token: String? = null): ApiResult<RunsResponse> =
         request(baseUrl, "/api/runs", token) { json.decodeFromStream(RunsResponse.serializer(), it) }
 
-    fun run(baseUrl: String, token: String, project: String, runId: String): ApiResult<RunSummary> =
+    fun run(baseUrl: String, token: String? = null, project: String, runId: String): ApiResult<RunSummary> =
         request(baseUrl, "/api/runs/$project/$runId", token) { json.decodeFromStream(RunSummary.serializer(), it) }
 
-    private fun <T> request(baseUrl: String, path: String, token: String?, parse: (InputStream) -> T): ApiResult<T> {
+    private fun <T> request(
+        baseUrl: String,
+        path: String,
+        token: String?,
+        sendAuth: Boolean = true,
+        parse: (InputStream) -> T,
+    ): ApiResult<T> {
+        val fullUrl = baseUrl.trimEnd('/') + path
         val connection = try {
-            connectionFactory(URL(baseUrl.trimEnd('/') + path))
+            connectionFactory(URL(fullUrl))
         } catch (error: IOException) {
             return ApiResult.NetworkError(error.message ?: "could not open a connection")
         }
@@ -55,7 +63,16 @@ class LmloopApiClient(
             connection.readTimeout = TIMEOUT_MS
             connection.requestMethod = "GET"
             connection.instanceFollowRedirects = false
-            if (!token.isNullOrEmpty()) connection.setRequestProperty("Authorization", "Bearer $token")
+            if (sendAuth) {
+                if (!token.isNullOrEmpty()) {
+                    connection.setRequestProperty("Authorization", "Bearer $token")
+                } else {
+                    val cookies = cookieProvider(baseUrl)
+                    if (!cookies.isNullOrBlank()) {
+                        connection.setRequestProperty("Cookie", cookies)
+                    }
+                }
+            }
             val status = connection.responseCode
             if (status !in 200..299) {
                 connection.errorStream?.close()

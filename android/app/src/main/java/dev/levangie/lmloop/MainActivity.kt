@@ -213,11 +213,7 @@ class MainActivity : ComponentActivity() {
                                         Icon(Icons.Filled.Add, contentDescription = "New run")
                                     }
                                 } else {
-                                    WatchBarAction(
-                                        route = route,
-                                        hasToken = hasToken,
-                                        onNeedsSetup = { showSettings = true },
-                                    )
+                                    WatchBarAction(route = route)
                                 }
                                 IconButton(onClick = { showSettings = true }) {
                                     Icon(Icons.Filled.Settings, contentDescription = "Settings")

@@ -76,13 +76,20 @@ class RunWatchNotifications(private val context: Context) {
             else -> builder.setProgress(0, 0, true)
         }
 
-        val notification = builder.build()
-        // On Android 16+ / Pixel Live Updates (SystemUI chip & status bar Live Activity),
-        // invoke setRequestPromote(true) via reflection so older compile targets build cleanly.
+        val shortChipText = when {
+            run == null -> "Waiting…"
+            (run.iteration ?: 0) > 0 -> "iter ${run.iteration}/${run.maxIterations ?: "?"}"
+            else -> run.state
+        }
+
         try {
-            val method = notification.javaClass.getMethod("setRequestPromote", Boolean::class.javaPrimitiveType)
-            method.invoke(notification, true)
+            val setShortMethod = builder.javaClass.getMethod("setShortCriticalText", String::class.java)
+            setShortMethod.invoke(builder, shortChipText)
         } catch (_: Throwable) {}
+
+        val notification = builder.build()
+        notification.flags = notification.flags or 0x00040000 // Notification.FLAG_PROMOTED_ONGOING
+        notification.extras.putCharSequence("android.shortCriticalText", shortChipText)
 
         return notification
     }
@@ -116,7 +123,7 @@ class RunWatchNotifications(private val context: Context) {
 
     companion object {
         const val NOTIFICATION_ID = 1001
-        const val CHANNEL_ID = "run-watch-live"
+        const val CHANNEL_ID = "run-watch-live-v2"
 
         fun ensureChannel(context: Context) {
             val manager = context.getSystemService(NotificationManager::class.java)
@@ -124,7 +131,7 @@ class RunWatchNotifications(private val context: Context) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Run progress (Live Activity)",
-                NotificationManager.IMPORTANCE_DEFAULT,
+                NotificationManager.IMPORTANCE_HIGH,
             ).apply {
                 description = "Shows live running progress for watched lmloop tasks"
                 setShowBadge(true)

@@ -20,6 +20,7 @@ from unittest import mock
 import runrecord
 from web import runs as runs_module
 from web import server
+from web import workspace
 
 
 class Recording(server.Handler):
@@ -219,6 +220,20 @@ class ArchiveTests(unittest.TestCase):
             self.archive_run()
         self.assertEqual("not a link\n", (self.worktree / ".venv").read_text())
 
+    def test_an_archive_with_a_symlink_is_refused_without_following_it(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("must not be copied\n")
+        (self.run_dir / "escape").symlink_to(outside, target_is_directory=True)
+
+        self.archive_run()
+
+        self.assertEqual(500, self.handler.status)
+        self.assertIn("symlink", self.handler.payload["error"])
+        self.assertTrue(self.run_dir.is_dir())
+        self.assertFalse((self.archive / "project" / self.run_dir.name).exists())
+        self.assertEqual("must not be copied\n", (outside / "secret.txt").read_text())
+
 
 class DeleteTests(unittest.TestCase):
     def setUp(self):
@@ -317,6 +332,54 @@ class DeleteTests(unittest.TestCase):
             self.handler.delete_run(self.project, self.archived, {"branch": True})
         self.assertIsNone(self.handler.payload["branch_deleted"])
         self.assertFalse(self.archived.exists())
+
+
+class PrPreflightTests(unittest.TestCase):
+    """The read-only git calls `open_pr` needs, pinned in their new home."""
+
+    def fake_run(self, script):
+        def fake(argv, **kwargs):
+            args = argv[1:]
+            result = script.get(tuple(args), mock.Mock(returncode=1))
+            return mock.Mock(returncode=result.returncode,
+                             stdout=getattr(result, "stdout", ""),
+                             stderr=getattr(result, "stderr", ""))
+        return fake
+
+    def test_a_missing_branch_yields_none_rather_than_a_guess(self):
+        with mock.patch.object(workspace.subprocess, "run",
+                                side_effect=self.fake_run({
+                                    ("rev-parse", "--verify", "gone"):
+                                        mock.Mock(returncode=1, stdout="", stderr="")
+                                })):
+            self.assertEqual((None, ""),
+                             workspace.pr_preflight("/repo", "gone"))
+
+    def test_the_base_comes_from_head_and_the_count_from_rev_list(self):
+        with mock.patch.object(workspace.subprocess, "run",
+                                side_effect=self.fake_run({
+                                    ("rev-parse", "--verify", "branch"):
+                                        mock.Mock(returncode=0, stdout="", stderr=""),
+                                    ("symbolic-ref", "--short", "HEAD"):
+                                        mock.Mock(returncode=0, stdout="trunk\n", stderr=""),
+                                    ("rev-list", "--count", "trunk..branch"):
+                                        mock.Mock(returncode=0, stdout="3\n", stderr="")
+                                })):
+            self.assertEqual(("trunk", "3"),
+                             workspace.pr_preflight("/repo", "branch"))
+
+    def test_an_unreadable_head_keeps_the_main_fallback(self):
+        with mock.patch.object(workspace.subprocess, "run",
+                                side_effect=self.fake_run({
+                                    ("rev-parse", "--verify", "branch"):
+                                        mock.Mock(returncode=0, stdout="", stderr=""),
+                                    ("symbolic-ref", "--short", "HEAD"):
+                                        mock.Mock(returncode=1, stdout="", stderr=""),
+                                    ("rev-list", "--count", "main..branch"):
+                                        mock.Mock(returncode=0, stdout="1\n", stderr="")
+                                })):
+            self.assertEqual(("main", "1"),
+                             workspace.pr_preflight("/repo", "branch"))
 
 
 class OpenPrTests(unittest.TestCase):
@@ -685,6 +748,25 @@ class StartRunTests(unittest.TestCase):
         self.assertIn("run", argv)
         self.assertIn("do it", argv)
         self.assertIn("--detach", argv)
+
+    def test_iteration_budget_is_positive_and_bounded(self):
+        for value in (0, -1, server.MAX_ITERATIONS + 1, "not-a-number", True):
+            with self.subTest(value=value):
+                self.start({"project": "project", "objective": "do it",
+                            "max_iterations": value})
+                self.assertEqual(400, self.handler.status)
+
+    def test_continue_iteration_budget_is_positive_and_bounded(self):
+        run_dir = Path(tempfile.mkdtemp()) / ".lmloop" / "runs" / "run"
+        run_dir.mkdir(parents=True)
+        with mock.patch.object(runs_module, "_holder", return_value=0), \
+             mock.patch.object(server.subprocess, "Popen"):
+            for value in (0, -1, server.MAX_ITERATIONS + 1, "not-a-number", True):
+                with self.subTest(value=value):
+                    self.handler.control(
+                        {"path": str(self.roots / "project")}, run_dir,
+                        "continue", {"iterations": value})
+                    self.assertEqual(400, self.handler.status)
 
     def test_the_configured_defaults_are_applied(self):
         ran = self.start({"project": "project", "objective": "do it"})

@@ -61,6 +61,27 @@ def delete_branch(repo: str | Path, branch: str,
     )
 
 
+def pr_preflight(repo: str | Path, branch: str,
+                 timeout: int = 120) -> tuple[str | None, str]:
+    """Return the current base and branch-ahead count for a pull request.
+
+    These reads stay beside the other workspace git calls so the service only
+    decides what the results mean. A missing branch is represented by a null
+    base; an unreadable symbolic ref retains the historical ``main`` fallback.
+    """
+    def git(args):
+        return subprocess.run(
+            ["git", *args], cwd=str(repo), capture_output=True, text=True,
+            timeout=timeout,
+        )
+
+    if git(["rev-parse", "--verify", branch]).returncode != 0:
+        return None, ""
+    base = (git(["symbolic-ref", "--short", "HEAD"]).stdout or "main").strip() or "main"
+    ahead = git(["rev-list", "--count", f"{base}..{branch}"]).stdout.strip()
+    return base, ahead
+
+
 def push_branch(repo: str | Path, branch: str,
                 timeout: int = 180) -> subprocess.CompletedProcess:
     """Push a run's branch to `origin`.

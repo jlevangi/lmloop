@@ -50,9 +50,9 @@ import dev.levangie.lmloop.web.currentRoute
  * `web/static/` dashboard, rendered in a WebView -- one source of truth for
  * the UI, kept in sync automatically with every change to the web app. This
  * class adds only what a browser tab cannot: first-run setup, deep-linking
- * a notification tap back into the right run, a native TopAppBar (new run /
- * watch-this-run / settings actions -- see watch/WatchBar.kt) that replaces
- * the dashboard's own header controls it would otherwise collide with, and a
+ * a notification tap back into the right run, native floating top-end actions
+ * (new run / watch-this-run / settings -- see watch/WatchBar.kt) positioned
+ * above the dashboard controls they would otherwise collide with, and a
  * settings screen (gear icon) for everything about this app's own
  * configuration -- sign-out, server, notification permission, device token.
  *

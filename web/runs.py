@@ -130,6 +130,12 @@ def _checkout_tree(base: Path):
             pass
 
 
+def _checkout_candidates(project: Path):
+    """Yield every checkout from the project and its pinned pilot bases."""
+    bases = [project, *sorted((project / ".pilot-bases").glob("*"))]
+    return (checkout for base in bases if base.is_dir() for checkout in _checkout_tree(base))
+
+
 def run_dirs(project: Path) -> list[Path]:
     """Every run directory belonging to a project, newest run id first.
 
@@ -144,8 +150,7 @@ def run_dirs(project: Path) -> list[Path]:
     Each base is asked for its own worktree root, because it carries its own
     `.lmloop.toml` -- which is the whole point of pinning a base commit.
     """
-    bases = [project, *sorted((project / ".pilot-bases").glob("*"))]
-    checkouts = [checkout for base in bases if base.is_dir() for checkout in _checkout_tree(base)]
+    checkouts = _checkout_candidates(project)
     found = [run for checkout in checkouts for run in _runs_under(_worktree_root(checkout))]
     return sorted(found, key=lambda path: path.name, reverse=True)
 
@@ -162,8 +167,7 @@ def owner(project: Path, run_dir: Path) -> Path:
     resolved = runrecord.resolved_owner(runrecord.latest_run_start(_events(run_dir)))
     if resolved is not None:
         return resolved
-    bases = [project, *sorted((project / ".pilot-bases").glob("*"))]
-    candidates = [checkout for base in bases if base.is_dir() for checkout in _checkout_tree(base)]
+    candidates = _checkout_candidates(project)
     # The deepest matching checkout owns a chained run; the repository root is
     # also an ancestor, but dashboard actions must run from the immediate parent.
     for checkout in sorted(candidates, key=lambda path: len(path.parts), reverse=True):

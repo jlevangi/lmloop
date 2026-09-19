@@ -5,14 +5,114 @@ imports perfectly from a clone and is simply absent once installed, so the
 failure only ever reaches somebody who installed it properly.
 """
 
+import importlib.util
+import json
+import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())
+
+
+class BuiltInstallationTests(unittest.TestCase):
+    """Exercise the artifacts, not only the files visible from this checkout."""
+
+    TIMEOUT = 120
+
+    def test_wheel_and_sdist_install_and_ship_web_assets(self):
+        uv = shutil.which("uv")
+        build_module = importlib.util.find_spec("build")
+        if not uv and not build_module:
+            self.skipTest("neither uv nor the python build module is installed")
+
+        with tempfile.TemporaryDirectory(prefix="lmloop-packaging-") as temporary:
+            temporary = Path(temporary)
+            clean_source = temporary / "source"
+            # Build from a clean tracked snapshot so untracked worktree edits do not pollute artifacts
+            subprocess.run(
+                ["git", "clone", "--shared", "--no-checkout", str(ROOT), str(clean_source)],
+                check=True, capture_output=True, text=True, timeout=30,
+            )
+            subprocess.run(
+                ["git", "checkout", "HEAD"],
+                cwd=clean_source, check=True, capture_output=True, text=True, timeout=30,
+            )
+            artifacts = temporary / "artifacts"
+            build_command = ([uv, "build", "--wheel", "--sdist", "--out-dir", str(artifacts)]
+                             if uv else
+                             [sys.executable, "-m", "build", "--wheel", "--sdist",
+                              "--outdir", str(artifacts)])
+            result = subprocess.run(
+                build_command, cwd=clean_source, capture_output=True, text=True,
+                check=False, timeout=self.TIMEOUT,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertEqual(1, len(list(artifacts.glob("*.whl"))))
+            self.assertEqual(1, len(list(artifacts.glob("*.tar.gz"))))
+
+            virtualenv = temporary / "venv"
+            if uv:
+                subprocess.run(
+                    [uv, "venv", str(virtualenv), "--python", sys.executable],
+                    check=True, capture_output=True, text=True, timeout=60,
+                )
+                python = virtualenv / "bin" / "python"
+                subprocess.run(
+                    [uv, "pip", "install", "--python", str(python), "--no-deps",
+                     str(next(artifacts.glob("*.whl")))],
+                    check=True, capture_output=True, text=True, timeout=self.TIMEOUT,
+                )
+            else:
+                subprocess.run(
+                    [sys.executable, "-m", "venv", str(virtualenv)],
+                    check=True, capture_output=True, text=True, timeout=60,
+                )
+                python = virtualenv / "bin" / "python"
+                subprocess.run(
+                    [str(python), "-m", "pip", "install", "--no-deps",
+                     str(next(artifacts.glob("*.whl")))],
+                    check=True, capture_output=True, text=True, timeout=self.TIMEOUT,
+                )
+
+            clean_environment = {**os.environ, "PYTHONNOUSERSITE": "1"}
+            clean_environment.pop("PYTHONPATH", None)
+            for entry_point in ("lmloop", "lmloop-web"):
+                completed = subprocess.run(
+                    [str(virtualenv / "bin" / entry_point), "--help"],
+                    cwd=temporary, env=clean_environment, capture_output=True,
+                    text=True, check=False, timeout=30,
+                )
+                self.assertEqual(0, completed.returncode,
+                                 completed.stdout + completed.stderr)
+
+            expected_data = sorted(
+                path.relative_to(ROOT / "web").as_posix()
+                for directory in (ROOT / "web" / "static", ROOT / "web" / "deploy")
+                for path in directory.rglob("*")
+                if path.is_file()
+            )
+            probe = (
+                "from importlib.resources import files; "
+                "import json, os; "
+                "root = files('web'); "
+                "missing = [name for name in json.loads(os.environ['LMLOOP_DATA']) "
+                "if not root.joinpath(name).is_file()]; "
+                "assert not missing, 'missing installed web data: ' + repr(missing)"
+            )
+            data_check = subprocess.run(
+                [str(python), "-c", probe], cwd=temporary, env={
+                    **clean_environment, "LMLOOP_DATA": json.dumps(expected_data),
+                }, check=False, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(0, data_check.returncode,
+                             data_check.stdout + data_check.stderr)
 
 
 class ModuleListingTests(unittest.TestCase):

@@ -45,6 +45,10 @@ from web import push_store
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 LMLOOP = str(Path(__file__).resolve().parent.parent / "lmloop.py")
+MAX_BODY_BYTES = 1_048_576
+MAX_ITERATIONS = service.MAX_ITERATIONS
+MAX_ARCHIVE_ENTRIES = 100_000
+MAX_ARCHIVE_BYTES = 1_073_741_824
 
 # Served pages may load only their own assets.  The dashboard has no third-party
 # anything, so the strictest useful policy is also the one that costs nothing.
@@ -220,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def static(self, name):
         target = (STATIC / name).resolve()
-        if not str(target).startswith(str(STATIC.resolve())) or not target.is_file():
+        if not target.is_relative_to(STATIC.resolve()) or not target.is_file():
             return self.json({"error": "not found"}, 404)
         body = target.read_bytes()
         kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
@@ -228,6 +232,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         BaseHTTPRequestHandler.end_headers(self)
         self.wfile.write(body)
+
+    def _content_length(self):
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            return 0
+        try:
+            length = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return length if 0 <= length <= MAX_BODY_BYTES else None
+
+    def body(self):
+        length = self._content_length()
+        if length is None:
+            self.json({"error": f"Content-Length must be between 0 and {MAX_BODY_BYTES}"}, 413)
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            self.json({"error": "invalid JSON"}, 400)
+            return None
+        if not isinstance(payload, dict):
+            self.json({"error": "JSON object required"}, 400)
+            return None
+        return payload
 
     def redirect(self, location, cookies=()):
         self.send_response(302)
@@ -274,16 +303,6 @@ class Handler(BaseHTTPRequestHandler):
         if not label:
             return None
         return {"name": f"device:{label}", "csrf": "disabled"}
-
-    def body(self):
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            return {}
-        try:
-            return json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            return {}
 
     # -- run lookup -------------------------------------------------------
 
@@ -423,6 +442,8 @@ class Handler(BaseHTTPRequestHandler):
         # browser from asking to be notified about them.
         if self.config["read_only"] and not path.startswith("/api/push/"):
             return self.json({"error": "read-only mode"}, 403)
+        if self.auth.mode == "proxy" and not self.auth.same_origin(self):
+            return self.json({"error": "same-origin request required"}, 403)
         # Only a cookie session needs one: CSRF is about a browser attaching
         # an ambient credential to somebody else's request, and the other modes
         # have no ambient credential to attach.

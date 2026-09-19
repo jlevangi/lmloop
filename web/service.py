@@ -32,6 +32,24 @@ from web import runs as runs_module
 from web import workspace
 
 
+# Dashboard-launched loops are deliberately bounded even when a caller bypasses
+# the browser.  A larger budget belongs in the CLI, not an HTTP request.
+MAX_ITERATIONS = 1000
+MAX_ARCHIVE_ENTRIES = 100_000
+MAX_ARCHIVE_BYTES = 1_073_741_824
+
+
+def _iteration_budget(value, default=None):
+    raw = default if value is None else value
+    if isinstance(raw, bool):
+        return None
+    try:
+        budget = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return budget if 1 <= budget <= MAX_ITERATIONS else None
+
+
 def create_project(payload: dict, config: dict) -> tuple[int, dict]:
     """Make a new repository and hand it back ready to be run against.
 
@@ -94,6 +112,11 @@ def start_run(payload: dict, config: dict, lmloop_path: str) -> tuple[int, dict]
     if not match:
         return 400, {"error": "no such project"}
 
+    iterations = _iteration_budget(
+        payload.get("max_iterations"), config["default_max_iterations"])
+    if iterations is None:
+        return 400, {"error": f"max_iterations must be an integer from 1 to {MAX_ITERATIONS}"}
+
     argv = [config["python"], lmloop_path, "run", objective, "--detach"]
     for flag, key, default in (
         ("--model", "model", config["default_model"]),
@@ -102,8 +125,7 @@ def start_run(payload: dict, config: dict, lmloop_path: str) -> tuple[int, dict]
         value = str(payload.get(key) or default).strip()
         if value:
             argv += [flag, value]
-    iterations = payload.get("max_iterations") or config["default_max_iterations"]
-    argv += ["--max-iterations", str(int(iterations))]
+    argv += ["--max-iterations", str(iterations)]
 
     result = subprocess.run(
         argv, cwd=match[0]["path"], capture_output=True, text=True, timeout=60
@@ -135,9 +157,22 @@ def archive_run(project: dict, run_dir: Path) -> tuple[int, dict]:
             "error": f"archive already exists at {target}; worktree left alone",
         }
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Refuse any symlink in the record before copying it.  `shutil.copytree`
+    # follows one by default, so a link pointing outside the run would have
+    # dragged another tree's contents into the archive -- and the verification
+    # below would have called it a match.  Walk without following: a symlink is
+    # a claim about a path that is not this record's, and the archive is not
+    # the place to honour it.
+    symlinks = []
+    for path in run_dir.rglob("*"):
+        if path.is_symlink():
+            symlinks.append(path)
+    if symlinks:
+        return 500, {"error": f"refusing to archive a run containing symlinks: "
+                               f"{symlinks[0].relative_to(run_dir)}"}
     staging = Path(tempfile.mkdtemp(prefix=f".{run_dir.name}.", dir=target.parent))
     try:
-        shutil.copytree(run_dir, staging, dirs_exist_ok=True)
+        shutil.copytree(run_dir, staging, dirs_exist_ok=True, symlinks=True)
     except OSError as error:
         shutil.rmtree(staging, ignore_errors=True)
         return 500, {"error": f"archive copy failed: {error}"}
@@ -155,6 +190,17 @@ def archive_run(project: dict, run_dir: Path) -> tuple[int, dict]:
     if after != before:
         shutil.rmtree(staging, ignore_errors=True)
         return 500, {"error": "archive verification failed; worktree left alone"}
+
+    # Bound the archive before it is published.  The record is a few
+    # directories and a log, so this is a tripwire rather than a limit anyone
+    # expects to hit; it exists so a run that has been pointed at a tree of
+    # a million files cannot spend minutes copying it.
+    entries = sum(1 for _ in staging.rglob("*"))
+    bytes_ = sum(p.stat().st_size for p in staging.rglob("*") if p.is_file())
+    if entries > MAX_ARCHIVE_ENTRIES or bytes_ > MAX_ARCHIVE_BYTES:
+        shutil.rmtree(staging, ignore_errors=True)
+        return 500, {"error": f"archive too large ({entries} entries, {bytes_} bytes); "
+                               f"worktree left alone"}
     try:
         staging.rename(target)
     except OSError as error:
@@ -237,7 +283,9 @@ def control(project: dict, run_dir: Path, action: str, payload: dict,
     elif action == "continue":
         # The one that needs a process: the run has already exited, and more
         # iterations mean starting the loop again on the same worktree.
-        iterations = int(payload.get("iterations") or 3)
+        iterations = _iteration_budget(payload.get("iterations"), 3)
+        if iterations is None:
+            return 400, {"error": f"iterations must be an integer from 1 to {MAX_ITERATIONS}"}
         # A run that still has a live loop does not need continuing, and
         # starting a second one puts two loops in one worktree.  Refused here
         # rather than by the child, because the child's complaint goes to a pipe
@@ -312,17 +360,9 @@ def open_pr(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
     start = runrecord.latest_run_start(runs_module._events(run_dir))
     branch = runrecord.resolved_branch(run_dir, start)
     repo = project["path"]
-
-    def git(args, **kwargs):
-        return subprocess.run(
-            ["git", *args], cwd=repo, capture_output=True, text=True,
-            timeout=kwargs.pop("timeout", 120),
-        )
-
-    if git(["rev-parse", "--verify", branch]).returncode != 0:
+    base, ahead = workspace.pr_preflight(repo, branch)
+    if base is None:
         return 404, {"error": f"no branch {branch}"}
-    base = (git(["symbolic-ref", "--short", "HEAD"]).stdout or "main").strip() or "main"
-    ahead = git(["rev-list", "--count", f"{base}..{branch}"]).stdout.strip()
     if ahead in ("", "0"):
         return 400, {"error": f"{branch} has no commits beyond {base}"}
 

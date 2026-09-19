@@ -37,6 +37,8 @@ class AttachTests(unittest.TestCase):
         (run.rundir.path / "prompt.md").write_text(objective + "\n")
         for number in range(1, iterations_done + 1):
             (run.rundir.path / f"iteration-{number}-prompt.md").write_text("x\n")
+            run.rundir.event("iteration:end", iteration=number, outcome="ok")
+        run.rundir.event("iteration:end", iteration="malformed", outcome="ok")
         if state is not None:
             run.rundir.run_state_path.write_text(json.dumps(state))
         run.screen = mock.MagicMock()
@@ -71,6 +73,30 @@ class AttachTests(unittest.TestCase):
     def test_it_reports_how_many_iterations_are_already_done(self):
         run = self.make_run(iterations_done=4)
         self.assertEqual(4, self.attach(run))
+
+    def test_completed_iterations_ignore_prompt_only_and_malformed_names(self):
+        run = self.make_run(iterations_done=2)
+        (run.rundir.path / "iteration-99-prompt.md").write_text("unfinished\n")
+        (run.rundir.path / "iteration-not-a-number-prompt.md").write_text("ignore\n")
+        self.assertEqual(2, self.attach(run))
+
+    def test_initialization_failure_releases_the_run_claim(self):
+        run = self.make_run()
+        with mock.patch.object(run, "probe_env", side_effect=RuntimeError("broken")):
+            with self.assertRaisesRegex(RuntimeError, "broken"):
+                self.attach(run)
+        self.assertFalse(run.rundir.pid_path.exists())
+
+    def test_prepare_initialization_failure_releases_the_run_claim(self):
+        root = Path(tempfile.mkdtemp())
+        run = Run(root, config.load(root), "obj", run_id="test-run")
+        with mock.patch.object(run, "publish_sessions", side_effect=RuntimeError("broken")):
+            with mock.patch.object(gitops, "exclude"):
+                with mock.patch.object(gitops, "add_worktree"):
+                    with mock.patch.object(gitops, "head_commit", return_value="base"):
+                        with self.assertRaisesRegex(RuntimeError, "broken"):
+                            run.prepare()
+        self.assertFalse(run.rundir.pid_path.exists())
 
     def test_provider_paused_iteration_is_retried_after_process_loss(self):
         run = self.make_run(
@@ -165,6 +191,59 @@ class AttachTests(unittest.TestCase):
         self.attach(run)
         self.assertEqual(0, run.no_diff_streak)
         self.assertEqual(0.0, run.elapsed_before)
+
+    def test_resolved_policy_is_saved_with_resumable_state(self):
+        run = self.make_run()
+        run._save_run_state()
+        state = json.loads(run.rundir.run_state_path.read_text())
+        self.assertEqual(str(run.repo), state["repo_path"])
+        self.assertEqual(str(run.worktree), state["worktree_path"])
+        self.assertEqual(run.branch, state["branch"])
+        self.assertEqual(run.model, state["model"])
+        self.assertEqual(run.thinking, state["thinking"])
+        self.assertEqual(run.harness_name, state["harness"])
+        self.assertEqual(run.config["agent"]["tools"], state["tools"])
+        self.assertEqual(run.config["agent"]["required_tools"], state["required_tools"])
+        self.assertEqual(run.config["gate"], state["gate"])
+        self.assertEqual(run.config["stop"], state["stop"])
+        self.assertEqual(run.config["iteration"], state["iteration"])
+
+    def test_resume_restores_resolved_policy_over_changed_config(self):
+        run = self.make_run()
+        state = {
+            "repo_path": str(run.repo),
+            "worktree_path": str(run.worktree),
+            "branch": "saved-branch",
+            "model": "saved/model",
+            "thinking": "high",
+            "harness": "pi",
+            "tools": "read,write",
+            "required_tools": ["read"],
+            "gate": {"command": "saved-gate", "blocks_commit": True},
+            "stop": {"max_wall_hours": 7, "no_diff_iterations": 9},
+            "iteration": {"timeout_seconds": 77, "stall_seconds": 13},
+        }
+        run.rundir.run_state_path.write_text(json.dumps(state))
+        run.config["agent"].update(model="changed/model", thinking="low", tools="bash",
+                                     required_tools=[])
+        run.config["gate"] = {"command": "changed-gate", "blocks_commit": False}
+        run.config["stop"] = {"max_wall_hours": 1, "no_diff_iterations": 1}
+        run.config["iteration"] = {"timeout_seconds": 1, "stall_seconds": 1}
+        self.attach(run)
+        self.assertEqual("saved/model", run.model)
+        self.assertEqual("high", run.thinking)
+        self.assertEqual("saved-branch", run.branch)
+        self.assertEqual("read,write", run.config["agent"]["tools"])
+        self.assertEqual(["read"], run.config["agent"]["required_tools"])
+        self.assertEqual("saved-gate", run.config["gate"]["command"])
+        self.assertEqual(7, run.config["stop"]["max_wall_hours"])
+        self.assertEqual(77, run.config["iteration"]["timeout_seconds"])
+
+    def test_old_run_state_keeps_current_config_policy(self):
+        run = self.make_run(state={"no_diff_streak": 1})
+        run.config["agent"]["model"] = "current/model"
+        self.attach(run)
+        self.assertEqual("current/model", run.model)
 
     def test_the_resume_is_recorded_as_such(self):
         run = self.make_run(iterations_done=4)

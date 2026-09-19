@@ -43,7 +43,7 @@ import hmac
 import json
 import secrets
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 try:  # noqa: SIM105 - the failure is meaningful, see AVAILABLE
     import jwt
@@ -97,6 +97,25 @@ class ProxyAuth:
 
     def peer_is_trusted(self, peer: str) -> bool:
         return peer in self.trusted_proxies
+
+    def same_origin(self, handler) -> bool:
+        """Require browser mutation metadata to describe this dashboard.
+
+        Proxy identity is ambient: a browser sends no token of its own, so a
+        cross-site POST could otherwise ride the proxy's cookie/session.
+        """
+        fetch_site = (handler.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        origin = (handler.headers.get("Origin") or "").strip()
+        host = (handler.headers.get("Host") or "").strip().lower()
+        origin_host = ""
+        if origin and origin.lower() != "null":
+            parsed = urlsplit(origin)
+            origin_host = (parsed.netloc or "").lower()
+        if fetch_site and fetch_site != "same-origin":
+            return False
+        if origin and origin_host != host:
+            return False
+        return fetch_site == "same-origin" or bool(origin_host and host)
 
     def session_for(self, handler) -> dict | None:
         peer = handler.client_address[0] if handler.client_address else ""

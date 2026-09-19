@@ -5,9 +5,17 @@ states: a device token can read `/api/*` but can never mutate a run, because
 `do_POST` never consults it -- not because a flag forbids it.
 """
 
+import http.client
 import inspect
+import json
+import tempfile
+import threading
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
+
+from http.server import ThreadingHTTPServer
 
 from web import device_auth
 from web import server
@@ -92,6 +100,110 @@ class FakeHandler:
     def __init__(self, device_tokens, authorization=""):
         self.device_tokens = device_tokens
         self.headers = {"Authorization": authorization} if authorization else {}
+
+
+class RejectAuth:
+    mode = "proxy"
+    interactive = False
+    enabled = True
+    trusted = True
+
+    def session_for(self, _handler):
+        return None
+
+
+class HTTPBehaviorTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        self.server.daemon_threads = True
+        server.Handler.config = {
+            "roots": [Path(self.root.name)],
+            "read_only": False,
+            "default_model": "",
+            "default_max_iterations": 20,
+            "default_thinking": "low",
+            "poll_seconds": 3,
+            "hidden_poll_seconds": 30,
+        }
+        server.Handler.auth = RejectAuth()
+        server.Handler.device_tokens = device_auth.DeviceTokens({"phone": "secret"})
+        server.Handler.push = SimpleNamespace(public_key="", enabled=False)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.stop_server)
+
+    def stop_server(self):
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
+        self.root.cleanup()
+
+    def request(self, method, path, headers=None, body=None):
+        connection = http.client.HTTPConnection(*self.server.server_address)
+        encoded = None if body is None else body.encode()
+        connection.request(method, path, encoded, headers or {})
+        response = connection.getresponse()
+        result = response.status, response.read()
+        connection.close()
+        return result
+
+    def test_valid_device_token_gets_api_config_over_http(self):
+        status, body = self.request("GET", "/api/config", {"Authorization": "Bearer secret"})
+        self.assertEqual(200, status)
+        self.assertEqual("device:phone", json.loads(body)["user"])
+        self.assertEqual("disabled", json.loads(body)["csrf"])
+
+    def test_invalid_device_token_is_denied_over_http(self):
+        status, _body = self.request("GET", "/api/config", {"Authorization": "Bearer wrong"})
+        self.assertEqual(401, status)
+
+    def test_device_token_cannot_mutate_over_http(self):
+        status, _body = self.request(
+            "POST", "/api/runs", {"Authorization": "Bearer secret", "Content-Length": "2"}, "{}")
+        self.assertEqual(401, status)
+
+    def test_interactive_mutation_requires_csrf_over_http(self):
+        class InteractiveAuth:
+            mode = "oidc"
+            interactive = True
+            enabled = True
+            trusted = True
+
+            def session_for(self, handler):
+                if handler.cookies().get("lmloop_session") == "cookie":
+                    return {"name": "alice", "csrf": "csrf-value"}
+                return None
+
+        server.Handler.auth = InteractiveAuth()
+        headers = {"Cookie": "lmloop_session=cookie", "Content-Length": "2"}
+        for csrf in (None, "wrong"):
+            with self.subTest(csrf=csrf):
+                request_headers = dict(headers)
+                if csrf is not None:
+                    request_headers["X-CSRF-Token"] = csrf
+                status, _body = self.request("POST", "/api/runs", request_headers, "{}")
+                self.assertEqual(403, status)
+
+    def test_interactive_mutation_with_csrf_reaches_operation(self):
+        class InteractiveAuth:
+            mode = "oidc"
+            interactive = True
+            enabled = True
+            trusted = True
+
+            def session_for(self, handler):
+                return {"name": "alice", "csrf": "csrf-value"} if handler.cookies().get("lmloop_session") else None
+
+        server.Handler.auth = InteractiveAuth()
+        with mock.patch.object(server.service, "start_run", return_value=(400, {"error": "test"})) as start:
+            status, _body = self.request(
+                "POST", "/api/runs",
+                {"Cookie": "lmloop_session=cookie", "X-CSRF-Token": "csrf-value", "Content-Length": "2"},
+                "{}",
+            )
+        self.assertEqual(400, status)
+        start.assert_called_once()
 
 
 class DeviceSessionTests(unittest.TestCase):

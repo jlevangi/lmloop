@@ -41,6 +41,17 @@ STREAM_MARK_SECONDS = 0.5
 # quote is what keeps this off `"thinking_delta_signature"` and friends.
 DELTA_MARKER = b'_delta"'
 
+# Absolute ceiling on the raw stream file written per iteration.  A runaway
+# agent can produce tens of megabytes; this bounds the file without truncating
+# the JSONL stream itself (the pipe is still read to exhaustion).  The outcome
+# records the exact reason: "raw-stream-limit" or "line-buffer-limit".
+# ponytail: hard ceiling; raise if a real workload needs more.
+RAW_STREAM_CEILING = 10_000_000  # 10 MB
+# Maximum length of a single line in the buffer before the outcome fires.
+# A malformed line without newlines can otherwise grow without bound in the
+# `buffer` accumulator.
+LINE_BUFFER_CEILING = 1_000_000  # 1 MB
+
 
 class _Stream:
     """Shared state between the reader threads and the supervising loop."""
@@ -96,6 +107,9 @@ class _Stream:
         self.stream_marks: list[tuple[float, int]] = []
         self.streamed = 0
         self.last_rate = 0.0
+        # Stream cap outcomes -- set by _read_stdout when a ceiling is hit.
+        self.stream_error = ""
+        self.raw_written = 0
 
     def rate(self) -> float:
         """Output tokens per second: the speed of the thing generating now.
@@ -214,11 +228,30 @@ def _read_stdout(pipe, raw_path: Path, state: _Stream, agent) -> None:
             chunk = pipe.read1(65536)
             if not chunk:
                 break
-            sink.write(chunk)
+            raw_ceiling = getattr(state, "raw_limit", RAW_STREAM_CEILING)
+            line_ceiling = getattr(state, "line_limit", LINE_BUFFER_CEILING)
+            # Cap raw file size: we still read the pipe to exhaustion so the
+            # subprocess doesn't deadlock, but we stop writing once the ceiling
+            # is reached and record the outcome.
+            remaining_raw = raw_ceiling - state.raw_written
+            if remaining_raw <= 0:
+                state.stream_error = "raw-stream-limit"
+                continue
+            write_chunk = chunk[:remaining_raw]
+            sink.write(write_chunk)
+            state.raw_written += len(write_chunk)
+            if state.raw_written >= raw_ceiling:
+                state.stream_error = "raw-stream-limit"
             sink.flush()
             with state.lock:
                 state.note_output()
             buffer += chunk
+            # Cap individual line length in the buffer accumulator.  A line
+            # without a newline can otherwise grow without bound.
+            if len(buffer) > line_ceiling:
+                state.stream_error = "line-buffer-limit"
+                # Truncate to the ceiling so we don't OOM on pathological input.
+                buffer = buffer[-line_ceiling:]
             *lines, buffer = buffer.split(b"\n")
             # Counted on complete lines, never on the raw chunk: a 64KB read
             # splits a marker across the boundary roughly every chunk, and a

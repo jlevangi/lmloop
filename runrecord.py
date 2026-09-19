@@ -227,6 +227,23 @@ def first_unchecked_step(plan_text: str) -> str:
     return ""
 
 
+def completed_iterations(events: list[dict]) -> int:
+    """The highest iteration with a terminal ``iteration:end`` record.
+
+    Prompt files are written before an iteration runs and can survive a
+    provider failure or a crash, so they are not evidence that an iteration
+    completed.  Ignore malformed records rather than making resume unusable.
+    """
+    completed = 0
+    for event in events:
+        if event.get("event") != "iteration:end":
+            continue
+        iteration = event.get("iteration")
+        if isinstance(iteration, int) and not isinstance(iteration, bool):
+            completed = max(completed, iteration)
+    return completed
+
+
 def latest_run_start(events: list[dict]) -> dict:
     """The most recent `run:start` event in a run's log, or {}.
 

@@ -77,7 +77,8 @@ before writing anything.
 ## What the loop does *not* do
 
 * **It does not choose tools, prompts, skills or models for the agent.** It
-  drives `pi` and nothing else; those belong to the agent.
+  drives the selected harness (`pi`, `omp`, or OpenCode); those choices belong
+  to the operator and agent configuration.
 * **It does not block commits on a failing gate** by default. The gate result is
   recorded in the commit message and the next prompt. Work is never held hostage
   to a check.

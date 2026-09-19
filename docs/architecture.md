@@ -1,9 +1,9 @@
 # Modules
 
-Python 3.11+, standard library only, no build step. The one exception is the
-dashboard's OIDC, which needs PyJWT and requests — imported in `web/auth.py` and
-nowhere else, so a missing one disables authentication rather than breaking the
-loop.
+Python 3.11+, standard library only, no build step. Dashboard integrations are
+optional and isolated: OIDC uses PyJWT and requests in `web/auth.py`; Web Push
+uses pywebpush/py-vapid behind `web/push.py` and `webpush.py`. Missing optional
+dependencies disable only that integration rather than breaking the loop.
 
 ## The loop
 
@@ -43,7 +43,8 @@ loop.
 | `web/runs.py` | Finds and reads runs across projects. Reads `status.json` rather than replaying history. |
 | `web/service.py` | What the dashboard does, separated from how it was asked: each operation takes plain arguments and returns `(status, payload)`. No HTTP. |
 | `web/workspace.py` | The only code in the project that removes a worktree, deletes a branch, or reaches off the machine. Few, named and greppable; the guards that permit each one stay in `service.py`. |
-| `web/auth.py` | Who may drive the dashboard: `none` (loopback), `proxy` (identity from a trusted ingress), `oidc` (any issuer). Each mode answers `session_for`; `trusted` is what the network-bind refusal asks. The only place a third-party import appears, and only `oidc` needs it. |
+| `web/auth.py` | Who may drive the dashboard: `none` (loopback), `proxy` (identity from a trusted ingress), `oidc` (any issuer). Each mode answers `session_for`; `trusted` is what the network-bind refusal asks. OIDC's optional imports stay isolated here. |
+| `web/push.py`, `webpush.py` | Optional Web Push configuration, subscription delivery, and run-completion notification. Missing web-push dependencies disable this integration only. |
 | `web/static/` | Vanilla JS and CSS, no build step. Hash-routed views, keyed row patching. |
 
 Two properties keep it small:

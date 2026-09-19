@@ -2106,6 +2106,37 @@ class ContextFilesTests(unittest.TestCase):
             rendered = gitops.context_files(root, ["a.txt"], 12)
         self.assertEqual(12, len(rendered))
 
+    def test_context_rejects_symlink_and_fifo_without_opening_them(self):
+        root = self.make_repo()
+        (root / "link").symlink_to("a.txt")
+        subprocess.run(["git", "-C", str(root), "add", "link"], check=True)
+        fifo = root / "pipe"
+        os.mkfifo(fifo)
+        subprocess.run(["git", "-C", str(root), "add", "pipe"], check=True)
+        self.assertIn("symlink", gitops.context_files(root, ["link"], 400))
+        self.assertIn("not a regular file", gitops.context_files(root, ["pipe"], 400))
+
+
+class StreamBoundsTests(unittest.TestCase):
+    def test_raw_stream_limit_has_explicit_error(self):
+        state = pi_runner._Stream()
+        state.raw_limit = 3
+        pipe = mock.Mock()
+        pipe.read1.side_effect = [b"abcd", b""]
+        path = Path(tempfile.mkdtemp()) / "raw.jsonl"
+        pi_runner._read_stdout(pipe, path, state, SimpleNamespace(activity=(), interesting=(), classify=lambda _: None))
+        self.assertEqual("raw-stream-limit", state.stream_error)
+        self.assertEqual(b"abc", path.read_bytes())
+
+    def test_line_buffer_limit_has_explicit_error(self):
+        state = pi_runner._Stream()
+        state.line_limit = 3
+        pipe = mock.Mock()
+        pipe.read1.side_effect = [b"abcd", b""]
+        path = Path(tempfile.mkdtemp()) / "raw.jsonl"
+        pi_runner._read_stdout(pipe, path, state, SimpleNamespace(activity=(), interesting=(), classify=lambda _: None))
+        self.assertEqual("line-buffer-limit", state.stream_error)
+
 
 class ConfigValidationTests(unittest.TestCase):
     """A config file is hand-written, and every mistake in one used to be

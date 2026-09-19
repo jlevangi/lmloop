@@ -128,6 +128,18 @@ class ProxyAuthTests(unittest.TestCase):
         """The proxy already did that; offering a second one would be a lie."""
         self.assertFalse(self.build().interactive)
 
+    def test_proxy_mutations_require_same_origin_metadata(self):
+        proxy = self.build()
+        same = {"Origin": "http://dashboard.test", "Sec-Fetch-Site": "same-origin",
+                "Host": "dashboard.test"}
+        self.assertTrue(proxy.same_origin(FakeHandler("10.0.0.5", same)))
+        self.assertFalse(proxy.same_origin(FakeHandler(
+            "10.0.0.5", {"Origin": "https://evil.test", "Host": "dashboard.test"})))
+        self.assertFalse(proxy.same_origin(FakeHandler(
+            "10.0.0.5", {"Sec-Fetch-Site": "cross-site", "Host": "dashboard.test"})))
+        self.assertFalse(proxy.same_origin(FakeHandler(
+            "10.0.0.5", {"Host": "dashboard.test"})))
+
 
 class EnvironmentPathTests(unittest.TestCase):
     def test_env_file_paths_expand_variables_and_home(self):

@@ -35,7 +35,29 @@ import models
 import policy
 import prompts
 import pi_runner
+import runrecord
 from rundir import RunDir, make_run_id, previous_runs
+
+
+GATE_TERM_GRACE_SECONDS = 5
+
+
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    try:
+        group = os.getpgid(process.pid)
+    except OSError:
+        return
+    for sig, wait in ((signal.SIGTERM, GATE_TERM_GRACE_SECONDS), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(group, sig)
+        except OSError:
+            return
+        try:
+            process.wait(timeout=wait)
+        except subprocess.TimeoutExpired:
+            pass
+        if sig == signal.SIGKILL:
+            return
 
 
 class Run:
@@ -119,6 +141,35 @@ class Run:
         self.defects: list[str] = []
         self.screen = display.Screen()
 
+    def restore_policy(self, state: dict) -> None:
+        """Apply a run's resolved policy, leaving old state backward compatible."""
+        if not isinstance(state, dict):
+            return
+        repo = state.get("repo_path")
+        worktree = state.get("worktree_path")
+        if isinstance(repo, str) and repo:
+            self.repo = Path(repo)
+        if isinstance(worktree, str) and worktree:
+            self.worktree = Path(worktree)
+            self.rundir = RunDir(self.worktree, self.run_id)
+        branch = state.get("branch")
+        if isinstance(branch, str) and branch:
+            self.branch = branch
+        agent = self.config.setdefault("agent", {})
+        for key in ("model", "thinking", "tools", "required_tools"):
+            if key in state and state[key] is not None:
+                agent[key] = state[key]
+        for section in ("gate", "stop", "iteration"):
+            saved = state.get(section)
+            if isinstance(saved, dict):
+                self.config.setdefault(section, {}).update(saved)
+        self.model = agent.get("model", "")
+        self.thinking = agent.get("thinking", "")
+        self.harness_name = agent.get("harness", self.harness_name)
+        models.use(self.config["models"])
+        self.window, self.max_output = models.declared_window(
+            self.model, self.harness_name) or (0, 0)
+
     def _branch_for(self, run_id: str) -> str:
         return self.config["worktree"]["branch"].format(repo=self.repo.name, run_id=run_id)
 
@@ -199,26 +250,30 @@ class Run:
         base = gitops.head_commit(self.worktree)
         self.rundir.create(self.objective, base)
         self.rundir.claim()
-        self.publish_sessions()
-        self.linked = self.link_environment()
-        self.probe_env()
-        self.probe_gate(base)
-        self.probe_browser()
-        self.rundir.event(
-            "run:start",
-            runId=self.run_id,
-            runDir=str(self.rundir.path),
-            agent=self.harness_name,
-            tools=self.config["agent"].get("tools", ""),
-            model=self.model,
-            worktree=True,
-            repoPath=str(self.repo),
-            worktreePath=str(self.worktree),
-            branch=self.branch,
-            baseCommit=base,
-            maxIterations=self.max_iterations,
-            promptLength=len(self.objective),
-        )
+        try:
+            self.publish_sessions()
+            self.linked = self.link_environment()
+            self.probe_env()
+            self.probe_gate(base)
+            self.probe_browser()
+            self.rundir.event(
+                "run:start",
+                runId=self.run_id,
+                runDir=str(self.rundir.path),
+                agent=self.harness_name,
+                tools=self.config["agent"].get("tools", ""),
+                model=self.model,
+                worktree=True,
+                repoPath=str(self.repo),
+                worktreePath=str(self.worktree),
+                branch=self.branch,
+                baseCommit=base,
+                maxIterations=self.max_iterations,
+                promptLength=len(self.objective),
+            )
+        except BaseException:
+            self.rundir.release()
+            raise
 
     def attach(self, extra_iterations: int) -> int:
         """Re-enter an existing run instead of starting a new one.
@@ -229,6 +284,8 @@ class Run:
         picks the run back up where it stopped: same worktree, same branch, same
         run directory, same handoff.
         """
+        state = self.rundir.read_run_state()
+        self.restore_policy(state)
         if not self.rundir.path.is_dir():
             raise SystemExit(f"lmloop: no run directory at {self.rundir.path}")
         holder = self.rundir.holder()
@@ -242,36 +299,41 @@ class Run:
                 f"  or stop it first:       touch {self.rundir.stop_path}"
             )
         self.rundir.claim()
-        self.probe_env()
-        done = max(
-            (int(path.stem.split("-")[1]) for path in self.rundir.path.glob("iteration-*-prompt.md")),
-            default=0,
-        )
-        self.objective = (self.rundir.path / "prompt.md").read_text().strip()
-        state = self.rundir.read_run_state()
-        self.pending_iteration = int(state.get("pending_iteration", 0))
-        if self.pending_iteration:
-            # A provider outage writes the prompt before the request fails.  It
-            # is evidence of an attempt, not proof the iteration completed.
-            done = min(done, self.pending_iteration - 1)
-        prior_ceiling = int(state.get("hard_turn_ceiling", done))
-        self.iteration_ceiling = max(done, prior_ceiling) + extra_iterations
-        self.iteration_floor = min(self.iteration_ceiling, done + extra_iterations)
-        self.max_iterations = self.iteration_floor
-        # Carried across resumes so a bare `resume` cannot launder the one guard
-        # that never lies -- but capped one below the limit, because a run that
-        # stopped ON this guard would otherwise reload a tripped streak and exit
-        # before iteration 1, having run nothing.  A resume is the operator
-        # saying "I changed something, try again"; it buys exactly one iteration
-        # to prove it, and if that one also moves nothing the guard fires again.
-        limit = self.config["stop"]["no_diff_iterations"]
-        carried = int(state.get("no_diff_streak", 0))
-        self.no_diff_streak = min(carried, max(limit - 1, 0)) if limit else carried
-        self.elapsed_before = float(state.get("active_elapsed_seconds", 0))
-        self.thrashed_steps = {
-            str(step): int(count)
-            for step, count in (state.get("thrashed_steps") or {}).items()
-        }
+        try:
+            self.probe_env()
+            done = runrecord.completed_iterations(self.rundir.read_events())
+            self.objective = (self.rundir.path / "prompt.md").read_text().strip()
+        except BaseException:
+            self.rundir.release()
+            raise
+        try:
+            state = self.rundir.read_run_state()
+            self.pending_iteration = int(state.get("pending_iteration", 0))
+            if self.pending_iteration:
+                # A provider outage writes the prompt before the request fails.  It
+                # is evidence of an attempt, not proof the iteration completed.
+                done = min(done, self.pending_iteration - 1)
+            prior_ceiling = int(state.get("hard_turn_ceiling", done))
+            self.iteration_ceiling = max(done, prior_ceiling) + extra_iterations
+            self.iteration_floor = min(self.iteration_ceiling, done + extra_iterations)
+            self.max_iterations = self.iteration_floor
+            # Carried across resumes so a bare `resume` cannot launder the one guard
+            # that never lies -- but capped one below the limit, because a run that
+            # stopped ON this guard would otherwise reload a tripped streak and exit
+            # before iteration 1, having run nothing.  A resume is the operator
+            # saying "I changed something, try again"; it buys exactly one iteration
+            # to prove it, and if that one also moves nothing the guard fires again.
+            limit = self.config["stop"]["no_diff_iterations"]
+            carried = int(state.get("no_diff_streak", 0))
+            self.no_diff_streak = min(carried, max(limit - 1, 0)) if limit else carried
+            self.elapsed_before = float(state.get("active_elapsed_seconds", 0))
+            self.thrashed_steps = {
+                str(step): int(count)
+                for step, count in (state.get("thrashed_steps") or {}).items()
+            }
+        except BaseException:
+            self.rundir.release()
+            raise
         # Runs that predate this, and runs resumed after the exclude list grew.
         gitops.exclude(self.repo, self._exclusions())
         self.publish_sessions()
@@ -570,29 +632,44 @@ class Run:
             self.gate_result, self.gate_output = "", ""
             return
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 shell=True,
                 cwd=str(self.worktree),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=600,
+                start_new_session=True,
                 env=self.env(),
             )
-            output = (completed.stdout + completed.stderr).strip()
-            if completed.returncode == 0:
-                self.gate_result = "pass"
-            elif completed.returncode == 127:
-                # 127 is the shell saying it could not find the command, which is
-                # a broken gate, not broken code.  Kept out of the "fail" family
-                # deliberately: `blocks_commit` keys off that prefix, and a gate
-                # that cannot run must never be the reason an hour of work sits
-                # uncommitted.
-                self.gate_result = "misconfigured (rc=127: command not found)"
+            try:
+                stdout, stderr = process.communicate(timeout=600)
+            except subprocess.TimeoutExpired as error:
+                _terminate_process_group(process)
+                stdout = error.output or ""
+                stderr = error.stderr or ""
+                try:
+                    stdout, stderr = process.communicate()
+                except (OSError, ValueError):
+                    pass
+                stdout = stdout.decode(errors="replace") if isinstance(stdout, bytes) else stdout
+                stderr = stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr
+                output, self.gate_result = (
+                    (stdout + stderr).strip(), "fail (timeout)"
+                )
             else:
-                self.gate_result = f"fail (rc={completed.returncode})"
-        except subprocess.TimeoutExpired:
-            output, self.gate_result = "gate timed out after 600s", "fail (timeout)"
+                output = (stdout + stderr).strip()
+                if process.returncode == 0:
+                    self.gate_result = "pass"
+                elif process.returncode == 127:
+                    # 127 is the shell saying it could not find the command, which is
+                    # a broken gate, not broken code.  Kept out of the "fail" family
+                    # deliberately: `blocks_commit` keys off that prefix, and a gate
+                    # that cannot run must never be the reason an hour of work sits
+                    # uncommitted.
+                    self.gate_result = "misconfigured (rc=127: command not found)"
+                else:
+                    self.gate_result = f"fail (rc={process.returncode})"
         except OSError as error:
             output, self.gate_result = str(error), "fail (could not run)"
         self.gate_output = output
@@ -1127,14 +1204,18 @@ class Run:
             "thrashed_steps": self.thrashed_steps,
             "hard_turn_ceiling": self.iteration_ceiling,
             "pending_iteration": self.pending_iteration,
-            # Which agent, and what it was allowed to use.  A resume that reads
-            # these back cannot hand omp's worktree, session directory and
-            # handoff chain to pi because the file on disk said pi -- which it
-            # does whenever the agent came from `--agent` rather than from
-            # `.lmloop.toml`.  Silent, and it makes the run's own record name
-            # two different agents for one run.
+            # Policy state that needs to be restored on resume for semantic continuity
+            "repo_path": str(self.repo),
+            "worktree_path": str(self.worktree),
+            "branch": self.branch,
+            "model": self.model,
+            "thinking": self.thinking,
             "harness": self.harness_name,
             "tools": self.config["agent"].get("tools", ""),
+            "required_tools": self.config["agent"].get("required_tools", []),
+            "gate": self.config["gate"].copy() if self.config.get("gate") else {},
+            "stop": self.config["stop"].copy() if self.config.get("stop") else {},
+            "iteration": self.config["iteration"].copy() if self.config.get("iteration") else {},
         })
 
     # -- driver -----------------------------------------------------------

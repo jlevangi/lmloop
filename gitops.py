@@ -9,6 +9,7 @@ thing in the system; nothing here may throw it away.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -160,11 +161,69 @@ def _with_sizes(cwd: Path, paths: list[str]) -> list[str]:
     return annotated
 
 
+# Absolute ceiling on `[context] max_chars`, whatever a config says.  The prompt
+# must stay bounded even against a misconfigured value; 200k chars is ~50k tokens,
+# an order of magnitude past the 12000 default.
+# ponytail: hard ceiling, not a setting; make it configurable if a real repo
+# needs more.
+CONTEXT_MAX_CHARS_CEILING = 200_000
+
+# The only index entries that are plain files in the object store.
+# 120000 is a symlink blob and 160000 a gitlink (submodule): neither is a
+# readable blob, and neither may be followed into the worktree filesystem.
+_REGULAR_MODES = {"100644", "100755"}
+
+
+def _index_entries(cwd: Path) -> dict[str, tuple[str, str]]:
+    """Map tracked path -> (mode, blob sha), straight from the index."""
+    output = git(["ls-files", "--stage", "-z"], cwd, check=False)
+    entries: dict[str, tuple[str, str]] = {}
+    for record in output.split("\0"):
+        if not record:
+            continue
+        meta, sep, name = record.partition("\t")
+        if not sep:
+            continue
+        parts = meta.split()
+        if len(parts) >= 2:
+            entries[name] = (parts[0], parts[1])
+    return entries
+
+
+def _blob_head(cwd: Path, sha: str, max_bytes: int) -> bytes | None:
+    """The first `max_bytes` of a blob, without materialising the rest.
+
+    `read(n)` on a pipe caps memory at n no matter how big the blob is; git
+    itself may die of SIGPIPE mid-write, which is fine -- we only ever wanted
+    the head.
+    """
+    if max_bytes <= 0:
+        return b""
+    try:
+        with subprocess.Popen(
+            ["git", "cat-file", "blob", sha],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+        ) as proc:
+            return proc.stdout.read(max_bytes + 1)
+    except OSError:
+        return None
+
+
 def context_files(cwd: Path, files: list[str], max_chars: int) -> str:
-    """Read configured tracked files, bounded in config order."""
+    """Read configured tracked files, bounded in config order, from Git blobs.
+
+    Content comes from the object store, not the worktree filesystem: a symlink
+    or FIFO sitting in the worktree cannot redirect or block the read, and there
+    is no stat-then-open TOCTOU.  Only regular-file blobs (mode 100644/100755)
+    are read; symlinks and submodules are refused.  `max_chars` is an absolute
+    ceiling: it is clamped to `CONTEXT_MAX_CHARS_CEILING` before anything is
+    read, so a misconfigured value cannot blow up the prompt.
+    """
     if max_chars <= 0 or not files:
         return ""
-    tracked = set(git(["ls-files", "-z"], cwd, check=False).split("\0"))
+    limit = min(max_chars, CONTEXT_MAX_CHARS_CEILING)
+    entries = _index_entries(cwd)
     chunks = []
     used = 0
     for raw_name in files:
@@ -174,24 +233,33 @@ def context_files(cwd: Path, files: list[str], max_chars: int) -> str:
         path = Path(*[part for part in raw_path.parts if part != "."])
         name = path.as_posix()
         separator = "\n\n" if chunks else ""
-        room = max_chars - used - len(separator)
+        room = limit - used - len(separator)
         if room <= 0:
             break
         if raw_path.is_absolute() or ".." in raw_path.parts:
             notice = f"[context file rejected: {raw_name!r} (path must be relative)]"
-        elif name not in tracked:
-            notice = f"[context file missing or untracked: {name}]"
-        else:
+        elif name not in entries:
+            target = cwd / path
             try:
-                if not (cwd / path).resolve().is_relative_to(cwd.resolve()):
-                    notice = f"[context file rejected: {raw_name!r} (path escapes worktree)]"
+                st = os.lstat(target)
+                if not stat.S_ISREG(st.st_mode):
+                    notice = f"[context file rejected: {name} (not a regular file)]"
                 else:
-                    header = f"### {name}\n"
-                    with (cwd / path).open(errors="replace") as handle:
-                        body = handle.read(max(0, room - len(header)))
-                    notice = header + body
-            except (OSError, RuntimeError) as error:
-                notice = f"[context file unreadable: {name} ({error})]"
+                    notice = f"[context file missing or untracked: {name}]"
+            except OSError:
+                notice = f"[context file missing or untracked: {name}]"
+        else:
+            mode, sha = entries[name]
+            if mode not in _REGULAR_MODES:
+                kind = "symlink" if mode == "120000" else "submodule"
+                notice = f"[context file rejected: {raw_name!r} ({kind}, not a regular file)]"
+            else:
+                header = f"### {name}\n"
+                data = _blob_head(cwd, sha, max(0, room - len(header)))
+                if data is None:
+                    notice = f"[context file unreadable: {name} (git blob read failed)]"
+                else:
+                    notice = header + data[:room - len(header)].decode("utf-8", "replace")
         chunk = notice[:room]
         chunks.append(chunk)
         used += len(separator) + len(chunk)
@@ -217,7 +285,6 @@ def tracked_files(cwd: Path, limit: int = 160) -> str:
         return ""
     if len(paths) <= limit:
         return "\n".join(_with_sizes(cwd, paths))
-
     counts: dict[str, int] = {}
     for path in paths:
         parent = str(Path(path).parent)

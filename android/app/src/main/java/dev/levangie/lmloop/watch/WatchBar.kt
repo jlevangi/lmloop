@@ -21,15 +21,9 @@ import androidx.core.content.ContextCompat
 import dev.levangie.lmloop.web.DashboardRoute
 
 /**
- * A TopAppBar action, not a floating overlay -- an earlier version drew
- * itself pinned to the bottom-right of the screen, directly over the
- * dashboard's own "active runs" strip in the same corner (see `web/
- * static/style.css`'s `.runbar`, which is full-width and fixed to the
- * bottom edge, so no repositioning of a floating button avoids it; only
- * putting this control somewhere the WebView's own content never reaches
- * does). `MainActivity`'s Scaffold calls this from its TopAppBar `actions`
- * when a run is open, in the same slot the new-run action occupies on the
- * list -- see MainActivity.kt.
+ * Run-watch action displayed by MainActivity in the floating top-end control
+ * cluster above the WebView. Keeping it at the top avoids the dashboard's
+ * fixed bottom run bar; it is not part of a Material TopAppBar.
  *
  * "Which run is on screen" comes from `route`, parsed one-directionally
  * from the WebView's own URL (see `web/DashboardRoute.kt`); this never

@@ -99,22 +99,25 @@ echo "== assertions =="
 fail=0
 say() { printf '  %-6s %s\n' "$1" "$2"; [ "$1" = FAIL ] && fail=1 || true; }
 
-branch="$(git for-each-ref --format='%(refname:short)' refs/heads/lmloop | head -1)"
-[ -n "$branch" ] && say ok "branch created: $branch" || say FAIL "no lmloop branch"
+run_dir="$(find . -path '*/.lmloop/runs/*' -name status.json -print -quit)"
+[ -n "$run_dir" ] && say ok "run directory written" || say FAIL "no status.json"
+
+run_id="$(basename "$(dirname "$run_dir")")"
+branch="lmloop/$run_id"
+git show-ref --verify --quiet "refs/heads/$branch" \
+  && say ok "exact run branch created: $branch" \
+  || say FAIL "missing exact run branch: $branch"
 
 commits="$(git rev-list --count "main..$branch" 2>/dev/null || echo 0)"
-[ "$commits" -ge 1 ] && say ok "$commits commit(s) on it" || say FAIL "no commits"
+[ "$commits" -eq 2 ] && say ok "exactly 2 commit(s) on it" || say FAIL "expected exactly 2 commits, got $commits"
 
 git show "$branch:calc.py" 2>/dev/null | grep -q "def subtract" \
-  && say ok "the agent's edit is in the commit" \
+  && say ok "the agent's edit is in the exact run commit" \
   || say FAIL "calc.py has no subtract()"
 
 git log -1 --format=%B "$branch" | grep -q "gate:.*pass" \
-  && say ok "the gate ran and its result is in the commit message" \
+  && say ok "the gate ran and its result is in the exact run commit" \
   || say FAIL "no gate result recorded"
-
-run_dir="$(find . -path '*/.lmloop/runs/*' -name status.json -print -quit)"
-[ -n "$run_dir" ] && say ok "run directory written" || say FAIL "no status.json"
 
 python3 - "$run_dir" <<'EOF' || fail=1
 import json, sys

@@ -67,6 +67,7 @@ class RunDir:
         self.status_path = self.path / "status.json"
         self.run_state_path = self.path / "run-state.json"
         self.pid_path = self.path / "loop.pid"
+        self.resume_lock_path = self.path / "resume.lock"
         self.stop_path = self.path / "STOP"
         self.stop_now_path = self.path / "STOP-NOW"
         self.pause_path = self.path / "PAUSE"
@@ -362,12 +363,66 @@ class RunDir:
 
     # -- ownership --------------------------------------------------------
 
-    def claim(self) -> None:
-        """Record that this process is the loop for this run."""
+    def claim(self) -> bool:
+        """Atomically become this run's loop owner.
+
+        The pid file is the lock.  A plain write lets two concurrent resumes
+        both pass the pre-check and then overwrite each other's ownership.
+        Stale claims are safe to replace; a live claim is never discarded.
+
+        A resume lock serialises the STOP/STOP-NOW clearing so that two
+        concurrent resumes (or a resume and a web continue) cannot both see
+        the sentinel and both clear it before either claims ownership.
+        """
+        payload = f"{os.getpid()}\n".encode()
+        # Acquire resume lock and hold it open across the claim.  The lock
+        # itself is enough to serialise: a closed-and-unlinked lock would let
+        # two concurrent resumes both pass.  Closing it here means the caller
+        # must close it again on success.
+        lock_fd = None
         try:
-            self.pid_path.write_text(f"{os.getpid()}\n")
+            lock_fd = os.open(self.resume_lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return False
         except OSError:
-            pass  # advisory only; never worth failing a run over
+            return False
+        try:
+            os.write(lock_fd, b"lock\n")
+            # Clear STOP sentinels while holding the resume lock, so two
+            # concurrent resumes (or a resume and a web continue) cannot both
+            # see the sentinel and both clear it before either claims
+            # ownership.
+            self.stop_path.unlink(missing_ok=True)
+            self.stop_now_path.unlink(missing_ok=True)
+            for _ in range(2):
+                try:
+                    descriptor = os.open(self.pid_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                except FileExistsError:
+                    try:
+                        pid = int(self.pid_path.read_text().strip())
+                        os.kill(pid, 0)
+                    except (OSError, ValueError):
+                        try:
+                            self.pid_path.unlink()
+                        except OSError:
+                            return False
+                        continue
+                    raise SystemExit(f"lmloop: run {self.run_id} is already claimed by pid {pid}")
+                except OSError:
+                    return False
+                try:
+                    os.write(descriptor, payload)
+                finally:
+                    os.close(descriptor)
+                return True
+            return False
+        finally:
+            if lock_fd is not None:
+                try:
+                    os.close(lock_fd)
+                except OSError:
+                    pass
+                self.resume_lock_path.unlink(missing_ok=True)
 
     def release(self) -> None:
         """Drop this process's claim, if the claim is still ours.

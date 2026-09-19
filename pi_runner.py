@@ -140,96 +140,102 @@ def run(
     for thread in threads:
         thread.start()
 
-    killed = ""
-    while process.poll() is None:
-        time.sleep(POLL_SECONDS)
-        now = time.monotonic()
-        with state.lock:
-            first_event = state.first_event_at
-            last_event = state.last_event_at
-            writes = state.writes
-            compactions = state.compactions
-            tool_started = state.tool_started_at
-            repeated = policy.repeating_call(state.signatures, max_repeats) if max_repeats else ""
-            state.repeated = repeated
-            snapshot = {
-                "elapsed": now - started,
-                "tool_calls": state.tool_calls,
-                "writes": state.writes,
-                "compactions": state.compactions,
-                "last_tool": state.last_tool,
-                "last_target": state.last_target,
-                "output_tokens": state.output_tokens,
-                "peak_output": state.peak_output,
-                "truncations": state.truncations,
-                # The prompt as the model actually counted it, which is the only
-                # honest measure of how close this iteration is to the window it
-                # will compact at.
-                "input_tokens": state.input_tokens,
-                "tokens_per_second": state.rate(),
-                # Before the first event this is time spent waiting on
-                # llama-swap to load, not the agent going quiet.
-                "quiet": (now - last_event) if first_event else 0.0,
-                "loading": not first_event,
-            }
-        if on_progress:
-            on_progress(snapshot)
+    try:
+        killed = ""
+        while process.poll() is None:
+            time.sleep(POLL_SECONDS)
+            now = time.monotonic()
+            with state.lock:
+                first_event = state.first_event_at
+                last_event = state.last_event_at
+                writes = state.writes
+                compactions = state.compactions
+                tool_started = state.tool_started_at
+                repeated = policy.repeating_call(state.signatures, max_repeats) if max_repeats else ""
+                state.repeated = repeated
+                snapshot = {
+                    "elapsed": now - started,
+                    "tool_calls": state.tool_calls,
+                    "writes": state.writes,
+                    "compactions": state.compactions,
+                    "last_tool": state.last_tool,
+                    "last_target": state.last_target,
+                    "output_tokens": state.output_tokens,
+                    "peak_output": state.peak_output,
+                    "truncations": state.truncations,
+                    # The prompt as the model actually counted it, which is the only
+                    # honest measure of how close this iteration is to the window it
+                    # will compact at.
+                    "input_tokens": state.input_tokens,
+                    "tokens_per_second": state.rate(),
+                    # Before the first event this is time spent waiting on
+                    # llama-swap to load, not the agent going quiet.
+                    "quiet": (now - last_event) if first_event else 0.0,
+                    "loading": not first_event,
+                }
+            if on_progress:
+                on_progress(snapshot)
 
-        if now - started > timeout_seconds:
-            killed = "timeout"
-        elif tool_seconds and tool_started and now - tool_started > tool_seconds:
-            # A tool call that has been running this long is not a model
-            # thinking, and `stall_seconds` is the wrong clock for it: that one
-            # is sized for how long a slow model may take to say anything, and
-            # is routinely raised into the hours for exactly that reason.
-            #
-            # Observed: an agent launched a headless Chrome inside its bash
-            # tool for a frontend objective and the browser never exited.  That
-            # blocked the tool call, which blocked the agent, which went
-            # silent, and the run sat idle for 38 minutes -- until
-            # `stall_seconds`, which that repository had set to 3600.
-            #
-            # Safe by construction, like every other cut here: whatever the
-            # iteration wrote is gated, checked and committed on the way out.
-            killed = "tool-timeout"
-        elif first_event and now - last_event > stall_seconds:
-            # The stall clock only starts once pi has said something.  Before
-            # that, llama-swap may legitimately be evicting one model and
-            # loading another, which takes minutes and emits nothing.
-            killed = "stalled"
-        elif max_compactions and compactions >= max_compactions and not writes:
-            # Compaction thrash.  Observed on one project: the agent read 12-16
-            # files, overflowed, compacted to a plan, distrusted the plan, and
-            # re-read the same files -- six times in 69 minutes, all reads, no
-            # writes.  Each summary was larger than the last, so the usable
-            # window shrank and the cycle tightened instead of converging.
-            #
-            # Cutting this off is safe by construction: whatever the iteration
-            # left behind is committed either way, so an early cut cannot
-            # discard work.  The write counter undercounts -- an agent that
-            # appends with a bash heredoc never touches an edit tool -- so this
-            # can in principle fire on an agent that did write.  The cost when
-            # wrong is one iteration ended early, which the next one resumes
-            # from; the cost of not firing is a wasted hour.
-            killed = "thrashing"
-        elif max_repeats and repeated:
-            # The model going in a circle: the same tool pointed at the same
-            # thing, `max_repeats` times, with nothing between that could have
-            # changed the answer.  A different failure from thrashing, which is
-            # the window losing to the codebase -- this one fits fine and is
-            # simply not reading its own results.  Observed on one run: 222
-            # tool calls in 1h45m, the same reads cycling, every clock the loop
-            # had watching for silence while the agent was busy.
-            #
-            # Safe by construction like every other cut here: the iteration's
-            # work is gated, checked and committed on the way out.
-            killed = "looping"
-        elif should_stop():
-            killed = "stopped"
+            if now - started > timeout_seconds:
+                killed = "timeout"
+            elif tool_seconds and tool_started and now - tool_started > tool_seconds:
+                # A tool call that has been running this long is not a model
+                # thinking, and `stall_seconds` is the wrong clock for it: that one
+                # is sized for how long a slow model may take to say anything, and
+                # is routinely raised into the hours for exactly that reason.
+                #
+                # Observed: an agent launched a headless Chrome inside its bash
+                # tool for a frontend objective and the browser never exited.  That
+                # blocked the tool call, which blocked the agent, which went
+                # silent, and the run sat idle for 38 minutes -- until
+                # `stall_seconds`, which that repository had set to 3600.
+                #
+                # Safe by construction, like every other cut here: whatever the
+                # iteration wrote is gated, checked and committed on the way out.
+                killed = "tool-timeout"
+            elif first_event and now - last_event > stall_seconds:
+                # The stall clock only starts once pi has said something.  Before
+                # that, llama-swap may legitimately be evicting one model and
+                # loading another, which takes minutes and emits nothing.
+                killed = "stalled"
+            elif max_compactions and compactions >= max_compactions and not writes:
+                # Compaction thrash.  Observed on one project: the agent read 12-16
+                # files, overflowed, compacted to a plan, distrusted the plan, and
+                # re-read the same files -- six times in 69 minutes, all reads, no
+                # writes.  Each summary was larger than the last, so the usable
+                # window shrank and the cycle tightened instead of converging.
+                #
+                # Cutting this off is safe by construction: whatever the iteration
+                # left behind is committed either way, so an early cut cannot
+                # discard work.  The write counter undercounts -- an agent that
+                # appends with a bash heredoc never touches an edit tool -- so this
+                # can in principle fire on an agent that did write.  The cost when
+                # wrong is one iteration ended early, which the next one resumes
+                # from; the cost of not firing is a wasted hour.
+                killed = "thrashing"
+            elif max_repeats and repeated:
+                # The model going in a circle: the same tool pointed at the same
+                # thing, `max_repeats` times, with nothing between that could have
+                # changed the answer.  A different failure from thrashing, which is
+                # the window losing to the codebase -- this one fits fine and is
+                # simply not reading its own results.  Observed on one run: 222
+                # tool calls in 1h45m, the same reads cycling, every clock the loop
+                # had watching for silence while the agent was busy.
+                #
+                # Safe by construction like every other cut here: the iteration's
+                # work is gated, checked and committed on the way out.
+                killed = "looping"
+            elif should_stop():
+                killed = "stopped"
 
-        if killed:
+            if killed:
+                break
+    finally:
+        # A second signal can interrupt the supervisor before it reaches the
+        # normal kill branch.  Keep cleanup outside that branch so the process
+        # group is reaped on every exit path.
+        if process.poll() is None:
             _terminate(process)
-            break
 
     process.wait()
     for thread in threads:

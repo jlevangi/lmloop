@@ -15,7 +15,9 @@ throwing work away.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -216,7 +218,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         worktree = run_dir.parents[2]
         base = (run_dir / "base-commit").read_text().strip()
         commits = gitops.commit_count(worktree, base) if worktree.is_dir() else 0
-        done = len(list(run_dir.glob("iteration-*-prompt.md")))
+        done = runrecord.completed_iterations(runrecord.read_events(run_dir))
         stopped = "STOP" if (run_dir / "STOP").exists() else ""
         print(f"{run_id}  {done} iterations, {commits} commits  {stopped}")
     return 0

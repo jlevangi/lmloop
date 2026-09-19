@@ -259,7 +259,7 @@ def require_model(config: dict) -> None:
 RETIRED = {("worktree", "keep")}
 
 
-def validate(raw: dict, source: Path) -> list[str]:
+def validate(raw: dict, source: Path, allow_command: bool = True) -> list[str]:
     """Everything wrong with one config file, as lines somebody can act on.
 
     A config file is hand-written, and until this existed every mistake in one
@@ -273,6 +273,11 @@ def validate(raw: dict, source: Path) -> list[str]:
     Returns rather than raises, so a caller can decide whether a typo should
     stop a run from starting (it should) or stop you reading one that is
     already going (it should not).
+
+    `allow_command` is False for the project file: a `.lmloop.toml` gets
+    copied into a repo, pasted into an issue, and read by the agent the loop
+    is driving, and a value starting `!` runs a shell command as the operator.
+    The global config is trusted and keeps the spelling.
     """
     problems = []
     for section, values in raw.items():
@@ -286,6 +291,12 @@ def validate(raw: dict, source: Path) -> list[str]:
             continue
         for key, value in values.items():
             if (section, key) in RETIRED:
+                continue
+            if not allow_command and isinstance(value, str) and value.startswith("!"):
+                problems.append(
+                    f"{source}: `[{section}] {key}` runs a shell command (`!...`), "
+                    f"which is not allowed in project config; use `env:` or `file:` instead"
+                )
                 continue
             if key not in DEFAULTS[section]:
                 problems.append(

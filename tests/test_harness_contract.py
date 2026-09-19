@@ -15,6 +15,7 @@ two forks drifting apart -- is one this project has already paid for twice
 """
 
 import json
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -26,10 +27,35 @@ import harness_pi
 TESTDATA = Path(__file__).parent.parent / "testdata"
 
 
-def load(name):
-    """The captured stream as `{variant: event}`, keyed the way tests ask."""
-    events = {}
-    for line in (TESTDATA / name).read_text().splitlines():
+class CapturedEvents:
+    """Ordered captured events, retaining repeated keys rather than overwriting."""
+
+    def __init__(self):
+        self._events = []
+
+    def add(self, key, event):
+        self._events.append((key, event))
+
+    def __contains__(self, key):
+        return any(name == key for name, _event in self._events)
+
+    def __getitem__(self, key):
+        for name, event in self._events:
+            if name == key:
+                return event
+        raise KeyError(key)
+
+    def items(self):
+        return iter(self._events)
+
+    def __len__(self):
+        return len(self._events)
+
+
+def load(name, *, directory=TESTDATA):
+    """The captured stream in wire order, including duplicate event keys."""
+    events = CapturedEvents()
+    for line in (directory / name).read_text().splitlines():
         if not line.strip():
             continue
         event = json.loads(line)
@@ -41,11 +67,23 @@ def load(name):
                    if role == "assistant" else f"message_end:{role}")
         else:
             key = kind
-        events[key] = event
+        events.add(key, event)
     return events
 
 
 class CapturedEventContractTests(unittest.TestCase):
+    def test_loader_preserves_order_and_duplicate_event_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "events.jsonl"
+            fixture.write_text("{\"type\": \"turn_start\", \"n\": 1}\n"
+                               "{\"type\": \"turn_start\", \"n\": 2}\n")
+            events = load(fixture.name, directory=Path(directory))
+
+        self.assertEqual(2, len(events))
+        self.assertEqual(["turn_start", "turn_start"],
+                         [key for key, _event in events.items()])
+        self.assertEqual([1, 2], [event["n"] for _key, event in events.items()])
+
     CASES = (("pi", "pi-events.jsonl", "compaction_start"),
              ("omp", "omp-events.jsonl", "auto_compaction_start"))
 
@@ -319,7 +357,7 @@ def load_opencode():
     """opencode's stream is shaped differently: no `message_end`, tool calls
     arrive as one `tool_use` with the result attached, and a step's `reason` is
     the closest thing it has to a stop reason."""
-    events = {}
+    events = CapturedEvents()
     for line in (TESTDATA / "opencode-events.jsonl").read_text().splitlines():
         if not line.strip():
             continue
@@ -332,7 +370,7 @@ def load_opencode():
             key = f"step_finish:{part.get('reason')}"
         else:
             key = kind
-        events[key] = event
+        events.add(key, event)
     return events
 
 

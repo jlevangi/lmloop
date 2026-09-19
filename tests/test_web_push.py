@@ -2,11 +2,15 @@
 text it shares with ntfy rather than re-deriving.
 """
 
+import importlib.util
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+VAPID_AVAILABLE = importlib.util.find_spec("py_vapid") is not None
+WEBPUSH_AVAILABLE = importlib.util.find_spec("pywebpush") is not None
 
 import notify
 import webpush
@@ -24,7 +28,7 @@ def generate_pem() -> str:
 class WebPushConfigTests(unittest.TestCase):
     def test_disabled_without_a_library(self):
         with mock.patch.object(push_module, "AVAILABLE", False):
-            push = push_module.build(generate_pem(), "mailto:you@example.com")
+            push = push_module.build("test private key", "mailto:you@example.com")
         self.assertFalse(push.enabled)
         self.assertEqual("", push.public_key)
 
@@ -32,6 +36,7 @@ class WebPushConfigTests(unittest.TestCase):
         push = push_module.build("", "mailto:you@example.com")
         self.assertFalse(push.enabled)
 
+    @unittest.skipUnless(VAPID_AVAILABLE, "py_vapid is required to generate a test key")
     def test_disabled_without_a_contact(self):
         push = push_module.build(generate_pem(), "")
         self.assertFalse(push.enabled)
@@ -41,10 +46,12 @@ class WebPushConfigTests(unittest.TestCase):
             push = push_module.build("not a real pem", "mailto:you@example.com")
         self.assertFalse(push.enabled)
 
+    @unittest.skipUnless(VAPID_AVAILABLE, "py_vapid is required to generate a test key")
     def test_enabled_with_a_real_key_and_contact(self):
         push = push_module.build(generate_pem(), "mailto:you@example.com")
         self.assertTrue(push.enabled)
 
+    @unittest.skipUnless(VAPID_AVAILABLE, "py_vapid is required to generate a test key")
     def test_the_public_key_is_a_url_safe_base64_uncompressed_point(self):
         """This is exactly the shape `PushManager.subscribe`'s
         `applicationServerKey` needs: a 65-byte uncompressed P-256 point,
@@ -124,6 +131,7 @@ class WebPushSendTests(unittest.TestCase):
                                              "LMLOOP_WEB_VAPID_CONTACT": ""}, clear=False):
             self.assertEqual("", webpush.send(self.run_dict()))
 
+    @unittest.skipUnless(VAPID_AVAILABLE, "py_vapid is required to generate a test key")
     def test_no_subscribers_is_a_silent_no_op(self):
         empty_dir = tempfile.mkdtemp()
         fake_push = push_module.build(generate_pem(), "mailto:you@example.com",
@@ -131,6 +139,8 @@ class WebPushSendTests(unittest.TestCase):
         with mock.patch.object(webpush, "_configured_push", return_value=fake_push):
             self.assertEqual("", webpush.send(self.run_dict()))
 
+    @unittest.skipUnless(VAPID_AVAILABLE and WEBPUSH_AVAILABLE,
+                         "py_vapid and pywebpush are required for sending")
     def test_it_sends_the_title_and_body_notify_summarise_produced(self):
         store_dir = tempfile.mkdtemp()
         store_path = Path(store_dir) / "push_subscriptions.json"
@@ -153,6 +163,8 @@ class WebPushSendTests(unittest.TestCase):
         self.assertEqual(expected_title, sent["payload"]["title"])
         self.assertEqual(expected_body, sent["payload"]["body"])
 
+    @unittest.skipUnless(VAPID_AVAILABLE and WEBPUSH_AVAILABLE,
+                         "py_vapid and pywebpush are required for sending")
     def test_a_gone_subscription_is_pruned_and_does_not_report_as_a_failure(self):
         from pywebpush import WebPushException
 
@@ -171,6 +183,8 @@ class WebPushSendTests(unittest.TestCase):
         self.assertEqual("", problem)
         self.assertEqual([], push_store.all_subscriptions(store_path))
 
+    @unittest.skipUnless(VAPID_AVAILABLE and WEBPUSH_AVAILABLE,
+                         "py_vapid and pywebpush are required for sending")
     def test_a_real_failure_is_reported_and_the_subscription_kept(self):
         from pywebpush import WebPushException
 

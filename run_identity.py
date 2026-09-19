@@ -11,9 +11,10 @@ SLUG_FILLER = frozenset({
     "want", "wants", "wanted", "need", "needs", "needed", "like", "would",
     "should", "could", "can", "will", "shall", "to", "for", "of", "and",
     "so", "then", "now", "just", "really", "very", "up",
+    "objective", "task", "goal", "prompt", "instructions", "feature", "issue",
 })
 
-SLUG_MAX = 28
+SLUG_MAX = 36
 
 
 def make_slug(prompt: str) -> str:
@@ -27,11 +28,21 @@ def make_slug(prompt: str) -> str:
     """
     import re
 
-    every = [w for w in re.split(r"[^a-z0-9]+", prompt.lower()) if w]
-    # Everywhere, not just the front.  Keeping interior filler was the tidier
-    # rule grammatically and the worse one in practice: it spent the budget on
-    # articles and then stopped on one, so `add-a-test-suite-for-the` ended on
-    # the same mid-thought note the column cut was introduced to fix.
+    # If prompt starts with markdown headers or labels, find the real subject line
+    clean_prompt = prompt.strip()
+    lines = [line.strip() for line in clean_prompt.splitlines() if line.strip()]
+    first_meaningful = ""
+    for line in lines:
+        line_sub = re.sub(r"^[#\s*\->:]+", "", line).strip()
+        # Skip generic headings like "# Objective" or "## Summary"
+        words_in_line = [w for w in re.split(r"[^a-z0-9]+", line_sub.lower()) if w]
+        non_filler = [w for w in words_in_line if w not in SLUG_FILLER]
+        if non_filler:
+            first_meaningful = line_sub
+            break
+
+    target_text = first_meaningful if first_meaningful else clean_prompt
+    every = [w for w in re.split(r"[^a-z0-9]+", target_text.lower()) if w]
     words = [w for w in every if w not in SLUG_FILLER]
     if not words:
         words = every

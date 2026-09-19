@@ -30,6 +30,7 @@ import config as config_module
 import runrecord
 from web import runs as runs_module
 from web import workspace
+from preview import Preview
 
 
 # Dashboard-launched loops are deliberately bounded even when a caller bypasses
@@ -65,6 +66,9 @@ def create_project(payload: dict, config: dict) -> tuple[int, dict]:
     """
     name = str(payload.get("name", "")).strip()
     objective = str(payload.get("objective", "")).strip()
+    template = payload.get("template", "static-web")
+    if not isinstance(template, str) or template != "static-web":
+        return 400, {"error": "template must be `static-web`"}
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
         return 400, {
             "error": "name must be 1-64 characters of letters, digits, dot, dash or underscore"
@@ -88,6 +92,17 @@ def create_project(payload: dict, config: dict) -> tuple[int, dict]:
         if objective:
             readme += f"\n{objective}\n"
         (target / "README.md").write_text(readme)
+        title = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        (target / "index.html").write_text(
+            f"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title>"
+            f"</head><body><main><h1>{title}</h1></main></body></html>\n"
+        )
+        (target / ".lmloop.toml").write_text(
+            "[preview]\n"
+            '# template = static-web\n'
+            'command = ["python3", "-m", "http.server", "{port}"]\n'
+            'path = "/"\nready_path = "/"\n'
+        )
         for argv in (
             ["git", "init", "-q"],
             ["git", "add", "-A"],
@@ -330,6 +345,29 @@ def control(project: dict, run_dir: Path, action: str, payload: dict,
     else:
         return None
     return 200, runs_module.summarise(project, run_dir)
+
+
+def _preview(run_dir: Path, fallback_project_path: Path | None = None) -> Preview:
+    """Preview policy from the exact checkout the button will serve."""
+    worktree = run_dir.parents[2] if len(run_dir.parents) >= 3 else (fallback_project_path or run_dir)
+    return Preview(run_dir, config_module.load(worktree, strict=False))
+
+
+def preview_status(project: dict, run_dir: Path) -> tuple[int, dict]:
+    """Read preview state without waiting for startup or network readiness."""
+    if runs_module.is_archived(run_dir):
+        return 200, {"enabled": False, "state": "disabled", "url": "", "url_template": ""}
+    return 200, _preview(run_dir, Path(project["path"])).status()
+
+
+def preview_control(project: dict, run_dir: Path, action: str) -> tuple[int, dict]:
+    """Start, stop, or restart only the preview belonging to this live run."""
+    if runs_module.is_archived(run_dir):
+        return 400, {"error": "archived runs cannot have previews"}
+    if action not in {"start", "stop", "restart"}:
+        return 400, {"error": f"unknown preview action {action}"}
+    preview = _preview(run_dir, Path(project["path"]))
+    return 200, getattr(preview, action)()
 
 
 def delete_run(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:

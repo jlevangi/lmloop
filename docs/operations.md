@@ -115,6 +115,22 @@ is — the worktree directory or the `lmloop/<run-id>` branch — so a worktree
 removed by hand does not leave a branch behind for `git worktree add` to trip
 over later.
 
+## Preview configuration
+
+A project may opt into the dashboard preview with an explicit `[preview]` section. The default is disabled (`command = []`). Commands must be TOML argv lists, never shell strings; each argument may use `{port}`. Project-local commands are executed without a shell and are not allowed to use `!command` config references.
+
+```toml
+[preview]
+command = ["python3", "-m", "http.server", "{port}"]
+port = 4173
+path = "/"
+ready_path = "/"
+url = "http://{browser-host}:{port}{path}"
+startup_timeout_seconds = 30
+```
+
+`port` is 1–65535, paths begin with `/`, and startup timeout is 1–3600 seconds. URL placeholders are limited to `{browser-host}`, `{port}`, and `{path}`. The dashboard's **Create project** operation defaults to the `static-web` template, writing `index.html` and this standard-library preview configuration; pass another template only when the API documents it.
+
 ## The gate
 
 The gate command runs after every iteration, and once before the first one,

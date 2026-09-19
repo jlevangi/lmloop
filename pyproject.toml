@@ -33,7 +33,7 @@ py-modules = [
     "rundir", "runrecord", "run_history", "run_identity", "attach",
     "gitops", "checks", "models", "browser", "harness", "harness_base",
     "harness_pi", "harness_omp", "harness_opencode", "config", "config_defaults", "env",
-    "display", "doctor", "eta", "notify", "prune", "webpush",
+    "display", "doctor", "eta", "notify", "prune", "webpush", "preview",
 ]
 
 [tool.setuptools.packages.find]

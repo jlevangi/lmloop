@@ -228,6 +228,17 @@ DEFAULTS: dict = {
         "command": "",
         "blocks_commit": False,
     },
+    "preview": {
+        # Empty means no preview process.  When enabled, the command is an argv
+        # list; it is never interpreted by a shell and may use {port} as an
+        # argument placeholder.
+        "command": [],
+        "port": 4173,
+        "path": "/",
+        "ready_path": "/",
+        "url": "http://{browser-host}:{port}{path}",
+        "startup_timeout_seconds": 30,
+    },
     "env": {
         # What the agent and the gate see of the host environment.  The default
         # is an allowlist, because the alternative -- and what this was until

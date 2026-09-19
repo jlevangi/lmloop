@@ -26,8 +26,9 @@ dependencies disable only that integration rather than breaking the loop.
 | `harness.py` | Stable adapter facade and registry. Re-exports the shared contract and concrete adapters so callers import one module. |
 | `harness_base.py` | Agent-neutral adapter contract and normalized event vocabulary. |
 | `harness_pi.py`, `harness_omp.py`, `harness_opencode.py` | One concrete adapter per agent: argv, event translation, catalogue, and capabilities. |
-| `config.py` | Global/project TOML loading, validation, references, and command-line overrides. |
+| `config.py` | Global/project TOML loading, validation, references, and command-line overrides. Preview config is explicit: argv-only command, bounded port/timeout, slash-prefixed paths, and browser URL placeholders. |
 | `config_defaults.py` | Shipped configuration data and the operational evidence behind each value. |
+| `preview.py` | Starts the configured preview with argv execution only, probes readiness, and expands browser-host/port/path URL placeholders. An empty command disables it. |
 | `tools/fake-agent` | An agent that needs no model: same argv shape and event stream as pi, scripted by `.fake-agent.json`. |
 | `tools/smoke` | The whole loop against it, in about five seconds, asserting on the commit and the run directory. |
 | `attach.py` | `lmloop attach`: the foreground screen and controls for a detached run, from its files. Never claims it, never writes its status, and Ctrl-C detaches. |

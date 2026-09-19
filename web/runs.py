@@ -23,6 +23,7 @@ import config as config_module
 import eta
 import policy
 import runrecord
+from preview import Preview
 
 # See `runrecord.STALE_AFTER_SECONDS`; kept as an attribute here too since it
 # is part of this module's own public surface.
@@ -398,6 +399,12 @@ def summarise(project: dict, run_dir: Path) -> dict:
     archived = is_archived(run_dir)
     if archived:
         state = "archived"
+    try:
+        worktree = run_dir.parents[2] if len(run_dir.parents) >= 3 else Path(project["path"])
+        preview_config = config_module.load(worktree, strict=False)
+        preview = Preview(run_dir, preview_config).status()
+    except (OSError, SystemExit, ValueError, IndexError):
+        preview = {"enabled": False, "state": "disabled", "url": "", "url_template": ""}
     estimate = eta.estimate(
         events, elapsed_seconds=status.get("elapsed_seconds") or 0,
         iteration=status.get("iteration") or 0,
@@ -454,6 +461,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "outcomes": outcomes[-12:],
         "commits": commits,
         "updated_at": status.get("updated_at"),
+        "preview": preview,
         **estimate,
     }
 

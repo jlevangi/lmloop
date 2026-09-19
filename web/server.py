@@ -428,6 +428,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not run_dir:
                     return self.json({"error": "no such run"}, 404)
                 return self.json(runs_module.detail(project, run_dir))
+            if len(parts) == 3 and parts[2] == "preview":
+                project, run_dir = self._resolve(parts[0], parts[1])
+                if not run_dir:
+                    return self.json({"error": "no such run"}, 404)
+                status, reply = service.preview_status(project, run_dir)
+                return self.json(reply, status)
+
         return self.json({"error": "not found"}, 404)
 
     # -- POST -------------------------------------------------------------
@@ -462,6 +469,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.push_unsubscribe(self.body())
         if path.startswith("/api/runs/"):
             parts = path[len("/api/runs/"):].split("/")
+            if len(parts) == 3 and parts[2] == "preview":
+                project, run_dir = self._resolve(parts[0], parts[1])
+                if not run_dir or not project:
+                    return self.json({"error": "no such run"}, 404)
+                payload = self.body() or {}
+                action = (payload.get("action") or "").strip()
+                status, reply = service.preview_control(project, run_dir, action)
+                return self.json(reply, status)
+            if len(parts) == 4 and parts[2] == "preview":
+                project, run_dir = self._resolve(parts[0], parts[1])
+                if not run_dir or not project:
+                    return self.json({"error": "no such run"}, 404)
+                status, reply = service.preview_control(project, run_dir, parts[3])
+                return self.json(reply, status)
             if len(parts) == 3:
                 project, run_dir = self._resolve(parts[0], parts[1])
                 if not run_dir:

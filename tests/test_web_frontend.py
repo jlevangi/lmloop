@@ -469,6 +469,38 @@ class RunStateVocabularyTests(unittest.TestCase):
                 self.assertIn(state, code, f"the dashboard never mentions state {state!r}")
 
 
+class PreviewControlTests(unittest.TestCase):
+    """Preview controls must stay honest while the backend owns the state."""
+
+    def test_detail_renders_all_preview_states_and_actions(self):
+        self.assertIn('const PREVIEW_STATES = new Set(["disabled", "stopped", "starting", "ready", "failed"]);', APP)
+        body = re.search(r"function previewPanel\(run\) \{(.*?)\n\}", APP, re.S).group(1)
+        for state in ("stopped", "starting", "ready", "failed"):
+            with self.subTest(state=state):
+                self.assertIn(f'"{state}"', body)
+        for action in ("start", "stop", "restart"):
+            self.assertIn(f'"{action}"', body)
+
+    def test_mutations_are_disabled_in_read_only_but_link_is_not(self):
+        body = re.search(r"function previewPanel\(run\) \{(.*?)\n\}", APP, re.S).group(1)
+        self.assertIn("button.disabled = readOnly", body)
+        self.assertIn('link.target = "_blank"', body)
+        self.assertIn('link.rel = "noopener"', body)
+
+    def test_preview_url_resolves_remote_browser_host_and_bounds_logs(self):
+        body = re.search(r"function previewHref\(preview\) \{(.*?)\n\}", APP, re.S).group(1)
+        self.assertIn("window.location.hostname", body)
+        self.assertIn("preview.url_template", body)
+        self.assertIn("preview.port", body)
+        self.assertIn("preview.path", body)
+        self.assertIn("PREVIEW_LOG_LIMIT", APP)
+
+    def test_detail_poll_does_not_skip_preview_refresh(self):
+        body = re.search(r"async function renderRun\(.*?\n\}", APP, re.S).group(0)
+        self.assertIn('api(`/api/runs/${project}/${runId}`)', body)
+        self.assertNotIn("if (quiet && key === state.detailKey)", body)
+
+
 class WebPushVocabularyTests(unittest.TestCase):
     """Web Push's three surfaces -- server, service worker, page -- have to
     agree on the same field name and the same two event types, or a

@@ -709,6 +709,125 @@ function control(label, action, run, { risk = false, body = {}, confirm: ask = n
   return button;
 }
 
+const PREVIEW_STATES = new Set(["disabled", "stopped", "starting", "ready", "failed"]);
+const PREVIEW_LOG_LIMIT = 4000;
+
+function previewPayload(run) {
+  // Preview is a nested capability in the detail payload. Keep the fallback
+  // deliberately narrow: older payloads simply render as disabled.
+  const preview = run["preview"];
+  return preview && typeof preview === "object" ? preview : { enabled: false, state: "disabled" };
+}
+
+function previewState(preview) {
+  if (!preview.enabled) return "disabled";
+  return PREVIEW_STATES.has(preview.state) ? preview.state : "stopped";
+}
+
+function previewHref(preview) {
+  const raw = String(preview.url || preview.url_template || "").trim();
+  if (!raw) return "";
+  const host = window.location.hostname;
+  const port = preview.port == null ? "" : String(preview.port);
+  const path = preview.path == null ? "" : String(preview.path);
+  // Backends may use browser-host/port/path tokens when the server and browser
+  // are not on the same machine. Absolute configured URLs are otherwise kept.
+  const resolved = raw
+    .replace(/\{(?:browser[-_])?host(?:name)?\}|<browser-host>|browser-host|\{host\}/gi, host)
+    .replace(/\{port\}|<port>|:port\b/gi, port)
+    .replace(/\{path\}|<path>/gi, path);
+  try {
+    const absolute = /^[a-z][a-z\d+.-]*:\/\//i.test(resolved);
+    const url = new URL(resolved, window.location.origin);
+    if (!absolute && port) url.port = port;
+    if (!absolute && path) url.pathname = path.startsWith("/") ? path : `/${path}`;
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function previewLogTail(log) {
+  const text = String(log || "");
+  if (text.length <= PREVIEW_LOG_LIMIT) return text;
+  return `…${text.slice(-PREVIEW_LOG_LIMIT)}`;
+}
+
+function previewControl(label, previewAction, run, { risk = false } = {}) {
+  const button = el("button", risk ? "risk" : "quiet", label);
+  button.type = "button";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    const was = button.textContent;
+    button.textContent = "working…";
+    try {
+      await api(`/api/runs/${run.project}/${run.route_id || run.run_id}/preview`, {
+        body: { action: previewAction },
+      });
+      state.detailKey = null;
+      await poll();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = was;
+      alert(error.message);
+    }
+  });
+  return button;
+}
+
+function previewPanel(run) {
+  const preview = previewPayload(run);
+  const current = previewState(preview);
+  const panel = el("div", "preview-panel");
+  const status = el("div", "preview-status");
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.append(el("span", "preview-label", "State"), el("strong", `preview-state ${current}`, current));
+  panel.append(status);
+
+  const actions = el("div", "controls preview-controls");
+  const readOnly = Boolean(state.config?.read_only);
+  const addAction = (label, action, risk = false) => {
+    const button = previewControl(label, action, run, { risk });
+    button.disabled = readOnly;
+    if (readOnly) button.title = "Read-only mode";
+    actions.append(button);
+  };
+  if (current === "stopped" || current === "failed") addAction("Start", "start");
+  if (current === "starting" || current === "ready") addAction("Stop", "stop", true);
+  if (current === "ready" || current === "failed") addAction("Restart", "restart");
+
+  const href = current === "ready" ? previewHref(preview) : "";
+  if (href) {
+    const link = el("a", "act preview-link", "Open preview");
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.setAttribute("aria-label", "Open preview in a new tab");
+    actions.append(link);
+  }
+  if (actions.children.length) panel.append(actions);
+
+  const errorText = String(preview.error || "").trim();
+  if (errorText) {
+    const error = el("p", "alert preview-error");
+    error.setAttribute("role", "alert");
+    error.textContent = `${errorText} Try Start again or inspect the preview log.`;
+    panel.append(error);
+  }
+  const tail = previewLogTail(preview.log ?? preview.log_tail);
+  if (tail) {
+    const logs = document.createElement("details");
+    logs.className = "preview-logs";
+    logs.dataset.key = "preview-logs";
+    const summary = document.createElement("summary");
+    summary.textContent = "Preview logs";
+    logs.append(summary, el("pre", null, tail));
+    panel.append(logs);
+  }
+  return panel;
+}
+
 /* The run page is a fixed head plus a replaceable body. `#view-run` itself is
  * never cleared while a run is on screen, because clearing it would take the
  * head with it. */
@@ -723,16 +842,9 @@ function runShell(runId) {
 }
 
 async function renderRun(project, runId, { quiet = false } = {}) {
-  const summary = state.runs.find((r) => (r.route_id || r.run_id) === runId);
-  const key = JSON.stringify([
-    runId, summary?.state, summary?.plan_done, summary?.plan_total,
-    summary?.iterations_done, summary?.commits, summary?.defects,
-  ]);
-  if (quiet && key === state.detailKey) {
-    if (summary && state.shell?.head) patchHead(state.shell.head, summary);
-    return;
-  }
-
+  // The list poll does not promise the detail-only preview fields. Fetch the
+  // normal detail resource on every quiet poll so preview state is authoritative
+  // and never inferred from a button click.
   $("bar-title").textContent = project;
   $("bar-sub").textContent = elideMiddle(runId);
   $("bar-sub").title = runId;
@@ -825,6 +937,8 @@ async function renderRun(project, runId, { quiet = false } = {}) {
     parts.push(controls);
   }
 
+  section("preview", "Preview", (inner) => inner.append(previewPanel(run)), { start: true });
+
   if (run.defects?.length) {
     section("defects", `Broken files — ${run.defects.length}`, (inner) => {
       for (const defect of run.defects) inner.append(el("div", "defect", defect));
@@ -867,7 +981,6 @@ async function renderRun(project, runId, { quiet = false } = {}) {
 
   body.replaceChildren(...parts);
   if (quiet) window.scrollTo(0, scroll);
-  state.detailKey = key;
 }
 
 /* ── New run ───────────────────────────────────────────────────────────── */

@@ -49,6 +49,7 @@ from __future__ import annotations
 import difflib
 import os
 import shutil
+import string
 import subprocess
 import sys
 import tomllib
@@ -331,6 +332,42 @@ def validate(raw: dict, source: Path, allow_command: bool = True) -> list[str]:
                     problems.append(
                         f"{source}: `[context] files` list items must be strings, got {bad!r}"
                     )
+            elif section == "preview" and key == "command" and isinstance(value, list):
+                bad = [item for item in value if not isinstance(item, str)]
+                if bad:
+                    problems.append(
+                        f"{source}: `[preview] command` list items must be strings, got {bad!r}"
+                    )
+            elif section == "preview" and key == "port":
+                if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+                    problems.append(
+                        f"{source}: `[preview] port` expects a whole number from 1 to 65535, got {value!r}"
+                    )
+            elif section == "preview" and key in ("path", "ready_path"):
+                if not isinstance(value, str) or not value.startswith("/"):
+                    problems.append(
+                        f"{source}: `[preview] {key}` expects a string beginning with `/`, got {value!r}"
+                    )
+            elif section == "preview" and key == "startup_timeout_seconds":
+                if (not isinstance(value, int) or isinstance(value, bool)
+                        or not 1 <= value <= 3600):
+                    problems.append(
+                        f"{source}: `[preview] startup_timeout_seconds` expects a whole number from 1 to 3600, got {value!r}"
+                    )
+            elif section == "preview" and key == "url" and isinstance(value, str):
+                formatter = string.Formatter()
+                try:
+                    fields = [name for _, name, _, _ in formatter.parse(value) if name]
+                except ValueError:
+                    fields = ["<invalid>"]
+                if any(name not in {"browser-host", "port", "path"} for name in fields):
+                    problems.append(
+                        f"{source}: `[preview] url` supports only {{browser-host}}, {{port}}, and {{path}} placeholders"
+                    )
+            elif section == "preview" and key == "url" and not isinstance(value, str):
+                problems.append(
+                    f"{source}: `[preview] url` expects a string in quotes, got {_shape(value)} ({value!r})"
+                )
 
     return problems
 
@@ -530,6 +567,16 @@ older_than_days = 0       # 0 = including the run that just finished
 [gate]
 command       = ""        # e.g. "python -m compileall -q backend"
 blocks_commit = false     # record the result; commit either way
+
+[preview]
+# Empty disables the preview. Commands are TOML argv lists, never shell strings.
+# The preview runner substitutes {port} in each argument before execve.
+command = []
+port = 4173
+path = "/"
+ready_path = "/"
+url = "http://{browser-host}:{port}{path}"
+startup_timeout_seconds = 30
 
 [env]
 # What the agent -- and the gate -- see of your environment.  The default is an

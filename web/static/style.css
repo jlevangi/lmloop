@@ -458,8 +458,9 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 .preview-state.starting { color: var(--warn); }
 .preview-state.ready { color: var(--ok); }
 .preview-state.failed { color: var(--bad); }
-.preview-controls { align-items: center; }
-.preview-link { text-decoration: none; display: inline-block; }
+.preview-controls { align-items: center; gap: 8px; flex-wrap: wrap; }
+.preview-controls button, .preview-link { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+.preview-link { text-decoration: none; }
 .preview-error { margin: 0; line-height: 1.5; }
 .preview-logs { border-color: var(--line-soft) !important; }
 .preview-logs pre { margin-bottom: 0; max-height: calc(var(--vh1, 6px) * 24); }

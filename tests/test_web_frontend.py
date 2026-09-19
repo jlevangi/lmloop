@@ -418,7 +418,7 @@ class IterationClockTests(unittest.TestCase):
     def test_the_model_card_shows_the_iteration_clock_while_running(self):
         body = self.function_body("patchModel")
         self.assertIn("liveElapsed(run)", body)
-        self.assertIn('run.state === "running"', body)
+        self.assertIn("isWorking(run)", body)
 
     def test_the_per_second_ticker_updates_it_without_a_full_repaint(self):
         """Matches the row card and the runbar strip, which already tick a
@@ -499,6 +499,13 @@ class PreviewControlTests(unittest.TestCase):
         body = re.search(r"async function renderRun\(.*?\n\}", APP, re.S).group(0)
         self.assertIn('api(`/api/runs/${project}/${runId}`)', body)
         self.assertNotIn("if (quiet && key === state.detailKey)", body)
+
+    def test_stopping_runs_are_treated_as_working_for_rate_and_indicators(self):
+        self.assertIn('const isWorking = (runOrState) =>', APP)
+        self.assertIn('s === "running" || s === "stopping"', APP)
+        self.assertIn('model.rate.textContent = isWorking(run) ? rate(run.tokens_per_second) : ""', APP)
+        self.assertIn('const working = active.some((run) => isWorking(run));', APP)
+        self.assertIn('const live = active.some((r) => isWorking(r));', APP)
 
 
 class WebPushVocabularyTests(unittest.TestCase):

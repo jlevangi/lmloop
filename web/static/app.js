@@ -106,6 +106,14 @@ function compact(n) {
 
 const rate = (r) => (r ? `${r < 10 ? r.toFixed(1) : Math.round(r)} tok/s` : "");
 
+// A run in "stopping" state has had a stop requested, but its current
+// iteration is still actively generating tokens and calling tools until it
+// commits and halts at the boundary. It is actively working.
+const isWorking = (runOrState) => {
+  const s = typeof runOrState === "string" ? runOrState : runOrState?.state;
+  return s === "running" || s === "stopping";
+};
+
 /* A run id is `<date>-<slug>-<hash>`, and the two ends are the identifying
  * parts: the date says which attempt, the hash says which objective.  Letting
  * CSS truncate it drops the hash -- the half that distinguishes two runs of the
@@ -126,7 +134,7 @@ function liveElapsed(run) {
 function elapsed(run) {
   const seconds = run.run_elapsed_seconds ?? run.elapsed_seconds;
   if (seconds == null) return "";
-  if (run.state !== "running") return duration(seconds);
+  if (!isWorking(run)) return duration(seconds);
   const drift = (Date.now() - (state.fetchedAt || Date.now())) / 1000;
   return duration(Math.round(seconds + drift));
 }
@@ -135,7 +143,7 @@ function timingText(run) {
   const bits = [];
   const spent = elapsed(run);
   if (spent) bits.push(`Elapsed ${spent}`);
-  if (run.state === "running" && run.eta_seconds != null) {
+  if (isWorking(run) && run.eta_seconds != null) {
     bits.push(`Estimated ${duration(run.eta_seconds)} left`);
   }
   return bits.join(" · ");
@@ -176,12 +184,11 @@ function metaBits(run) {
   const bits = [];
   if (run.iteration) bits.push(`iter ${run.iteration}/${run.max_iterations ?? "?"}`);
   if (run.commits) bits.push(plural(run.commits, "commit"));
-  // The tool is already on the activity line for a running run; repeating it
-  // here just spends a phone's width saying the same word twice.
-  if (run.state !== "running" && run.last_tool) bits.push(run.last_tool);
-  if (run.state === "running" && run.elapsed_seconds != null) bits.push(liveElapsed(run));
-  if (run.state === "running" && run.eta_seconds) bits.push(`~${duration(run.eta_seconds)} left`);
-  if (run.state === "running" && run.tokens_per_second) bits.push(rate(run.tokens_per_second));
+  const live = isWorking(run);
+  if (!live && run.last_tool) bits.push(run.last_tool);
+  if (live && run.elapsed_seconds != null) bits.push(liveElapsed(run));
+  if (live && run.eta_seconds) bits.push(`~${duration(run.eta_seconds)} left`);
+  if (live && run.tokens_per_second) bits.push(rate(run.tokens_per_second));
   if (run.compactions) bits.push(`${run.compactions} ovf`);
   if (run.defects?.length) bits.push(`${run.defects.length} broken`);
   if (run.agent) bits.push(run.agent);
@@ -244,7 +251,7 @@ function patchRow(parts, run) {
   parts.title.textContent = run.title;
 
   // What it is doing, right now, without opening anything.
-  const live = run.state === "running";
+  const live = isWorking(run);
 
   // The bar stays up for a live run with no plan yet, showing nothing done.
   // That is the first iteration, which is the longest one and the one with the
@@ -323,7 +330,7 @@ function renderList() {
   $("archived-group").hidden = archived.length === 0;
   $("empty").hidden = runs.length > 0;
 
-  const live = active.some((r) => r.state === "running");
+  const live = active.some((r) => isWorking(r));
   const stale = runs.some((r) => r.state === "stale");
   $("moon").className = `moon ${live ? "live" : stale ? "stale" : ""}`;
   if (state.route.name === "list") {
@@ -486,7 +493,7 @@ function patchModel(model, run) {
   // on screen is the difference between "slow" and "wrong model".
   model.tag.textContent = [run.agent, run.role, run.thinking && `thinking ${run.thinking}`]
     .filter(Boolean).join(" · ");
-  model.rate.textContent = run.state === "running" ? rate(run.tokens_per_second) : "";
+  model.rate.textContent = isWorking(run) ? rate(run.tokens_per_second) : "";
 
   const used = run.input_tokens || 0;
   const window = run.context_window || 0;
@@ -505,7 +512,7 @@ function patchModel(model, run) {
   // pi_runner's `started`), not the run's -- that total already has its own
   // line above this card. Without this, the only way to notice an iteration
   // running long was the row card in the list, one navigation away.
-  const live = run.state === "running" && run.elapsed_seconds != null;
+  const live = isWorking(run) && run.elapsed_seconds != null;
   if (live) bits.push(`iteration ${liveElapsed(run)}`);
   if (run.output_tokens) bits.push(`${compact(run.output_tokens)} out`);
   /* The cap is per reply and `output_tokens` is the whole iteration's total,
@@ -1176,7 +1183,7 @@ function patchRunbarRow(parts, run) {
   parts.line.textContent = runbarLine(run);
   parts.line.hidden = !runbarLine(run);
 
-  const live = run.state === "running";
+  const live = isWorking(run);
   parts.fill.style.width = run.plan_total
     ? `${Math.round((run.plan_done / run.plan_total) * 100)}%`
     : "0%";
@@ -1222,7 +1229,7 @@ function renderRunbar() {
   document.body.classList.add("has-runbar");
   if (RAIL.matches && !runbar.openPanel) toggleRunbar(true);
 
-  const working = active.some((run) => run.state === "running");
+  const working = active.some((run) => isWorking(run));
   // Lit only for a run that is actually generating.  Paused gets the dark moon,
   // not the red one: red is this palette's word for "something is wrong", and a
   // run someone deliberately paused is the one case where nothing is.
@@ -1298,7 +1305,7 @@ function paintBar(run) {
   // the rewrite -- assigning className drops every class not named here.
   chip.className = `state bar-chip ${run.state}`;
 
-  const live = run.state === "running";
+  const live = isWorking(run);
   track.hidden = !run.plan_total && !live;
   track.firstChild.style.width = run.plan_total
     ? `${Math.round((run.plan_done / run.plan_total) * 100)}%`

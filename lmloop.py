@@ -72,7 +72,17 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
     run directory.
     """
     repo = gitops.repo_root(Path.cwd())
-    run_id = Run(repo, config_module.load(repo), objective).run_id
+    config = config_module.load(repo)
+    if args.model:
+        config["agent"]["model"] = args.model
+    if args.thinking:
+        config["agent"]["thinking"] = args.thinking
+    if args.gate is not None:
+        config["gate"]["command"] = args.gate
+    config_module.override_agent(config, args.agent or "", args.tools or "")
+    config_module.require_model(config)
+    config_module.validate_required_tools(config)
+    run_id = Run(repo, config, objective).run_id
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     log_path = STATE_DIR / f"{run_id}.log"
 
@@ -115,6 +125,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # are valid is a question only the selected agent can answer.
     config_module.override_agent(config, args.agent or "", args.tools or "")
     config_module.require_model(config)
+    config_module.validate_required_tools(config)
 
     objective = args.objective
     if objective == "-":
@@ -362,6 +373,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
                 config["agent"][key] = state[key]
     config_module.override_agent(config, args.agent or "")
     config_module.require_model(config)
+    config_module.validate_required_tools(config)
 
     run = Run(repo, config, objective="", max_iterations=None, run_id=run_id)
     # A leftover STOP -- or the STOP-NOW that accompanies a hard stop -- would

@@ -76,6 +76,15 @@ DEFAULTS: dict = {
         # point at its value instead of holding it: `env:NAME`, `file:PATH`,
         # `!command`.  See `config.reference`.
         "browser_cdp_url": "",
+        # Tools the selected harness and this allowlist must both provide.  A
+        # string is also accepted in project TOML for consistency with tools.
+        "required_tools": [],
+    },
+    "context": {
+        # Tracked project files to include in every iteration prompt.  Paths are
+        # relative to the worktree; invalid and missing entries are reported.
+        "files": [],
+        "max_chars": 12000,
     },
     "models": {
         # llama-swap directly, not through a router.  A router reports model

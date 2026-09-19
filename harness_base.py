@@ -55,6 +55,9 @@ class Harness:
     # The `--tools` names this agent will accept, when it is fussy about it.
     # Empty means it takes whatever it is given; see `unknown_tools`.
     known_tools: frozenset[str] = frozenset()
+    # True only when `known_tools` is an authoritative, enforceable capability
+    # set. Harnesses with dynamic extension tools cannot prove requirements.
+    verifies_required_tools: bool = False
     # Where this agent keeps its own configuration, if lmloop knows.  Used to
     # report what is loaded into it -- extensions in particular, which are
     # invisible from here and can change what a run is allowed to do.

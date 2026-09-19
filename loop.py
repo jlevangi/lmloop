@@ -692,6 +692,11 @@ class Run:
             handoff=self.rundir.read_handoff(),
             handoff_path=str(self.rundir.handoff_path),
             tree=gitops.tracked_files(self.worktree),
+            context=gitops.context_files(
+                self.worktree,
+                self.config.get("context", {}).get("files", []),
+                self.config.get("context", {}).get("max_chars", 0),
+            ),
             history=previous_runs(self.worktree.parent, self.run_id),
             plan=self.rundir.read_plan(),
             plan_path=str(self.rundir.plan_path),

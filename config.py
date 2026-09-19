@@ -83,6 +83,12 @@ def _read(path: Path) -> dict:
         raise SystemExit(f"lmloop: cannot read {path}: {error}") from error
 
 
+def _tool_names(value) -> list[str]:
+    """Normalize comma-separated or TOML-list tool names."""
+    values = value.split(",") if isinstance(value, str) else value or []
+    return [name.strip() for name in values if isinstance(name, str) and name.strip()]
+
+
 def resolve_tools(harness_name: str, tools: str, strict: bool = True) -> str:
     """The tool allowlist, reconciled with the agent that has to accept it.
 
@@ -288,11 +294,33 @@ def validate(raw: dict, source: Path) -> list[str]:
                 )
                 continue
             expected = DEFAULTS[section][key]
-            if not _accepts(expected, value):
+            if section == "agent" and key == "required_tools":
+                valid = isinstance(value, str) or isinstance(value, list)
+            else:
+                valid = _accepts(expected, value)
+            if not valid:
+                alternatives = " or a string in quotes" if section == "agent" and key == "required_tools" else ""
                 problems.append(
-                    f"{source}: `[{section}] {key}` expects {_shape(expected)}, "
+                    f"{source}: `[{section}] {key}` expects {_shape(expected)}{alternatives}, "
                     f"got {_shape(value)} ({value!r})"
                 )
+            elif section == "context" and key == "max_chars" and isinstance(value, int) and value < 0:
+                problems.append(
+                    f"{source}: `[context] max_chars` expects a non-negative whole number, got {value!r}"
+                )
+            elif section == "agent" and key == "required_tools" and isinstance(value, list):
+                bad = [item for item in value if not isinstance(item, str)]
+                if bad:
+                    problems.append(
+                        f"{source}: `[agent] required_tools` list items must be strings, got {bad!r}"
+                    )
+            elif section == "context" and key == "files" and isinstance(value, list):
+                bad = [item for item in value if not isinstance(item, str)]
+                if bad:
+                    problems.append(
+                        f"{source}: `[context] files` list items must be strings, got {bad!r}"
+                    )
+
     return problems
 
 
@@ -330,6 +358,35 @@ def load(repo_root: Path, strict: bool = True) -> dict:
         strict=False,
     )
     return config
+
+
+# Required-tool validation is intentionally separate from load: read-only commands
+# may inspect an invalid config, while a run validates after command-line overrides.
+
+
+def validate_required_tools(config: dict) -> None:
+    """Reject required tools before a worktree or run directory is created."""
+    agent = config.get("agent", {})
+    required = _tool_names(agent.get("required_tools", []))
+    if not required:
+        return
+    harness_name = agent.get("harness", "pi")
+    adapter = harness.get(harness_name)
+    configured = set(_tool_names(agent.get("tools", "")))
+    missing_config = sorted(set(required) - configured)
+    if not adapter.verifies_required_tools:
+        raise SystemExit(
+            f"lmloop: [agent] required_tools cannot be verified by {harness_name}; "
+            "use a harness with an enforceable tool allowlist"
+        )
+    missing_known = sorted(set(required) - adapter.known_tools)
+    if missing_config or missing_known:
+        details = []
+        if missing_config:
+            details.append("not configured in [agent] tools: " + ", ".join(missing_config))
+        if missing_known:
+            details.append("not known to " + harness_name + ": " + ", ".join(missing_known))
+        raise SystemExit("lmloop: [agent] required_tools cannot be satisfied; " + "; ".join(details))
 
 
 def override_agent(config: dict, harness_name: str = "", tools: str = "") -> None:
@@ -383,6 +440,9 @@ model = "llama-swap/<your-model>"
 # it.  For work with a user interface in it, omp's native browser:
 #   tools = "read,edit,grep,glob,bash,browser"
 tools = "read,write,edit,bash,grep,find,ls"
+# Every listed tool must be present in `tools` and known by the selected harness.
+# A comma-separated string is accepted as well as a TOML list.
+required_tools = []
 # off | minimal | low | medium | high | xhigh | max.  Empty uses pi's
 # default.  Lower it when a model deliberates its whole output budget away
 # before calling a tool -- both local models here have done exactly that.
@@ -398,6 +458,12 @@ planner_thinking = ""
 # preflight.  A CDP endpoint is credentials, so it may also point at its value
 # rather than hold it: "env:NAME", "file:PATH", "!command" -- see [notify] below.
 # browser_cdp_url = "http://127.0.0.1:9222"
+
+[context]
+# Tracked files to include verbatim in every iteration prompt, relative to the worktree.
+files = []
+# Total characters for all configured files; entries are processed in this order.
+max_chars = 12000
 
 [models]
 # Defaults to whatever ~/.config/lmloop/model-budgets.json says, which is also

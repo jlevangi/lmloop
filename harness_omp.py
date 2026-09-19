@@ -96,6 +96,7 @@ class OmpHarness(PiHarness):
     compaction_marker = b'"auto_compaction_end"'
     compaction_event = "auto_compaction_start"
     known_tools = OMP_TOOLS
+    verifies_required_tools = True
     default_tools = OMP_DEFAULT_TOOLS
     browser_tool = "browser"
 

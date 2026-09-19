@@ -17,6 +17,28 @@ Objectives should be **broad**. Narrowing by hand defeats the design: the agent
 writes `plan.md` and works one step per iteration. If you find yourself writing
 the steps, that is a bug in the prompt, not in the objective.
 
+### Required tools and project context
+
+A project can require tools in `.lmloop.toml`; each name must be both in the
+`[agent] tools` allowlist and known by the selected harness. Validation happens
+before lmloop creates a worktree or run directory:
+
+```toml
+[agent]
+tools = "read,write,edit,bash"
+required_tools = ["read", "write", "edit"]
+
+[context]
+files = ["README.md", "src/config.py"]
+max_chars = 12000
+```
+
+`[context] files` are tracked paths relative to the worktree. They are injected
+in configured order into every iteration prompt, up to `max_chars`; missing,
+unreadable, absolute, and traversal paths produce explicit notices in the prompt
+instead of aborting the run.
+
+
 Control is by file, so it works from anywhere and survives the terminal going
 away:
 

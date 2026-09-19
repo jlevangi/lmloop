@@ -160,6 +160,44 @@ def _with_sizes(cwd: Path, paths: list[str]) -> list[str]:
     return annotated
 
 
+def context_files(cwd: Path, files: list[str], max_chars: int) -> str:
+    """Read configured tracked files, bounded in config order."""
+    if max_chars <= 0 or not files:
+        return ""
+    tracked = set(git(["ls-files", "-z"], cwd, check=False).split("\0"))
+    chunks = []
+    used = 0
+    for raw_name in files:
+        if not isinstance(raw_name, str) or not raw_name:
+            continue
+        raw_path = Path(raw_name)
+        path = Path(*[part for part in raw_path.parts if part != "."])
+        name = path.as_posix()
+        separator = "\n\n" if chunks else ""
+        room = max_chars - used - len(separator)
+        if room <= 0:
+            break
+        if raw_path.is_absolute() or ".." in raw_path.parts:
+            notice = f"[context file rejected: {raw_name!r} (path must be relative)]"
+        elif name not in tracked:
+            notice = f"[context file missing or untracked: {name}]"
+        else:
+            try:
+                if not (cwd / path).resolve().is_relative_to(cwd.resolve()):
+                    notice = f"[context file rejected: {raw_name!r} (path escapes worktree)]"
+                else:
+                    header = f"### {name}\n"
+                    with (cwd / path).open(errors="replace") as handle:
+                        body = handle.read(max(0, room - len(header)))
+                    notice = header + body
+            except (OSError, RuntimeError) as error:
+                notice = f"[context file unreadable: {name} ({error})]"
+        chunk = notice[:room]
+        chunks.append(chunk)
+        used += len(separator) + len(chunk)
+    return "\n\n".join(chunks)
+
+
 def tracked_files(cwd: Path, limit: int = 160) -> str:
     """An inventory of the repo, for an agent that has never seen it.
 

@@ -346,6 +346,16 @@ def cmd_attach(args: argparse.Namespace) -> int:
         return 0
 
 
+def _apply_resume_overrides(run: Run, args: argparse.Namespace) -> None:
+    """Explicit CLI choices win over the contract restored by ``attach``."""
+    if args.model:
+        run.config["agent"]["model"] = run.model = args.model
+        run.window, run.max_output = models_module.declared_window(
+            run.model, run.harness_name) or (0, 0)
+    if args.thinking:
+        run.config["agent"]["thinking"] = run.thinking = args.thinking
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     repo = gitops.repo_root(Path.cwd())
     config = config_module.load(repo)
@@ -383,6 +393,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
     run.rundir.stop_path.unlink(missing_ok=True)
     run.rundir.stop_now_path.unlink(missing_ok=True)
     done = run.attach(args.iterations)
+    # attach restores the run's saved contract. Explicit operator overrides must
+    # win after that restore; applying them only to config above was silently
+    # undone for both model and thinking.
+    _apply_resume_overrides(run, args)
     display.out(f"lmloop {run_id}")
     display.out(f"  resuming after {done} iterations")
     display.out(f"  model   {run.model}")

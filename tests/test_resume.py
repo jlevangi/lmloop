@@ -11,6 +11,7 @@ and how much of the no-diff streak is carried. Both are pinned here, plus the
 whole thing end to end against the fake agent.
 """
 
+import argparse
 import json
 import subprocess
 import sys
@@ -21,10 +22,31 @@ from unittest import mock
 
 import config
 import gitops
+import lmloop
 from loop import Run
 from rundir import RunDir
 
 FAKE = Path(__file__).parent.parent / "tools" / "fake-agent"
+
+
+class ResumeOverrideTests(unittest.TestCase):
+    def test_explicit_model_and_thinking_win_after_saved_policy_restore(self):
+        root = Path(tempfile.mkdtemp())
+        cfg = config.load(root)
+        cfg["agent"].update(model="saved/model", thinking="medium")
+        run = Run(root, cfg, "objective", run_id="run")
+        run.model = "saved/model"
+        run.thinking = "medium"
+
+        args = argparse.Namespace(model="new/model", thinking="low")
+        with mock.patch.object(lmloop.models_module, "declared_window", return_value=(42, 7)):
+            lmloop._apply_resume_overrides(run, args)
+
+        self.assertEqual("new/model", run.model)
+        self.assertEqual("low", run.thinking)
+        self.assertEqual((42, 7), (run.window, run.max_output))
+        self.assertEqual("new/model", run.config["agent"]["model"])
+        self.assertEqual("low", run.config["agent"]["thinking"])
 
 
 class AttachTests(unittest.TestCase):

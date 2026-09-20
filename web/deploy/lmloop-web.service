@@ -28,6 +28,10 @@ Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=15
+# Preview servers are independently supervised by persisted PID identity. Keep
+# them alive when only the dashboard process restarts; default control-group
+# teardown would leave a stale Ready state pointing at a dead port.
+KillMode=process
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

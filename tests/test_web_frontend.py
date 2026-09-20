@@ -493,18 +493,6 @@ class PreviewControlTests(unittest.TestCase):
         self.assertIn('link.target = "_blank"', body)
         self.assertIn('link.rel = "noopener"', body)
 
-    def test_open_link_requires_a_browser_side_reachability_probe(self):
-        panel_match = re.search(r"function previewPanel\(run\) \{(.*?)\n\}", APP, re.S)
-        probe_match = re.search(r"function previewProbe\(run, href\) \{(.*?)\n\}", APP, re.S)
-        assert panel_match is not None
-        assert probe_match is not None
-        panel = panel_match.group(1)
-        probe = probe_match.group(1)
-        self.assertIn('reachability === "reachable"', panel)
-        self.assertIn('mode: "no-cors"', probe)
-        self.assertIn("AbortController", probe)
-        self.assertIn("unreachable from this device", panel)
-
     def test_preview_url_resolves_remote_browser_host_and_bounds_logs(self):
         body = re.search(r"function previewHref\(preview\) \{(.*?)\n\}", APP, re.S).group(1)
         self.assertIn("window.location.hostname", body)

@@ -188,6 +188,9 @@ class ServiceUnitTests(unittest.TestCase):
         a way that only surfaces hours later, inside a run."""
         self.assertIn("Environment=PATH=", self.UNIT)
 
+    def test_dashboard_restart_does_not_kill_supervised_previews(self):
+        self.assertIn("KillMode=process", self.UNIT)
+
 
 class ExampleFileTests(unittest.TestCase):
     PERSONAL = re.compile(r"pierce|levangie|172\.20\.\d+|/home/\w")

@@ -718,6 +718,9 @@ function control(label, action, run, { risk = false, body = {}, confirm: ask = n
 
 const PREVIEW_STATES = new Set(["disabled", "stopped", "starting", "ready", "failed"]);
 const PREVIEW_LOG_LIMIT = 4000;
+const PREVIEW_PROBE_TIMEOUT_MS = 2000;
+const PREVIEW_PROBE_RETRY_MS = 10000;
+const previewReachability = new Map();
 
 function previewPayload(run) {
   // Preview is a nested capability in the detail payload. Keep the fallback
@@ -758,6 +761,35 @@ function previewLogTail(log) {
   const text = String(log || "");
   if (text.length <= PREVIEW_LOG_LIMIT) return text;
   return `…${text.slice(-PREVIEW_LOG_LIMIT)}`;
+}
+
+function previewProbe(run, href) {
+  const key = `${href}|${run.preview?.started_at || ""}`;
+  const cached = previewReachability.get(key);
+  if (cached?.state === "reachable" || cached?.state === "checking") return cached.state;
+  if (cached?.state === "unreachable" && Date.now() - cached.at < PREVIEW_PROBE_RETRY_MS) {
+    return cached.state;
+  }
+  previewReachability.set(key, { state: "checking", at: Date.now() });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PREVIEW_PROBE_TIMEOUT_MS);
+  fetch(href, {
+    cache: "no-store",
+    credentials: "omit",
+    mode: "no-cors",
+    signal: controller.signal,
+  }).then(() => {
+    previewReachability.set(key, { state: "reachable", at: Date.now() });
+  }).catch(() => {
+    previewReachability.set(key, { state: "unreachable", at: Date.now() });
+  }).finally(() => {
+    clearTimeout(timeout);
+    if (state.route.name === "run" && state.route.project === run.project
+        && state.route.runId === (run.route_id || run.run_id)) {
+      void renderRun(run.project, run.route_id || run.run_id, { quiet: true });
+    }
+  });
+  return "checking";
 }
 
 function previewControl(label, previewAction, run, { risk = false } = {}) {
@@ -805,15 +837,27 @@ function previewPanel(run) {
   if (current === "ready" || current === "failed") addAction("Restart", "restart");
 
   const href = current === "ready" ? previewHref(preview) : "";
-  if (href) {
+  const reachability = href ? previewProbe(run, href) : "idle";
+  if (reachability === "reachable") {
     const link = el("a", "act preview-link", "Open preview");
     link.href = href;
     link.target = "_blank";
     link.rel = "noopener";
     link.setAttribute("aria-label", "Open preview in a new tab");
     actions.append(link);
+  } else if (reachability === "checking") {
+    const checking = el("span", "preview-reachability", "Checking this device…");
+    checking.setAttribute("role", "status");
+    actions.append(checking);
   }
   if (actions.children.length) panel.append(actions);
+
+  if (reachability === "unreachable") {
+    const unreachable = el("p", "alert preview-error");
+    unreachable.setAttribute("role", "alert");
+    unreachable.textContent = "Preview is running on the server but unreachable from this device.";
+    panel.append(unreachable);
+  }
 
   const errorText = String(preview.error || "").trim();
   if (errorText) {

@@ -296,11 +296,16 @@ def control(project: dict, run_dir: Path, action: str, payload: dict,
         (run_dir / "STOP-NOW").touch()
         (run_dir / "STOP").touch()
     elif action == "continue":
-        # The one that needs a process: the run has already exited, and more
-        # iterations mean starting the loop again on the same worktree.
-        iterations = _iteration_budget(payload.get("iterations"), 3)
-        if iterations is None:
-            return 400, {"error": f"iterations must be an integer from 1 to {MAX_ITERATIONS}"}
+        # The one that needs a process: the run has already exited, so resume
+        # the same worktree and its persisted policy. An explicit iteration
+        # count remains available to API clients, but the dashboard does not
+        # silently replace the run's plan-aware budget with an arbitrary three.
+        requested_iterations = payload.get("iterations")
+        iterations = None
+        if requested_iterations is not None:
+            iterations = _iteration_budget(requested_iterations, 3)
+            if iterations is None:
+                return 400, {"error": f"iterations must be an integer from 1 to {MAX_ITERATIONS}"}
         # A run that still has a live loop does not need continuing, and
         # starting a second one puts two loops in one worktree.  Refused here
         # rather than by the child, because the child's complaint goes to a pipe
@@ -311,10 +316,9 @@ def control(project: dict, run_dir: Path, action: str, payload: dict,
                 "error": f"this run already has a loop (pid {holder});"
                          " resume it instead of continuing it",
             }
-        argv = [
-            config["python"], lmloop_path, "resume", run_dir.name,
-            "--iterations", str(iterations),
-        ]
+        argv = [config["python"], lmloop_path, "resume", run_dir.name]
+        if iterations is not None:
+            argv += ["--iterations", str(iterations)]
         for flag, key in (("--model", "model"), ("--thinking", "thinking")):
             if payload.get(key):
                 argv += [flag, str(payload[key])]

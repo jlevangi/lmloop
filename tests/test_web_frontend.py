@@ -469,6 +469,12 @@ class RunStateVocabularyTests(unittest.TestCase):
                 self.assertIn(state, code, f"the dashboard never mentions state {state!r}")
 
 
+class ResumeControlTests(unittest.TestCase):
+    def test_stopped_run_resumes_without_overriding_its_iteration_policy(self):
+        self.assertIn('control("Resume run", "continue", run)', APP)
+        self.assertNotIn('Continue 3 iterations', APP)
+
+
 class PreviewControlTests(unittest.TestCase):
     """Preview controls must stay honest while the backend owns the state."""
 

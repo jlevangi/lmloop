@@ -559,7 +559,15 @@ class ControlTests(unittest.TestCase):
             self.control("continue")
         self.assertEqual(set(), self.sentinels())
 
-    def test_continue_passes_the_run_and_the_iteration_count(self):
+    def test_resume_uses_the_persisted_policy_when_no_iteration_count_is_given(self):
+        with mock.patch.object(runs_module, "_holder", return_value=0), \
+             mock.patch.object(server.service.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            self.control("continue")
+        argv = popen.call_args.args[0]
+        self.assertEqual(["python3", server.LMLOOP, "resume", self.run_dir.name], argv)
+
+    def test_continue_passes_an_explicit_iteration_count(self):
         with mock.patch.object(runs_module, "_holder", return_value=0), \
              mock.patch.object(server.service.subprocess, "Popen") as popen:
             popen.return_value.wait.return_value = 0

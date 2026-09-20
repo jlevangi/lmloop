@@ -925,7 +925,7 @@ async function renderRun(project, runId, { quiet = false } = {}) {
       if (!run.stopping) controls.append(control("Stop after this iteration", "stop", run, { risk: true }));
       controls.append(control("Stop now", "stop-now", run, { risk: true }));
     } else {
-      controls.append(control("Continue 3 iterations", "continue", run, { body: { iterations: 3 } }));
+      controls.append(control("Resume run", "continue", run));
       if (run.commits) {
         controls.append(control("Open pull request", "pr", run, {
           done: (result) => {

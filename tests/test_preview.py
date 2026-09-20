@@ -7,7 +7,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import preview as preview_module
 from preview import Preview
 
 
@@ -88,6 +90,23 @@ class PreviewLifecycleTests(unittest.TestCase):
         meta = json.loads((self.run_dir / "preview.pid").read_text())
         self.assertEqual(str(self.worktree), meta["worktree"])
         self.assertIn(str(self.port), meta["argv"])
+
+    def test_start_waits_for_procfs_identity_before_publishing_pid(self):
+        real_start_time = preview_module._proc_start_time
+        calls = 0
+
+        def delayed(pid):
+            nonlocal calls
+            calls += 1
+            return None if calls == 1 else real_start_time(pid)
+
+        preview = self.preview()
+        with mock.patch.object(preview_module, "_proc_start_time", side_effect=delayed):
+            started = preview.start()
+        self.assertEqual("starting", started["state"])
+        meta = json.loads((self.run_dir / "preview.pid").read_text())
+        self.assertTrue(meta["proc_start_time"])
+        self.assertTrue(preview._identity(meta))
 
     def test_output_is_written_directly_to_the_durable_log(self):
         preview = self.preview(command=[

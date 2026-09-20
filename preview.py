@@ -131,8 +131,15 @@ class Preview:
         expected = meta.get("argv")
         if not isinstance(expected, list) or argv != expected:
             return False
+        # The persisted worktree is written atomically with this PID's start
+        # time and argv. Re-reading /proc/<pid>/cwd is redundant and can fail
+        # across a systemd service restart even though those stronger identity
+        # fields still match, which orphaned a live preview and made Start report
+        # its own port as busy.
+        if self.worktree is None:
+            return False
         try:
-            return Path(os.readlink(f"/proc/{pid}/cwd")).resolve() == self.worktree.resolve()
+            return Path(str(meta.get("worktree", ""))).resolve() == self.worktree.resolve()
         except (OSError, AttributeError):
             return False
 
@@ -304,10 +311,22 @@ class Preview:
                 )
         except (OSError, ValueError) as error:
             return self._set_state("failed", error=str(error))
+        # Popen may return a few milliseconds before procfs exposes the new
+        # process. Never publish an incomplete identity: the first status poll
+        # would reject it as PID reuse, clear the claim, and orphan a live server
+        # on its configured port.
+        deadline = time.monotonic() + 0.5
+        proc_start_time = _proc_start_time(child.pid)
+        while proc_start_time is None and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+            proc_start_time = _proc_start_time(child.pid)
+        if proc_start_time is None:
+            child.wait(timeout=0.2)
+            return self._set_state("failed", error="preview process exited before identity was recorded")
         meta = {
             "pid": child.pid, "pgid": child.pid, "argv": argv,
             "worktree": str(self.worktree),
-            "proc_start_time": _proc_start_time(child.pid),
+            "proc_start_time": proc_start_time,
         }
         _write_json(self.pid_path, meta)
         _CHILDREN[child.pid] = child

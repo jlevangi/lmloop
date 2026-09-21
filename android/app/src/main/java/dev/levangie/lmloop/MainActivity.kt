@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -44,6 +45,7 @@ import dev.levangie.lmloop.web.DashboardWebChromeClient
 import dev.levangie.lmloop.web.DashboardWebViewClient
 import dev.levangie.lmloop.web.NativeShellBridge
 import dev.levangie.lmloop.web.currentRoute
+import dev.levangie.lmloop.web.isDashboardUrl
 
 /**
  * Hybrid shell: every screen the user actually looks at is the same
@@ -100,8 +102,14 @@ class MainActivity : ComponentActivity() {
             var configured by remember { mutableStateOf(services.configStore.isConfigured()) }
             var route by remember { mutableStateOf(currentRoute(null)) }
             var showSettings by remember { mutableStateOf(false) }
+            var isPreview by remember { mutableStateOf(false) }
             var hasToken by remember { mutableStateOf(services.configStore.hasToken()) }
             var isRefreshing by remember { mutableStateOf(false) }
+            val closePreview = {
+                services.configStore.loadServerUrl()?.let { webView?.loadUrl(it) }
+                isPreview = false
+                Unit
+            }
 
             // Without this, the system gesture-back swipe on the Settings
             // screen fell through to the imperative WebView-history callback
@@ -112,6 +120,7 @@ class MainActivity : ComponentActivity() {
             // enabled, so it takes over exactly when Settings is open and
             // steps aside otherwise.
             BackHandler(enabled = showSettings) { showSettings = false }
+            BackHandler(enabled = isPreview && !showSettings) { closePreview() }
 
             MaterialTheme(colorScheme = LmloopColorScheme) {
                 // Apps targeting API 35+ get edge-to-edge forced by the
@@ -193,8 +202,12 @@ class MainActivity : ComponentActivity() {
                                     factory = { context ->
                                         WebView(context).also { view ->
                                             webView = view
-                                            configureWebView(view) {
-                                                route = it
+                                            configureWebView(view) { url ->
+                                                route = currentRoute(url)
+                                                isPreview = !isDashboardUrl(
+                                                    url,
+                                                    services.configStore.loadServerUrl(),
+                                                )
                                                 isRefreshing = false
                                             }
                                             services.configStore.loadServerUrl()?.let(view::loadUrl)
@@ -202,24 +215,37 @@ class MainActivity : ComponentActivity() {
                                     },
                                 )
                             }
-                            Row(
-                                modifier = Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                if (route == null) {
-                                    IconButton(onClick = {
-                                        webView?.evaluateJavascript(
-                                            "if (window.go) { go('#new'); }",
-                                            null,
-                                        )
-                                    }) {
-                                        Icon(Icons.Filled.Add, contentDescription = "New run")
+                            if (isPreview) {
+                                Surface(
+                                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                                    shape = androidx.compose.foundation.shape.CircleShape,
+                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                                    shadowElevation = 6.dp,
+                                ) {
+                                    IconButton(onClick = closePreview) {
+                                        Icon(Icons.Filled.Close, contentDescription = "Close preview")
                                     }
-                                } else {
-                                    WatchBarAction(route = route)
                                 }
-                                IconButton(onClick = { showSettings = true }) {
-                                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                            } else {
+                                Row(
+                                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 2.dp, end = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    if (route == null) {
+                                        IconButton(onClick = {
+                                            webView?.evaluateJavascript(
+                                                "if (window.go) { go('#new'); }",
+                                                null,
+                                            )
+                                        }) {
+                                            Icon(Icons.Filled.Add, contentDescription = "New run")
+                                        }
+                                    } else {
+                                        WatchBarAction(route = route)
+                                    }
+                                    IconButton(onClick = { showSettings = true }) {
+                                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                                    }
                                 }
                             }
                         }
@@ -250,7 +276,7 @@ class MainActivity : ComponentActivity() {
         navigateToDeepLink(intent)
     }
 
-    private fun configureWebView(view: WebView, onRouteChanged: (dev.levangie.lmloop.web.DashboardRoute?) -> Unit) {
+    private fun configureWebView(view: WebView, onUrlChanged: (String?) -> Unit) {
         view.settings.javaScriptEnabled = true
         view.settings.domStorageEnabled = true
         // The dashboard is same-origin, self-hosted, and its own CSP already
@@ -269,14 +295,16 @@ class MainActivity : ComponentActivity() {
                 // OIDC callback navigation could lose a very fresh session
                 // cookie.
                 CookieManager.getInstance().flush()
-                onRouteChanged(currentRoute(view.url))
+                onUrlChanged(view.url)
                 if (!consumedInitialDeepLink) {
                     consumedInitialDeepLink = true
                     navigateToDeepLink(intent)
                 }
             },
         )
-        view.webChromeClient = DashboardWebChromeClient(view.context)
+        view.webChromeClient = DashboardWebChromeClient(view.context) { uri ->
+            view.loadUrl(uri.toString())
+        }
         view.setDownloadListener { url, _, _, _, _ ->
             startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
         }

@@ -11,14 +11,14 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 
 /**
- * `target="_blank"` and `window.open` do not navigate the WebView on their
- * own -- without this override they silently do nothing at all. There is
- * nowhere to put a second tab in a single-Activity shell, so the standard
- * idiom applies: give the new window a throwaway `WebView` whose only job is
- * to catch the URL it was asked to load and hand that off to the system
- * instead of ever actually rendering it.
+ * `target="_blank"` and `window.open` do not navigate the main WebView on
+ * their own. A throwaway WebView catches the URL so HTTP pages can open in
+ * the app's single tab; non-web schemes still go to the system.
  */
-class DashboardWebChromeClient(private val context: Context) : WebChromeClient() {
+class DashboardWebChromeClient(
+    private val context: Context,
+    private val onOpenWindow: (Uri) -> Unit,
+) : WebChromeClient() {
     override fun onCreateWindow(
         view: WebView,
         isDialog: Boolean,
@@ -29,7 +29,8 @@ class DashboardWebChromeClient(private val context: Context) : WebChromeClient()
         val catcher = WebView(context)
         catcher.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(dummy: WebView, request: WebResourceRequest): Boolean {
-                openExternally(request.url)
+                if (request.url.scheme in setOf("http", "https")) onOpenWindow(request.url)
+                else openExternally(request.url)
                 return true
             }
         }

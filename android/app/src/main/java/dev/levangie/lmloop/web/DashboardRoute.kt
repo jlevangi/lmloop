@@ -15,6 +15,26 @@ package dev.levangie.lmloop.web
  */
 data class DashboardRoute(val project: String, val runId: String)
 
+/** Preview pages use a different origin (usually the same host on a project port). */
+fun isDashboardUrl(url: String?, dashboardUrl: String?): Boolean {
+    if (url == null || dashboardUrl == null) return true
+    return try {
+        val current = java.net.URI(url)
+        val dashboard = java.net.URI(dashboardUrl)
+        current.scheme.equals(dashboard.scheme, ignoreCase = true) &&
+            current.host.equals(dashboard.host, ignoreCase = true) &&
+            effectivePort(current) == effectivePort(dashboard)
+    } catch (_: IllegalArgumentException) {
+        true
+    }
+}
+
+private fun effectivePort(uri: java.net.URI): Int = when {
+    uri.port >= 0 -> uri.port
+    uri.scheme.equals("https", ignoreCase = true) -> 443
+    else -> 80
+}
+
 fun currentRoute(url: String?): DashboardRoute? {
     if (url == null) return null
     val hashIndex = url.indexOf('#')

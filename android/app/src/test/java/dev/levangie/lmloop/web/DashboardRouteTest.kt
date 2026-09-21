@@ -1,7 +1,9 @@
 package dev.levangie.lmloop.web
 
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import org.junit.Test
 
 class DashboardRouteTest {
@@ -33,5 +35,31 @@ class DashboardRouteTest {
         // ever splits once -- proving that here rather than assuming it.
         val route = currentRoute("https://lmloop.example.com/#myapp/2026-01-01-example/extra")
         assertEquals(DashboardRoute("myapp", "2026-01-01-example/extra"), route)
+    }
+
+    @Test
+    fun dashboardHashesRemainInsideTheDashboardOrigin() {
+        assertTrue(
+            isDashboardUrl(
+                "https://lmloop.example.com/#project/run",
+                "https://lmloop.example.com",
+            ),
+        )
+    }
+
+    @Test
+    fun aProjectPreviewPortIsNotTheDashboard() {
+        assertFalse(
+            isDashboardUrl(
+                "http://172.20.23.94:8140/",
+                "http://172.20.23.94:8766",
+            ),
+        )
+    }
+
+    @Test
+    fun defaultPortsCompareAsTheSameOrigin() {
+        assertTrue(isDashboardUrl("https://lmloop.example.com/", "https://lmloop.example.com:443"))
+        assertTrue(isDashboardUrl("http://lmloop.example.com/", "http://lmloop.example.com:80"))
     }
 }

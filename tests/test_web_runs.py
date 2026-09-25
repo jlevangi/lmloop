@@ -32,8 +32,8 @@ class PwaResumeRecoveryTests(unittest.TestCase):
     # change the shell and forget.  A digest of the shell itself fails on
     # exactly the case that matters.  It caught its first one immediately --
     # three shell files changed in this session's own work with no bump.
-    SHELL_VERSION = "lmloop-shell-v21"
-    SHELL_DIGEST = "8dfba3e87980d6ed4cef07168ec20b2f40f6d9b41bcdd91c96898d471c3bb041"
+    SHELL_VERSION = "lmloop-shell-v27"
+    SHELL_DIGEST = "32dff5200e0808b10e9f50b965af1b999397ba1152c67118dbbac66f0a3d811a"
 
     def test_the_shell_version_covers_the_shell_as_it_stands(self):
         static = Path(__file__).parent.parent / "web" / "static"
@@ -206,6 +206,19 @@ class NestedPilotDiscoveryTests(unittest.TestCase):
             log.write(json.dumps({"event": "run:start", "agent": "omp"}) + "\n")
         summary = runs.summarise({"id": "project", "path": str(self.project)}, run_dir)
         self.assertEqual("omp", summary["agent"])
+
+    def test_summary_keeps_the_full_iteration_history(self):
+        run_dir = self.make_run(self.project, "history")
+        expected = ["ok"] * 13 + ["agent-error"] * 17
+        with (run_dir / "lmloop.log").open("a") as log:
+            for iteration, outcome in enumerate(expected, 1):
+                log.write(json.dumps({
+                    "event": "iteration:end", "iteration": iteration,
+                    "outcome": outcome,
+                }) + "\n")
+        summary = runs.summarise({"id": "project", "path": str(self.project)}, run_dir)
+        self.assertEqual(len(expected), summary["iterations_done"])
+        self.assertEqual(expected, summary["outcomes"])
 
     def test_running_summary_calculates_eta_from_durable_events(self):
         run_dir = self.make_run(self.project, "eta")

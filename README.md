@@ -110,7 +110,11 @@ loopback, which is the safe failure rather than an error.
   built for a local one — `lmloop models` lists what pi can see. If you serve
   local models with [llama-swap](https://github.com/mostlygeek/llama-swap), point
   `[models] llama_swap_url` at it.
-- **A model catalogue pi can read.** Local windows have to be *declared* to pi,
+- **A model catalogue pi can read.** lmloop loads its tracked Pi catalogue
+  from `web/deploy/model-catalog.js` with `~/.config/lmloop/pi-agent` as its
+  isolated profile. Other Pi applications keep their own configuration;
+  this catalogue registers local llama-swap models only. Local windows must be
+  *declared* to pi,
   and declaring them wrong is the single most expensive mistake here: a router
   that advertised 1,000,000 context for a model actually loaded with
   `--ctx-size 65536` killed runs with HTTP 400 mid-iteration. `lmloop models

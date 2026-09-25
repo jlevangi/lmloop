@@ -61,6 +61,33 @@ def delete_branch(repo: str | Path, branch: str,
     )
 
 
+def has_remote(repo: str | Path, remote: str = "origin", timeout: int = 15) -> bool:
+    """Return True if the repository has the specified git remote configured."""
+    result = subprocess.run(
+        ["git", "remote", "get-url", remote],
+        cwd=str(repo), capture_output=True, text=True, timeout=timeout,
+    )
+    return result.returncode == 0
+
+
+def merge_branch(repo: str | Path, branch: str, base: str = "main",
+                 timeout: int = 120) -> subprocess.CompletedProcess:
+    """Merge a run's branch into the base branch locally."""
+    # Do not silently switch the operator's checkout or merge into another branch.
+    current = subprocess.run(
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        cwd=str(repo), capture_output=True, text=True, timeout=timeout,
+    )
+    if current.returncode != 0 or current.stdout.strip() != base:
+        return subprocess.CompletedProcess(
+            [], 1, "", f"checkout {base} in the project before merging"
+        )
+    return subprocess.run(
+        ["git", "merge", "--no-edit", branch],
+        cwd=str(repo), capture_output=True, text=True, timeout=timeout,
+    )
+
+
 def pr_preflight(repo: str | Path, branch: str,
                  timeout: int = 120) -> tuple[str | None, str]:
     """Return the current base and branch-ahead count for a pull request.

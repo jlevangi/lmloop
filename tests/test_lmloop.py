@@ -24,6 +24,7 @@ import models
 import loop
 import notify
 import pi_runner
+import harness_pi
 import policy
 import prompts
 import runrecord
@@ -753,9 +754,10 @@ class OmpHarnessTests(unittest.TestCase):
                              session_dir="/s", session_id="")
         self.assertEqual("yolo", argv[argv.index("--approval-mode") + 1])
 
-    def test_pi_argv_is_unchanged(self):
+    def test_pi_argv_loads_lmloop_catalogue(self):
         self.assertEqual(
-            ["pi", "--model", "p/m", "--mode", "json", "--session-dir", "/s",
+            ["pi", "--extension", str(harness_pi.PiHarness.extension),
+             "--model", "p/m", "--mode", "json", "--session-dir", "/s",
              "--session-id", "iter-3", "--tools", "read"],
             harness.get("pi").argv(model="p/m", tools="read", thinking="",
                                    session_dir="/s", session_id="iter-3"),
@@ -1633,10 +1635,19 @@ class RunEnvironmentTests(unittest.TestCase):
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", kept)
         self.assertNotIn("GITHUB_TOKEN", kept)
 
+    def test_pi_profile_is_isolated_even_with_inherit_all(self):
+        run = self.make_run()
+        run.config["env"]["inherit"] = "all"
+        with mock.patch.dict(os.environ, self.HOST, clear=True):
+            kept = run.env()
+        self.assertEqual(str(harness_pi.PiHarness.config_dir), kept["PI_CODING_AGENT_DIR"])
+
     def test_the_essentials_still_reach_it(self):
         kept = self.env_of(self.make_run())
         self.assertEqual("/usr/bin", kept["PATH"])
         self.assertEqual("/home/dev", kept["HOME"])
+        self.assertEqual(str(harness_pi.PiHarness.config_dir), kept["PI_CODING_AGENT_DIR"])
+        self.assertEqual("/scratch/pi", self.env_of(self.make_run("omp"))["PI_CODING_AGENT_DIR"])
 
     def test_the_bytecode_redirect_survives_the_allowlist(self):
         """It is an override, not something inherited -- and losing it puts
@@ -1778,7 +1789,8 @@ class HarnessCapabilityTests(unittest.TestCase):
         self.assertEqual("", harness.get("opencode").default_tools)
 
     def test_model_listing_is_the_adapters_to_declare(self):
-        self.assertEqual(["pi", "--list-models"], harness.get("pi").list_models_argv())
+        self.assertEqual(["pi", "--extension", str(harness_pi.PiHarness.extension), "--list-models"],
+                         harness.get("pi").list_models_argv())
         # Not pi's flag, though omp is a pi fork: omp rejects `--list-models`
         # outright and has a `models` subcommand.  Verified against v17.4.0.
         self.assertEqual(["omp", "models"], harness.get("omp").list_models_argv())
@@ -1975,7 +1987,31 @@ class LocalServerWaitTests(unittest.TestCase):
 
         events = run.rundir.read_events()
         self.assertTrue(any(event["event"] == "provider:pause" for event in events))
-        self.assertTrue(any(event["event"] == "provider:resume" for event in events))
+        resumed = next(event for event in events if event["event"] == "provider:resume")
+        self.assertEqual(3, resumed["nextIteration"])
+        run.screen.log.assert_any_call(
+            "    local model provider is back; retrying iteration 3"
+        )
+
+    def test_committed_provider_outage_continues_with_the_next_iteration(self):
+        run = self.make_run("llama-swap/local-fast")
+        run.last_commit = "abc123"
+
+        def resume(*_args):
+            run.rundir.pause_path.unlink()
+
+        with mock.patch.object(loop.display, "wait_while_paused", side_effect=resume), \
+             mock.patch.object(run, "_server_is_up", return_value=True):
+            self.assertTrue(run._wait_for_server(3, "connection refused", retry_same=False))
+
+        resumed = next(
+            event for event in run.rundir.read_events()
+            if event["event"] == "provider:resume"
+        )
+        self.assertEqual(4, resumed["nextIteration"])
+        run.screen.log.assert_any_call(
+            "    local model provider is back; continuing with iteration 4"
+        )
 
     def test_provider_pause_does_not_resume_when_run_was_stopped(self):
         run = self.make_run("llama-swap/local-fast")

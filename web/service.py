@@ -397,6 +397,30 @@ def delete_run(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
     return 200, {"deleted": run_dir.name, "branch_deleted": dropped}
 
 
+def merge_local(project: dict, run_dir: Path, payload: dict | None = None) -> tuple[int, dict]:
+    """Merge the run's branch into the project's base branch locally."""
+    start = runrecord.latest_run_start(runs_module._events(run_dir))
+    branch = runrecord.resolved_branch(run_dir, start)
+    repo = project["path"]
+    if runs_module._holder(run_dir):
+        return 409, {"error": "cannot merge while the run is active"}
+    base, ahead = workspace.pr_preflight(repo, branch)
+    if base is None:
+        return 404, {"error": f"no branch {branch}"}
+    if base != "main":
+        return 409, {"error": "checkout main in the project before merging"}
+    if ahead in ("", "0"):
+        return 200, {"merged": True, "message": f"{branch} is already up to date with {base}", "ahead": 0}
+    if runs_module._holder(run_dir):
+        return 409, {"error": "cannot merge while the run is active"}
+    merged = workspace.merge_branch(repo, branch, base)
+    if merged.returncode != 0:
+        return 500, {
+            "error": f"merge failed: {(merged.stderr or merged.stdout).strip()[-300:]}"
+        }
+    return 200, {"merged": True, "base": base, "branch": branch, "ahead": ahead}
+
+
 def open_pr(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
     """Push the run's branch and open a pull request for it."""
     start = runrecord.latest_run_start(runs_module._events(run_dir))
@@ -410,8 +434,13 @@ def open_pr(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
 
     pushed = workspace.push_branch(repo, branch)
     if pushed.returncode != 0:
-        return 500, {
-            "error": f"push failed: {(pushed.stderr or pushed.stdout).strip()[-300:]}"
+        err = (pushed.stderr or pushed.stdout).strip()
+        no_origin = "No such remote 'origin'" in err or "does not appear to be a git repository" in err
+        return 400 if no_origin else 500, {
+            "error": f"push failed: {err[-300:]}",
+            "no_origin": no_origin,
+            "branch": branch,
+            "base": base,
         }
 
     objective = runs_module._read_text(run_dir / "prompt.md", 4000).strip()

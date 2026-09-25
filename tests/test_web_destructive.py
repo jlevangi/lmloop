@@ -20,6 +20,7 @@ from unittest import mock
 import runrecord
 from web import runs as runs_module
 from web import server
+from web import service
 from web import workspace
 
 
@@ -82,6 +83,34 @@ def build_repo():
     archive = root / "archive"
     project = {"id": "project", "path": str(repo)}
     return root, repo, worktree, run_dir, project, archive
+
+
+class MergeTests(unittest.TestCase):
+    def setUp(self):
+        self.root, self.repo, self.worktree, self.run_dir, self.project, _ = build_repo()
+        (self.worktree / "change.txt").write_text("work\n")
+        subprocess.run(["git", "add", "change.txt"], cwd=self.worktree, check=True)
+        subprocess.run(["git", "commit", "-qm", "work"], cwd=self.worktree, check=True)
+
+    def test_active_run_is_never_merged(self):
+        with mock.patch.object(runs_module, "_holder", return_value=123):
+            status, _ = service.merge_local(self.project, self.run_dir)
+        self.assertEqual(409, status)
+        self.assertFalse((self.repo / "change.txt").exists())
+
+    def test_other_checkout_is_not_touched(self):
+        subprocess.run(["git", "checkout", "-qb", "feature"], cwd=self.repo, check=True)
+        status, _ = service.merge_local(self.project, self.run_dir)
+        self.assertEqual(409, status)
+        self.assertFalse((self.repo / "change.txt").exists())
+        self.assertEqual("feature", subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=self.repo, text=True).strip())
+
+    def test_merge_main_only(self):
+        status, result = service.merge_local(self.project, self.run_dir)
+        self.assertEqual(200, status, result)
+        self.assertEqual("main", result["base"])
+        self.assertEqual("work\n", (self.repo / "change.txt").read_text())
 
 
 class ArchiveTests(unittest.TestCase):

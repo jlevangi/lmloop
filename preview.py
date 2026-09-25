@@ -299,6 +299,9 @@ class Preview:
             return self._set_state("failed", error=str(error))
         port = self.config.get("port")
         if port and self._port_busy(int(port)):
+            meta = self._read_meta()
+            if self._identity(meta):
+                return self._set_state("starting", started_at=_now(), error="")
             return self._set_state("failed", error=f"port {port} is already in use")
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._bound_log()

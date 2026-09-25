@@ -243,7 +243,7 @@ class ModelListingTests(unittest.TestCase):
                 ran.return_value = mock.Mock(stdout=stdout)
                 server.available_models(self.config(harness=agent), force=True)
             seen[agent] = ran.call_args.args[0]
-        self.assertEqual(["pi", "--list-models"], seen["pi"])
+        self.assertEqual(server.harness.get("pi").list_models_argv(), seen["pi"])
         self.assertEqual(["omp", "models", "--json"], seen["omp"])
 
     def test_the_table_header_is_not_offered_as_a_model(self):

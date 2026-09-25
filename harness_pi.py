@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -27,12 +28,22 @@ class PiHarness(Harness):
     # is pointed at a scratch config instead of the operator's own.
     env_passthrough = ("PI_*",)
 
+    # The catalogue belongs to lmloop, not every application using the host's Pi.
+    config_dir = Path.home() / ".config" / "lmloop" / "pi-agent"
+    models_file = config_dir / "models.json"
+    extension = Path(__file__).resolve().parent / "web" / "deploy" / "model-catalog.js"
+
+    @classmethod
+    def discovery_env(cls):
+        return dict(os.environ, PI_CODING_AGENT_DIR=str(cls.config_dir))
+
     def list_models_argv(self):
-        return [self.binary, "--list-models"]
+        return [self.binary, "--extension", str(self.extension), "--list-models"]
 
     def catalogue(self):
         result = subprocess.run(
-            self.list_models_argv(), capture_output=True, text=True, timeout=60
+            self.list_models_argv(), capture_output=True, text=True, timeout=60,
+            env=self.discovery_env(),
         )
         return self.parse_catalogue(result.stdout)
 
@@ -79,12 +90,8 @@ class PiHarness(Harness):
             if isinstance(name, str) and name
         )
 
-    # pi's own provider config: the authority for models lmloop does not
-    # measure itself, because it is the same file pi reads when it builds the
-    # request.
-    config_dir = Path.home() / ".pi" / "agent"
-    models_file = config_dir / "models.json"
-
+    # Pi's isolated models.json is optional; non-local windows not in this file
+    # remain unknown until the agent reports them.
     def declared_windows(self):
         try:
             config = json.loads(self.models_file.read_text())
@@ -109,6 +116,7 @@ class PiHarness(Harness):
     def argv(self, *, model, tools, thinking, session_dir, session_id):
         argv = [
             self.binary,
+            "--extension", str(self.extension),
             "--model", model,
             "--mode", "json",
             "--session-dir", str(session_dir),

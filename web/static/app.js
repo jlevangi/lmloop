@@ -34,6 +34,7 @@ document.documentElement.classList.toggle("native-shell", NATIVE_SHELL);
 const state = {
   config: null, runs: [], project: null, timer: null,
   route: { name: "list" }, rows: new Map(), detailKey: null, shell: null,
+  iterationClock: null,
 };
 
 // `vh`/`dvh` compute to a bogus 0px on at least one real Android WebView
@@ -89,6 +90,14 @@ function duration(seconds) {
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
 }
 
+function clockDuration(seconds) {
+  const whole = Math.max(0, Math.floor(seconds || 0));
+  const h = Math.floor(whole / 3600);
+  const m = String(Math.floor((whole % 3600) / 60)).padStart(2, "0");
+  const s = String(whole % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
 const ago = (s) => (s == null ? "never" : s < 60 ? "just now" : `${duration(s)} ago`);
 
 /* Token counts run to five figures and are read on a phone. Three significant
@@ -129,6 +138,21 @@ function elideMiddle(text, head = 20, tail = 7) {
 function liveElapsed(run) {
   const drift = (Date.now() - (state.fetchedAt || Date.now())) / 1000;
   return duration(Math.round((run.elapsed_seconds || 0) + drift));
+}
+
+function liveIterationClock(run) {
+  if (!isWorking(run)) {
+    state.iterationClock = null;
+    return clockDuration(run.elapsed_seconds || 0);
+  }
+  const key = `${run.run_id}:${run.iteration}`;
+  if (state.iterationClock?.key !== key) {
+    state.iterationClock = {
+      key,
+      startedAt: Date.now() - ((run.elapsed_seconds || 0) * 1000),
+    };
+  }
+  return clockDuration((Date.now() - state.iterationClock.startedAt) / 1000);
 }
 
 function elapsed(run) {
@@ -377,10 +401,10 @@ function renderFilters() {
  * the body below it is replaced.
  */
 
-// `state` used to lead this grid.  The sticky header carries it now, and two
-// copies of one word a centimetre apart is how a page starts looking unedited.
-// Four cells also divide more kindly across a phone than five did.
-const FACTS = ["plan", "commits", "iter", "updated"];
+// `state` used to lead this grid. The sticky header carries it now. Keep four
+// cells for a balanced 2×2 phone grid; the live iteration clock replaces the
+// less useful duplicate of the page's existing update-age status.
+const FACTS = ["plan", "commits", "iter", "iteration elapsed"];
 
 function makeHead() {
   const node = el("div", "live");
@@ -402,13 +426,26 @@ function makeHead() {
   }
 
   const doing = el("div", "doing");
-  const doingLabel = el("div", "label");
+  const doingHead = el("div", "doing-header");
+  const doingPulse = el("span", "doing-pulse");
+  const doingLabel = el("span", "label");
+  doingHead.append(doingPulse, doingLabel);
+
   const doingStep = el("div", "step");
   const doingAct = el("div", "act");
-  doing.append(doingLabel, doingStep, doingAct);
+
+  const doingDetails = el("details", "doing-details");
+  const doingSummary = el("summary", null, "activity log");
+  const doingLog = el("pre", "doing-log");
+  doingDetails.append(doingSummary, doingLog);
+
+  doing.append(doingHead, doingStep, doingAct, doingDetails);
 
   const timing = el("div", "timing detail-timing");
-  const parts = { node, name, cells, doing, doingLabel, doingStep, doingAct, timing };
+  const parts = {
+    node, name, cells, doing, doingHead, doingPulse, doingLabel,
+    doingStep, doingAct, doingDetails, doingLog, timing,
+  };
   node.append(name, facts, timing, doing, makeModel(parts));
   return parts;
 }
@@ -453,13 +490,13 @@ function patchHead(head, run) {
     plan: run.plan_total ? `${run.plan_done}/${run.plan_total}` : "—",
     commits: String(run.commits),
     iter: `${run.iteration ?? "?"}/${run.max_iterations ?? "?"}`,
-    updated: ago(run.age_seconds),
+    "iteration elapsed": run.elapsed_seconds == null ? "—" : liveIterationClock(run),
   };
   for (const label of FACTS) {
     const dd = head.cells[label];
     if (dd.textContent !== values[label]) dd.textContent = values[label];
-    // Plan is the live figure here now that state has gone to the header.
-    dd.className = label === "plan" && ACTIVE.has(run.state) ? "hot" : "";
+    dd.className = (label === "plan" && ACTIVE.has(run.state))
+      || (label === "iteration elapsed" && isWorking(run)) ? "hot" : "";
   }
 
   head.timing.textContent = timingText(run);
@@ -472,12 +509,20 @@ function patchHead(head, run) {
   head.doing.hidden = !doing;
   if (doing) {
     head.doingLabel.textContent = run.paused ? "paused on" : "working on";
+    head.doingPulse.className = `doing-pulse ${run.paused ? "paused" : "active"}`;
     head.doingStep.textContent = run.current_step || "";
     head.doingStep.hidden = !run.current_step;
     const act = [run.last_tool, run.last_target].filter(Boolean).join(" ");
     const quiet = run.quiet_seconds > 60 ? ` · quiet ${duration(run.quiet_seconds)}` : "";
     const activity = `${act}${quiet}`;
     if (head.doingAct.textContent !== activity) head.doingAct.textContent = activity;
+
+    const items = run.activity || [];
+    head.doingDetails.hidden = !items.length;
+    if (items.length) {
+      const text = items.map((item) => `${item.kind === "call" ? "→" : "•"} ${item.text}`).join("\n");
+      if (head.doingLog.textContent !== text) head.doingLog.textContent = text;
+    }
   }
 
   patchModel(head.model, run);
@@ -848,6 +893,31 @@ function runShell(runId) {
   return state.shell;
 }
 
+/* Volatile telemetry belongs to patchHead(), not this key. Keeping it out means
+ * polling can update clocks, rates and activity without remounting controls,
+ * tables or reader-owned sections and destroying their scroll/focus state. */
+function detailBodyKey(run) {
+  const preview = run.preview || {};
+  return JSON.stringify({
+    state: run.state, archived: run.archived, paused: run.paused,
+    stopping: run.stopping, commits: run.commits,
+    preview: {
+      enabled: preview.enabled, state: preview.state, pid: preview.pid,
+      port: preview.port, path: preview.path, url: preview.url,
+      url_template: preview.url_template, started_at: preview.started_at,
+      error: preview.error,
+    },
+    defects: run.defects, objective: run.objective, iterations: run.iterations,
+    plan: run.plan, handoff: run.handoff, notes: run.notes,
+  });
+}
+
+function patchPreviewLog(body, preview) {
+  const text = previewLogTail(preview?.log ?? preview?.log_tail);
+  const log = body.querySelector('.preview-logs pre');
+  if (log && log.textContent !== text) log.textContent = text;
+}
+
 async function renderRun(project, runId, { quiet = false } = {}) {
   // The list poll does not promise the detail-only preview fields. Fetch the
   // normal detail resource on every quiet poll so preview state is authoritative
@@ -868,8 +938,12 @@ async function renderRun(project, runId, { quiet = false } = {}) {
   }
 
   patchHead(head, run);
+  patchPreviewLog(body, run.preview);
+  const key = detailBodyKey(run);
+  if (quiet && key === state.detailKey) return;
+  state.detailKey = key;
 
-  // Preserve what the reader was doing across a background refresh.  Keyed by
+  // Preserve what the reader was doing across a structural refresh. Keyed by
   // section, never by index: the sections present depend on the run (a plan may
   // not exist yet, broken files usually do not), so an index-keyed list reopened
   // whichever section happened to land in that slot this time.
@@ -927,6 +1001,12 @@ async function renderRun(project, runId, { quiet = false } = {}) {
     } else {
       controls.append(control("Resume run", "continue", run));
       if (run.commits) {
+        controls.append(control("Merge to main", "merge", run, {
+          confirm: `Merge branch lmloop/${run.run_id} into the main branch locally?`,
+          done: (result) => {
+            alert(result?.message || `Successfully merged lmloop/${run.run_id} into ${result?.base || "main"}.`);
+          },
+        }));
         controls.append(control("Open pull request", "pr", run, {
           done: (result) => {
             if (result?.url) window.open(result.url, "_blank", "noopener");
@@ -1398,24 +1478,28 @@ window.addEventListener("online", resumePolling);
 // One second, only while something is running and the tab is visible.
 setInterval(() => {
   if (document.hidden) return;
-  if (!state.runs.some((run) => run.state === "running")) return;
+  if (!state.runs.some(isWorking)) return;
   for (const [id, parts] of state.rows) {
     const run = state.runs.find((item) =>
       `${item.project}/${item.route_id || item.run_id}` === id);
-    if (!run || run.state !== "running") continue;
+    if (!run || !isWorking(run)) continue;
     parts.timing.textContent = timingText(run);
   }
   const shown = state.runs.find((run) => run.run_id === state.route.run_id);
   const panel = document.querySelector("#view-run .detail-timing");
-  if (panel && shown?.state === "running") panel.textContent = timingText(shown);
+  if (panel && shown && isWorking(shown)) panel.textContent = timingText(shown);
+  const iterationClock = state.shell?.head.cells["iteration elapsed"];
+  if (iterationClock && shown && isWorking(shown)) {
+    iterationClock.textContent = liveIterationClock(shown);
+  }
   const modelClock = document.querySelector("#view-run .model-meta .clock");
-  if (modelClock && shown?.state === "running") {
+  if (modelClock && shown && isWorking(shown)) {
     modelClock.textContent = `iteration ${liveElapsed(shown)}`;
   }
   // The strip carries the same clock, and it is on screen on every page.
   for (const [runId, parts] of runbar.rows) {
     const run = state.runs.find((item) => item.run_id === runId);
-    if (!run || run.state !== "running") continue;
+    if (!run || !isWorking(run)) continue;
     const clock = parts.meta.querySelector(".clock");
     if (clock) clock.textContent = liveElapsed(run);
   }

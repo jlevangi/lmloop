@@ -26,9 +26,9 @@ in this codebase is load-bearing and was paid for with a failed run.
 
 - **`pi --mode json` always exits 0.** The branch setting `exitCode = 1` sits
   inside `if (mode === "text")`. Outcome comes from the event stream or nowhere.
-- **Never pass `--no-extensions`.** `~/.pi/agent/extensions/model-catalog.js`
-  registers both the `llama-swap` and `9router` providers; disabling extension
-  discovery takes the whole model catalogue with it.
+- **Never pass `--no-extensions`.** lmloop explicitly loads its tracked
+  `web/deploy/model-catalog.js` into an isolated Pi profile; disabling
+  extension discovery can also remove other extensions needed by the run.
 - **pi sets `process.title = "pi"`.** `pkill -f 'pi --model …'` never matches;
   use `pkill -x pi`.
 - **llama-swap holds one model at a time.** `GET /running` is free;

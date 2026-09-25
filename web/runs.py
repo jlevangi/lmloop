@@ -49,6 +49,73 @@ def _read_text(path: Path, limit: int = 200_000) -> str:
         return ""
 
 
+def _live_activity(run_dir: Path, max_events: int = 12) -> list[dict]:
+    """Trailing live tool calls/results parsed from the active iteration stream."""
+    it_files = [p for p in run_dir.glob("iteration-*.jsonl")
+                if p.stem.removeprefix("iteration-").isdigit()]
+    if not it_files:
+        return []
+    latest = max(it_files, key=lambda p: int(p.stem.removeprefix("iteration-")))
+    try:
+        size = latest.stat().st_size
+        if size == 0:
+            return []
+        with latest.open("rb") as handle:
+            handle.seek(max(0, size - 524288))
+            chunk = handle.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    events = []
+    for line in chunk.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        t = d.get("type")
+        if t == "message_end" and d.get("message", {}).get("role") == "assistant":
+            for c in d.get("message", {}).get("content") or []:
+                if c.get("type") == "toolCall":
+                    name = c.get("name") or ""
+                    args = c.get("arguments") or {}
+                    target = ""
+                    if isinstance(args, dict):
+                        target = (
+                            args.get("path")
+                            or args.get("command")
+                            or args.get("url")
+                            or args.get("pattern")
+                            or args.get("action")
+                            or ""
+                        )
+                    events.append({
+                        "kind": "call",
+                        "tool": name,
+                        "text": f"{name} {target}".strip()[:140],
+                    })
+        elif t == "message_end" and d.get("message", {}).get("role") == "toolResult":
+            msg = d.get("message") or {}
+            tool = msg.get("toolName") or ""
+            is_err = bool(msg.get("isError"))
+            content = ""
+            for c in msg.get("content") or []:
+                if isinstance(c, dict) and c.get("text"):
+                    lines = [ln.strip() for ln in c["text"].splitlines() if ln.strip()]
+                    if lines:
+                        content = " ".join(lines)[:140]
+                    break
+            prefix = "error: " if is_err else ""
+            events.append({
+                "kind": "result",
+                "tool": tool,
+                "text": f"{prefix}{content}"[:140],
+            })
+    return events[-max_events:]
+
+
 def _age_seconds(stamp: str | None) -> float | None:
     return runrecord.age_seconds(stamp)
 
@@ -458,7 +525,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "paused": runrecord.paused(run_dir),
         "stopping": runrecord.stop_requested(run_dir),
         "iterations_done": len(outcomes),
-        "outcomes": outcomes[-12:],
+        "outcomes": outcomes,
         "commits": commits,
         "updated_at": status.get("updated_at"),
         "preview": preview,
@@ -473,6 +540,7 @@ def detail(project: dict, run_dir: Path) -> dict:
         "plan": _read_text(run_dir / "plan.md"),
         "handoff": _read_text(run_dir / "handoff.md"),
         "notes": _read_text(run_dir / "notes.md"),
+        "activity": _live_activity(run_dir) if record.get("state") == "running" else [],
         # `parents[2]` walks <worktree>/.lmloop/runs/<id> back to the worktree.
         # An archived run is not nested that way and has no worktree at all, so
         # the same arithmetic would name some unrelated directory.

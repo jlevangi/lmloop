@@ -527,6 +527,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.archive_run(project, run_dir)
         if action == "delete":
             return self.delete_run(project, run_dir, payload)
+        if action == "merge":
+            return self.merge_local(project, run_dir, payload)
         if action == "pr":
             return self.open_pr(project, run_dir, payload)
         return self.json({"error": f"unknown action {action}"}, 400)
@@ -549,6 +551,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def delete_run(self, project, run_dir, payload):
         status, reply = service.delete_run(project, run_dir, payload)
+        return self.json(reply, status)
+
+    def merge_local(self, project, run_dir, payload):
+        status, reply = service.merge_local(project, run_dir, payload)
         return self.json(reply, status)
 
     def open_pr(self, project, run_dir, payload):

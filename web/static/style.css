@@ -441,12 +441,21 @@ code { background: var(--ink-raise); padding: 2px 6px; border-radius: 3px; font-
 
 /* The run view's headline: step, then call, then clock. */
 .doing { border: 1px solid var(--moon-dim); border-radius: var(--r); padding: 13px 14px; display: grid; gap: 7px; }
+.doing-header { display: flex; align-items: center; gap: 7px; }
+.doing-pulse { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.doing-pulse.active { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: pulse-ring 1.8s ease-in-out infinite; }
+.doing-pulse.paused { background: var(--warn); }
+@keyframes pulse-ring { 0%, 100% { opacity: .4; transform: scale(.9); } 50% { opacity: 1; transform: scale(1.15); } }
 .doing .label { font-size: .62rem; text-transform: uppercase; letter-spacing: .14em; color: var(--moon); }
 .doing .step { font-size: .9rem; line-height: 1.5; color: var(--text); grid-template-columns: minmax(0, 1fr); }
 .doing .act { font-family: var(--mono); font-size: .78rem; color: var(--text-dim); }
+.doing-details { margin-top: 4px; border-top: 1px solid var(--line-soft); padding-top: 6px; }
+.doing-details summary { font-size: .68rem; text-transform: uppercase; letter-spacing: .12em; color: var(--text-faint); cursor: pointer; user-select: none; }
+.doing-details summary:hover { color: var(--moon); }
+.doing-log { margin: 6px 0 0; padding: 7px 9px; font-family: var(--mono); font-size: .72rem; line-height: 1.45; background: #0004; border-radius: var(--r); max-height: 140px; overflow-y: auto; white-space: pre-wrap; color: var(--text-dim); border: 1px solid var(--line-soft); }
 /* `anywhere`, not `break-word`: only `anywhere` lowers the min-content size,
    and the min-content size is the number doing the damage. */
-.doing .step, .doing .act, .objective, .model-id { overflow-wrap: anywhere; }
+.doing .step, .doing .act, .doing-log, .objective, .model-id { overflow-wrap: anywhere; }
 
 .controls { display: flex; flex-wrap: wrap; gap: 7px; }
 .preview-panel { display: grid; gap: 11px; }

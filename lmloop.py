@@ -29,6 +29,7 @@ import display
 import eta
 import gitops
 import harness
+from harness_pi import PiHarness
 import models as models_module
 import runrecord
 from loop import Run
@@ -468,7 +469,10 @@ def cmd_models(args: argparse.Namespace) -> int:
         return 0
     print(f"\navailable to {agent_name}:")
     try:
-        result = subprocess.run(argv, capture_output=True, text=True)
+        result = subprocess.run(
+            argv, capture_output=True, text=True,
+            env=PiHarness.discovery_env() if agent_name == "pi" else None,
+        )
     except OSError as error:
         print(f"  could not run {argv[0]}: {error}")
         return 0

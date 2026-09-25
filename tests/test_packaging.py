@@ -35,7 +35,7 @@ class BuiltInstallationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="lmloop-packaging-") as temporary:
             temporary = Path(temporary)
             clean_source = temporary / "source"
-            # Build from a clean tracked snapshot so untracked worktree edits do not pollute artifacts
+            # Build from a clean tracked snapshot, including staged changes under test.
             subprocess.run(
                 ["git", "clone", "--shared", "--no-checkout", str(ROOT), str(clean_source)],
                 check=True, capture_output=True, text=True, timeout=30,
@@ -44,6 +44,15 @@ class BuiltInstallationTests(unittest.TestCase):
                 ["git", "checkout", "HEAD"],
                 cwd=clean_source, check=True, capture_output=True, text=True, timeout=30,
             )
+            staged = subprocess.run(
+                ["git", "diff", "--cached", "--binary", "HEAD"], cwd=ROOT,
+                check=True, capture_output=True, timeout=30,
+            ).stdout
+            if staged:
+                subprocess.run(
+                    ["git", "apply", "--index", "-"], cwd=clean_source,
+                    input=staged, check=True, capture_output=True, timeout=30,
+                )
             artifacts = temporary / "artifacts"
             build_command = ([uv, "build", "--wheel", "--sdist", "--out-dir", str(artifacts)]
                              if uv else

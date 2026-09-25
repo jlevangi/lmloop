@@ -7,16 +7,12 @@ that killed three runs on HTTP 400 mid-iteration.
 
 ## Where the catalogue comes from
 
-`~/.pi/agent/extensions/model-catalog.js` registers **two** providers despite
-its name:
-
-| Provider | Endpoint | For |
-|---|---|---|
-| `9router` | `https://router.example.com/v1` | cloud models |
-| `llama-swap` | `http://127.0.0.1:8080/v1` | self-hosted, **no router in the path** |
-
-Never pass `--no-extensions` to pi. That extension is the entire model
-catalogue; disabling extension discovery takes both providers with it.
+`web/deploy/model-catalog.js` is passed to Pi by lmloop via `--extension`.
+Pi runs with the isolated `~/.config/lmloop/pi-agent` profile; other Pi
+applications do not load this catalogue. It registers **llama-swap only**,
+pointed directly at the configured endpoint (default `http://127.0.0.1:8080/v1`).
+The profile can also hold operator-selected Pi skills and settings without
+leaking them to other apps. Cloud authentication is not configured here.
 
 ## Declared windows
 
@@ -51,8 +47,8 @@ window.
 ### One place to change it
 
 `~/.config/lmloop/model-budgets.json` holds the split policy and the llama-swap
-address. Both sides read it: `models.py` here, and the pi extension that
-actually configures the agent.
+address. Both sides read it: `models.py` here, and the tracked Pi extension
+that actually configures the agent.
 
 ```json
 {

@@ -562,9 +562,9 @@ def approval(project: dict, run_dir: Path, payload: dict, config: dict,
     with (run_dir / "plan.md").open("a") as handle:
         handle.write("\n" + "".join(f"- [ ] {item} (operator)\n" for item in items))
     record()
-    code, reply = control(project, run_dir, "continue", {}, config, lmloop_path)
-    if code != 200:
+    res = control(project, run_dir, "continue", {}, config, lmloop_path)
+    if not res or res[0] != 200:
         # The run did not continue, so it is still waiting: keep the buttons.
         status.pop("approval", None)
         status_path.write_text(json.dumps(status, indent=2) + "\n")
-    return code, reply
+    return res or (500, {"error": "continue refused"})

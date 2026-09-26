@@ -585,7 +585,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 #review-options { margin: 12px 0; }
 #review-options summary, #approval summary { cursor: pointer; font-size: .85rem; color: var(--text-faint); }
 .verdict-approved { color: var(--ok, #3c9); margin: 6px 0; font-size: .84rem; line-height: 1.5; }
-.verdict-changes { color: var(--warn, #e93); margin: 6px 0; font-size: .84rem; line-height: 1.5; }
+.review-unresolved-banner {
+  padding: 8px 12px; margin: 8px 0 12px; border-radius: var(--r);
+  background: color-mix(in srgb, var(--warn) 8%, var(--ink-sink));
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  color: var(--warn); font-size: .8rem; line-height: 1.45;
+}
 
 .review-panel { display: grid; gap: 14px; margin-top: 10px; }
 .review-lead { font-size: .82rem; color: var(--text-dim); line-height: 1.5; margin: 0; }

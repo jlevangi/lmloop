@@ -1087,7 +1087,8 @@ async function renderRun(project, runId, { quiet = false } = {}) {
       }
       if (!run.awaiting_approval) return;
       if (/review unresolved/.test(run.stop_reason || "")) {
-        inner.append(el("p", "alert", "Reviewers still wanted changes after the last round."));
+        inner.append(el("div", "review-unresolved-banner",
+          "Note: Reviewers still requested changes after reaching the maximum review rounds. You can inspect findings below and decide to approve, request more changes, or reject."));
       }
 
       const panel = el("div", "review-panel");

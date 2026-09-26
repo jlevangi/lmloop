@@ -1078,6 +1078,10 @@ async function renderRun(project, runId, { quiet = false } = {}) {
           inner.append(list);
         }
       }
+      if (run.approval) {
+        inner.append(el("p", "status-badge", `Status: ${run.approval === "approve" ? "Approved & merged" : run.approval}`));
+        return;
+      }
       if (!run.awaiting_approval) return;
       if (/review unresolved/.test(run.stop_reason || "")) {
         inner.append(el("p", "alert", "Reviewers still wanted changes after the last round."));
@@ -1091,14 +1095,15 @@ async function renderRun(project, runId, { quiet = false } = {}) {
         button.type = "button";
         button.addEventListener("click", async () => {
           if (action === "approve" && !window.confirm(`Fast-forward main to lmloop/${run.run_id}?`)) return;
-          button.disabled = true;
+          // Disable all action buttons immediately so no other action can be fired concurrently
+          for (const b of inner.querySelectorAll("button")) b.disabled = true;
           try {
             await api(`/api/runs/${run.project}/${run.route_id || run.run_id}/approval`,
               { body: { action, note: note.value } });
             state.detailKey = null;
             await poll();
           } catch (error) {
-            button.disabled = false;
+            for (const b of inner.querySelectorAll("button")) b.disabled = false;
             alert(error.message);
           }
         });

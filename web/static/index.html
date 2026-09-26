@@ -128,6 +128,15 @@
       <p id="launch-error" class="alert" hidden></p>
       <button type="submit" class="act block" id="launch-submit">Start run</button>
     </form>
+
+    <details id="system-prompt-panel">
+      <summary>Agent instructions (all runs)</summary>
+      <p class="note">Appended to the agent's system prompt on every iteration of every run, including runs already going. Repositories with <code>.beads/</code> also get lmloop's bundled Beads skill.</p>
+      <textarea id="system-prompt" rows="8" maxlength="20000"
+        placeholder="e.g. Prefer small commits. Never add dependencies without a note in the handoff."></textarea>
+      <p id="system-prompt-status" class="note" hidden></p>
+      <button type="button" class="act" id="system-prompt-save">Save instructions</button>
+    </details>
   </section>
 </main>
 

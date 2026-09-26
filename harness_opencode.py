@@ -31,10 +31,11 @@ class OpencodeHarness(Harness):
     interesting = ('"tool_use"', '"step_finish"')
     activity = (b'"text"', b'"tool_use"', b'"step_')
 
-    def argv(self, *, model, tools, thinking, session_dir, session_id):
+    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt=""):
         # opencode keeps its own sessions and takes no tool allowlist, so
         # session_dir and tools have nowhere to go.  Saying so is better than
-        # passing flags it will reject.
+        # passing flags it will reject.  It has no system-prompt flag either;
+        # pi_runner prepends `system_prompt` to the prompt for it.
         argv = [self.binary, "run", "--format", "json"]
         if model:
             argv += ["--model", model]

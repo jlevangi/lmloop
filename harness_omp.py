@@ -169,7 +169,7 @@ class OmpHarness(PiHarness):
                 windows[selector] = (context, output)
         return windows
 
-    def argv(self, *, model, tools, thinking, session_dir, session_id):
+    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt=""):
         # `session_id` is accepted and dropped; see 1. above.
         argv = [
             self.binary,
@@ -184,6 +184,8 @@ class OmpHarness(PiHarness):
             argv += ["--tools", tools]
         if thinking:
             argv += ["--thinking", thinking]
+        if system_prompt:
+            argv += ["--append-system-prompt", system_prompt]
         return argv
 
     @staticmethod

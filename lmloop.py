@@ -93,7 +93,7 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
             "--run-id", run_id]
     for flag, value in (("--agent", args.agent), ("--model", args.model),
                         ("--tools", args.tools), ("--gate", args.gate),
-                        ("--thinking", args.thinking)):
+                        ("--thinking", args.thinking), ("--issue", args.issue)):
         if value is not None:
             argv += [flag, value]
     if args.max_iterations:
@@ -141,7 +141,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _detach(objective, args)
 
     run = Run(repo, config, objective, max_iterations=args.max_iterations,
-              run_id=getattr(args, "run_id", None))
+              run_id=getattr(args, "run_id", None), issue=args.issue or "")
     # Labels are short and paths are repo-relative because this header is read on
     # a phone as often as on a desktop, and the worktree path alone ran to 96
     # characters -- three wrapped lines before the run has even started.
@@ -603,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--thinking", help="thinking level: off, minimal, low, medium, high, xhigh, max")
     run.add_argument("--gate", help="override the commit gate command")
     run.add_argument("--max-iterations", type=int, help="override the iteration cap")
+    run.add_argument("--issue", help="Beads issue id: claimed at start, closed when the plan completes")
     run.add_argument("--detach", action="store_true", help="start in the background and print the run id")
     # How --detach tells its child which lane it picked, so parent and child
     # agree on the id even when today already used the derived one.

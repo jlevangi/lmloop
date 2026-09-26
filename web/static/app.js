@@ -1211,6 +1211,33 @@ $("project").addEventListener("change", async () => {
 });
 $("beads-issue").addEventListener("change", onBeadsIssueSelect);
 
+async function loadSystemPrompt() {
+  try {
+    const data = await api("/api/system-prompt");
+    $("system-prompt").value = data.text || "";
+  } catch (err) {
+    // Leave the editor empty; saving will surface any real error.
+  }
+}
+
+$("system-prompt-panel").addEventListener("toggle", () => {
+  if ($("system-prompt-panel").open && !$("system-prompt").dataset.loaded) {
+    $("system-prompt").dataset.loaded = "1";
+    loadSystemPrompt();
+  }
+});
+
+$("system-prompt-save").addEventListener("click", async () => {
+  const status = $("system-prompt-status");
+  status.hidden = false;
+  try {
+    await api("/api/system-prompt", { body: { text: $("system-prompt").value } });
+    status.textContent = "Saved. Takes effect from each run's next iteration.";
+  } catch (err) {
+    status.textContent = `Not saved: ${err.message}`;
+  }
+});
+
 $("launch-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = $("launch-submit");

@@ -59,6 +59,9 @@ import harness
 from config_defaults import DEFAULTS
 
 GLOBAL_CONFIG = Path.home() / ".config" / "lmloop" / "config.toml"
+# Operator instructions appended to every run's system prompt; edited from the
+# dashboard.  Absent means none.
+SYSTEM_PROMPT = GLOBAL_CONFIG.parent / "system-prompt.md"
 PROJECT_CONFIG = ".lmloop.toml"
 
 

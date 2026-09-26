@@ -1,19 +1,23 @@
-"""Beads issue picker: listing and launch wiring."""
+"""Beads issue picker, bundled skill, operator system prompt."""
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "web")]
 
+import config  # noqa: E402
+import harness  # noqa: E402
+import loop  # noqa: E402
 import runs as runs_module  # noqa: E402
 import service  # noqa: E402
 
 
-class BeadsTests(unittest.TestCase):
+class BeadsListingTests(unittest.TestCase):
     def test_no_beads_dir_means_no_issues(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(runs_module.beads_issues(d), [])
@@ -29,7 +33,9 @@ class BeadsTests(unittest.TestCase):
         self.assertEqual(issues[0]["id"], "x-1")
         self.assertEqual(issues[0]["issue_type"], "task")
 
-    def test_launch_claims_and_rejects_bad_ids(self):
+
+class LaunchTests(unittest.TestCase):
+    def test_issue_is_validated_and_passed_to_the_run(self):
         project = {"id": "p", "path": "/tmp"}
         cfg = {"roots": [], "python": "py", "default_max_iterations": 3,
                "default_model": "", "default_thinking": ""}
@@ -38,10 +44,53 @@ class BeadsTests(unittest.TestCase):
                                return_value=mock.Mock(returncode=0, stdout="ok", stderr="")) as run:
             code, _ = service.start_run({"project": "p", "objective": "o", "issue": "x;rm"}, cfg, "l")
             self.assertEqual(code, 400)
+            run.assert_not_called()
             code, _ = service.start_run({"project": "p", "objective": "o", "issue": "x-1"}, cfg, "l")
         self.assertEqual(code, 200)
-        self.assertEqual(run.call_args_list[0].args[0], ["bd", "update", "x-1", "--claim"])
-        self.assertIn("bd close x-1", run.call_args_list[1].args[0][3])
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--issue") + 1], "x-1")
+
+
+class SystemPromptTests(unittest.TestCase):
+    def test_pi_and_omp_append_it_opencode_does_not(self):
+        common = dict(model="p/m", tools="", thinking="", session_dir="/s", session_id="i",
+                      system_prompt="/x.md")
+        for name in ("pi", "omp"):
+            argv = harness.get(name).argv(**common)
+            self.assertEqual(argv[argv.index("--append-system-prompt") + 1], "/x.md")
+        self.assertNotIn("--append-system-prompt", harness.get("opencode").argv(**common))
+        self.assertNotIn("--append-system-prompt",
+                         harness.get("pi").argv(**{**common, "system_prompt": ""}))
+
+    def _run(self, root: Path, issue=""):
+        run = SimpleNamespace(repo=root, issue=issue, run_id="r", branch="b",
+                              rundir=SimpleNamespace(path=root, event=mock.Mock()))
+        run._bd = mock.Mock()
+        return run
+
+    def test_assembly(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            operator = root / "operator.md"
+            with mock.patch.object(config, "SYSTEM_PROMPT", operator):
+                run = self._run(root)
+                self.assertEqual(loop.Run.system_prompt(run), "")
+                operator.write_text("Be terse.")
+                (root / ".beads").mkdir()
+                run = self._run(root, issue="x-1")
+                text = Path(loop.Run.system_prompt(run)).read_text()
+        self.assertIn("Be terse.", text)
+        self.assertIn("bd create", text)          # the bundled skill
+        self.assertIn("bd show x-1", text)
+
+    def test_issue_closes_only_on_plan_complete(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = self._run(Path(d), issue="x-1")
+            loop.Run._close_issue(run, "max iterations reached (3)")
+            loop.Run._close_issue(run, None)
+            run._bd.assert_not_called()
+            loop.Run._close_issue(run, "plan complete (4/4)")
+        self.assertEqual(run._bd.call_args.args[:2], ("close", "x-1"))
 
 
 if __name__ == "__main__":

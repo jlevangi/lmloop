@@ -41,6 +41,10 @@ from rundir import RunDir, make_run_id, previous_runs
 
 GATE_TERM_GRACE_SECONDS = 5
 
+# Shipped with lmloop, appended to the agent's system prompt in any repository
+# that has a `.beads/` directory.
+BEADS_SKILL = Path(__file__).resolve().parent / "web" / "skills" / "beads.md"
+
 
 def _terminate_process_group(process: subprocess.Popen) -> None:
     try:
@@ -68,10 +72,14 @@ class Run:
         objective: str,
         max_iterations: int | None = None,
         run_id: str | None = None,
+        issue: str = "",
     ):
         self.repo = repo
         self.config = config
         self.objective = objective
+        # The Beads issue this run works on, if any: claimed at the start,
+        # closed when the plan completes.  See `system_prompt` and `_close_issue`.
+        self.issue = issue
         # Two numbers, not one.  The floor is what the operator asked for and is
         # always honoured; the ceiling is what no plan can argue past.  An
         # explicit `--max-iterations` raises the floor rather than pinning the
@@ -256,6 +264,8 @@ class Run:
             self.probe_env()
             self.probe_gate(base)
             self.probe_browser()
+            if self.issue:
+                self._bd("update", self.issue, "--claim")
             self.rundir.event(
                 "run:start",
                 runId=self.run_id,
@@ -270,6 +280,7 @@ class Run:
                 baseCommit=base,
                 maxIterations=self.max_iterations,
                 promptLength=len(self.objective),
+                issue=self.issue,
             )
         except BaseException:
             self.rundir.release()
@@ -308,6 +319,7 @@ class Run:
             raise
         try:
             state = self.rundir.read_run_state()
+            self.issue = self.issue or str(state.get("issue", ""))
             self.pending_iteration = int(state.get("pending_iteration", 0))
             if self.pending_iteration:
                 # A provider outage writes the prompt before the request fails.  It
@@ -828,6 +840,7 @@ class Run:
             max_compactions=self.config["iteration"]["max_compactions"],
             max_repeats=self.config["iteration"].get("max_repeats", 3),
             env=self.env(),
+            system_prompt=self.system_prompt(),
             # Only the *hard* stop reaches in here.  A plain STOP means "end the
             # run", and the boundary -- where the gate runs, the handoff is
             # written and the tree is committed -- is where ending it is worth
@@ -1208,6 +1221,7 @@ class Run:
             "thrashed_steps": self.thrashed_steps,
             "hard_turn_ceiling": self.iteration_ceiling,
             "pending_iteration": self.pending_iteration,
+            "issue": self.issue,
             # Policy state that needs to be restored on resume for semantic continuity
             "repo_path": str(self.repo),
             "worktree_path": str(self.worktree),
@@ -1335,12 +1349,60 @@ class Run:
         self._safely("terminal status", lambda: self.rundir.write_terminal_status(
             stopped, iteration - 1, progress[0], progress[1]))
         self._safely("run-state save", self._save_run_state)
+        self._safely("beads close", lambda: self._close_issue(reason))
         self._safely("claim release", self.rundir.release)
         self._safely("screen cleanup", self.screen.close)
         self._safely("summary", lambda: self._summarise(reason, started))
         self._safely("sweep", self._sweep)
         self._safely("notification", lambda: self._announce(reason, started, iteration - 1))
         self._safely("web push", lambda: self._announce_push(reason, started, iteration - 1))
+
+    def system_prompt(self) -> str:
+        """Path to this iteration's appended system prompt, or "" for none.
+
+        Three parts, each optional: the operator's own instructions from
+        `SYSTEM_PROMPT` (editable from the dashboard), the bundled Beads skill
+        when the repository tracks work with `bd`, and the issue this run is
+        for.  Rebuilt every iteration so an edit reaches a run already going.
+        Written into the run directory, which git never sees.
+        """
+        parts = []
+        try:
+            parts.append(config.SYSTEM_PROMPT.read_text().strip())
+        except OSError:
+            pass
+        if (self.repo / ".beads").is_dir():
+            parts.append(BEADS_SKILL.read_text().strip())
+        if self.issue:
+            parts.append(
+                f"This run is working on Beads issue `{self.issue}`. "
+                f"Run `bd show {self.issue}` once for its acceptance criteria."
+            )
+        parts = [p for p in parts if p]
+        if not parts:
+            return ""
+        path = self.rundir.path / "system-prompt.md"
+        path.write_text("\n\n".join(parts) + "\n")
+        return str(path)
+
+    def _bd(self, *args: str) -> None:
+        # Best effort: a missing or failing `bd` must never cost the run.
+        try:
+            subprocess.run(["bd", *args], cwd=str(self.repo),
+                           capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def _close_issue(self, reason: str | None) -> None:
+        """Close the run's issue when, and only when, its plan completed.
+
+        Any other ending -- a budget, a STOP, a crash -- leaves it claimed and
+        open, which is the truth: somebody still has to finish it.
+        """
+        if self.issue and reason and reason.startswith("plan complete"):
+            self._bd("close", self.issue, "--reason",
+                     f"lmloop run {self.run_id} on {self.branch}: {reason}")
+            self.rundir.event("beads:close", issue=self.issue)
 
     def _safely(self, step: str, action) -> None:
         """Run one finalisation step; never let it take the rest down with it.

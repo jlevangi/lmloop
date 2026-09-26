@@ -113,7 +113,7 @@ class PiHarness(Harness):
     compaction_marker = b'"compaction_end"'
     compaction_event = "compaction_start"
 
-    def argv(self, *, model, tools, thinking, session_dir, session_id):
+    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt=""):
         argv = [
             self.binary,
             "--extension", str(self.extension),
@@ -126,6 +126,8 @@ class PiHarness(Harness):
             argv += ["--tools", tools]
         if thinking:
             argv += ["--thinking", thinking]
+        if system_prompt:
+            argv += ["--append-system-prompt", system_prompt]
         return argv
 
     def classify(self, event):

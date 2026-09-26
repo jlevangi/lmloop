@@ -102,6 +102,7 @@ def run(
     max_compactions: int = 0,
     max_repeats: int = policy.REPEAT_LIMIT,
     env: dict | None = None,
+    system_prompt: str = "",
     should_stop=lambda: False,
     on_progress=None,
 ) -> IterationResult:
@@ -109,7 +110,12 @@ def run(
     argv = agent.argv(
         model=model, tools=tools, thinking=thinking,
         session_dir=session_dir, session_id=session_id,
+        system_prompt=system_prompt,
     )
+    if system_prompt and "--append-system-prompt" not in argv:
+        # An agent with no system-prompt flag still gets the instructions, as
+        # the head of the user prompt.
+        prompt = Path(system_prompt).read_text() + "\n\n" + prompt
 
     started = time.monotonic()
     state = _Stream()

@@ -580,6 +580,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .note { margin: 6px 0 0; font-size: .74rem; color: var(--text-faint); line-height: 1.5; }
 #new-project-fields, #beads-issue-group { display: grid; }
 #beads-issue-group[hidden], #new-project-fields[hidden] { display: none !important; }
+#system-prompt-panel { margin-top: 24px; }
+#system-prompt-panel summary { cursor: pointer; font-size: .85rem; color: var(--text-faint); }
+#system-prompt-panel textarea { width: 100%; margin: 8px 0; }
 
 /* Views cross-fade rather than jump; no sliding, which on a phone reads as a
    page that has not decided whether it is an app. */

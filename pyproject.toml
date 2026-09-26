@@ -40,4 +40,4 @@ py-modules = [
 include = ["web*"]
 
 [tool.setuptools.package-data]
-web = ["static/*", "deploy/*"]
+web = ["static/*", "deploy/*", "skills/*"]

@@ -419,6 +419,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(available_models(self.config, force="refresh" in parsed.query))
         if path == "/api/projects":
             return self.json({"projects": runs_module.projects(self.config["roots"])})
+        if path == "/api/system-prompt":
+            try:
+                text = config_module.SYSTEM_PROMPT.read_text()
+            except OSError:
+                text = ""
+            return self.json({"text": text, "path": str(config_module.SYSTEM_PROMPT)})
         if path.startswith("/api/projects/") and path.endswith("/beads"):
             project_id = path[len("/api/projects/"): -len("/beads")]
             match = [p for p in runs_module.projects(self.config["roots"]) if p["id"] == project_id]
@@ -470,6 +476,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.create_project(self.body())
         if path == "/api/runs":
             return self.start_run(self.body())
+        if path == "/api/system-prompt":
+            payload = self.body()
+            if payload is None:
+                return
+            text = payload.get("text", "")
+            if not isinstance(text, str) or len(text) > 20_000:
+                return self.json({"error": "text must be a string of at most 20000 characters"}, 400)
+            target = config_module.SYSTEM_PROMPT
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(text)
+            tmp.replace(target)
+            return self.json({"saved": True})
         if path == "/api/push/subscribe":
             return self.push_subscribe(self.body())
         if path == "/api/push/unsubscribe":

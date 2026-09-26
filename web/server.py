@@ -419,6 +419,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(available_models(self.config, force="refresh" in parsed.query))
         if path == "/api/projects":
             return self.json({"projects": runs_module.projects(self.config["roots"])})
+        if path.startswith("/api/projects/") and path.endswith("/beads"):
+            project_id = path[len("/api/projects/"): -len("/beads")]
+            match = [p for p in runs_module.projects(self.config["roots"]) if p["id"] == project_id]
+            if not match:
+                return self.json({"error": "no such project"}, 404)
+            issues = runs_module.beads_issues(match[0]["path"])
+            return self.json({"issues": issues})
         if path == "/api/runs":
             return self.json({"runs": runs_module.all_runs(self.config["roots"])})
         if path.startswith("/api/runs/"):

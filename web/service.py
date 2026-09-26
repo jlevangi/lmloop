@@ -132,6 +132,17 @@ def start_run(payload: dict, config: dict, lmloop_path: str) -> tuple[int, dict]
     if iterations is None:
         return 400, {"error": f"max_iterations must be an integer from 1 to {MAX_ITERATIONS}"}
 
+    issue = str(payload.get("issue") or "").strip()
+    if issue:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", issue):
+            return 400, {"error": "invalid beads issue id"}
+        # ponytail: claim is best-effort and closing is left to the agent via
+        # the objective text; move both into loop finalisation if agents forget.
+        subprocess.run(["bd", "update", issue, "--claim"], cwd=match[0]["path"],
+                       capture_output=True, text=True, timeout=15)
+        objective = (f"Beads issue: {issue}\n\n{objective}\n\n"
+                     f"When this issue is fully done and committed, run `bd close {issue}`.")
+
     argv = [config["python"], lmloop_path, "run", objective, "--detach"]
     for flag, key, default in (
         ("--model", "model", config["default_model"]),

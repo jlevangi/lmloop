@@ -123,6 +123,46 @@ def _age_seconds(stamp: str | None) -> float | None:
 # -- discovery --------------------------------------------------------------
 
 
+def beads_issues(project_path: Path | str) -> list[dict]:
+    """Return available beads issues for a project if initialized with beads.
+
+    Runs `bd ready --json` (falling back to open issues) inside the project repository.
+    Returns an empty list if beads is not installed or repo is not initialized.
+    """
+    path = Path(project_path)
+    if not (path / ".beads").exists():
+        return []
+    import shutil
+    import subprocess
+    if not shutil.which("bd"):
+        return []
+    try:
+        proc = subprocess.run(
+            ["bd", "ready", "--json"],
+            cwd=str(path), capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return []
+        items = json.loads(proc.stdout)
+        if not isinstance(items, list):
+            return []
+        out = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            out.append({
+                "id": str(item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "description": str(item.get("description") or ""),
+                "priority": item.get("priority"),
+                "issue_type": item.get("issue_type") or "task",
+                "status": item.get("status") or "open",
+            })
+        return out
+    except Exception:
+        return []
+
+
 def projects(roots: list[Path]) -> list[dict]:
     """Git repositories one level below each root.
 
@@ -140,12 +180,14 @@ def projects(roots: list[Path]) -> list[dict]:
                 continue
             if path.name in found:
                 continue
+            has_beads = (path / ".beads").exists()
             found[path.name] = {
                 "id": path.name,
                 "name": path.name,
                 "path": str(path),
                 "root": str(root),
                 "runs": len(run_dirs(path)),
+                "has_beads": has_beads,
             }
     return list(found.values())
 

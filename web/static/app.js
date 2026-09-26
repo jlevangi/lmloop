@@ -1123,6 +1123,7 @@ async function renderNew() {
   fresh.textContent = "+ new project…";
   $("project").append(fresh);
   if (state.project) $("project").value = state.project;
+  await updateProjectContext();
   toggleNewProject();
 
   // Fetched here rather than at startup: it costs a couple of seconds and only
@@ -1141,14 +1142,74 @@ async function renderNew() {
   $("iterations").value = state.config.default_max_iterations;
 }
 
+let currentBeadsIssues = [];
+
+async function updateProjectContext() {
+  const project = $("project").value;
+  const group = $("beads-issue-group");
+  const select = $("beads-issue");
+  if (!group || !select) return;
+  if (!project || project === "\u0000new") {
+    group.hidden = true;
+    currentBeadsIssues = [];
+    select.replaceChildren();
+    return;
+  }
+  try {
+    const data = await api(`/api/projects/${encodeURIComponent(project)}/beads`);
+    currentBeadsIssues = data.issues || [];
+    if (!currentBeadsIssues.length) {
+      group.hidden = true;
+      select.replaceChildren();
+      return;
+    }
+    const defaultOpt = document.createElement("option");
+    defaultOpt.value = "";
+    defaultOpt.textContent = "— Select an issue (or write custom objective) —";
+    const options = [defaultOpt, ...currentBeadsIssues.map((issue) => {
+      const opt = document.createElement("option");
+      opt.value = issue.id;
+      const prio = issue.priority != null ? `[P${issue.priority}] ` : "";
+      opt.textContent = `${prio}${issue.id} · ${issue.title}`;
+      return opt;
+    })];
+    select.replaceChildren(...options);
+    group.hidden = false;
+  } catch (err) {
+    group.hidden = true;
+    currentBeadsIssues = [];
+    select.replaceChildren();
+  }
+}
+
+function onBeadsIssueSelect() {
+  const select = $("beads-issue");
+  if (!select) return;
+  const issueId = select.value;
+  if (!issueId) return;
+  const issue = currentBeadsIssues.find((i) => i.id === issueId);
+  if (!issue) return;
+  const parts = [];
+  if (issue.title) parts.push(issue.title.trim());
+  if (issue.description) parts.push(issue.description.trim());
+  $("objective").value = parts.join("\n\n");
+}
+
 function toggleNewProject() {
   const creating = $("project").value === "\u0000new";
   $("new-project-fields").hidden = !creating;
   $("project-name").required = creating;
   $("launch-submit").textContent = creating ? "Create project and start" : "Start run";
+  if (creating && $("beads-issue-group")) {
+    $("beads-issue-group").hidden = true;
+  }
 }
 
-$("project").addEventListener("change", toggleNewProject);
+$("project").addEventListener("change", async () => {
+  toggleNewProject();
+  await updateProjectContext();
+});
+$("beads-issue").addEventListener("change", onBeadsIssueSelect);
 
 $("launch-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -1169,6 +1230,7 @@ $("launch-form").addEventListener("submit", async (event) => {
       body: {
         project,
         objective: $("objective").value,
+        issue: $("beads-issue").value || undefined,
         model: $("model").value,
         thinking: $("thinking").value,
         max_iterations: Number($("iterations").value),
@@ -1176,6 +1238,7 @@ $("launch-form").addEventListener("submit", async (event) => {
     });
     $("objective").value = "";
     $("project-name").value = "";
+    if ($("beads-issue")) $("beads-issue").value = "";
     state.models = state.models;   // catalogue is still good
     await poll();
     go("#");

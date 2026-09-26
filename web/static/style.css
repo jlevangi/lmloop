@@ -578,7 +578,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 @media (max-width: 520px) { .grid3 { grid-template-columns: 1fr; } }
 .alert { color: var(--bad); font-size: .82rem; margin: 6px 0 0; }
 .note { margin: 6px 0 0; font-size: .74rem; color: var(--text-faint); line-height: 1.5; }
-#new-project-fields { display: grid; }
+#new-project-fields, #beads-issue-group { display: grid; }
+#beads-issue-group[hidden], #new-project-fields[hidden] { display: none !important; }
 
 /* Views cross-fade rather than jump; no sliding, which on a phone reads as a
    page that has not decided whether it is an app. */

@@ -11,6 +11,7 @@ dependencies disable only that integration rather than breaking the loop.
 |---|---|
 | `lmloop.py` | CLI. Subcommands, config overrides, and the narrow-terminal output for `status`/`list`. |
 | `loop.py` | The run lifecycle: worktree, iterate, gate, check, commit, stop. Owns the model-role decision. |
+| `review.py` | Which review personas look at a run, and parsing their verdicts. Pure; the loop runs them. See `docs/review.md`. |
 | `policy.py` | Pure stop/budget/retry policy, extracted from `loop.Run`: no filesystem, no `self` — a function of its arguments, so it is testable without a worktree or an hour of wall clock. |
 | `pi_runner.py` | Runs one agent iteration and supervises its process, timeout, stall, tool, compaction, and repetition clocks. |
 | `runner_stream.py` | Reduces streamed JSON events into agent-neutral iteration state; owns byte filtering and live token-rate accounting. |

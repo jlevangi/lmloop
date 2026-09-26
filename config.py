@@ -335,6 +335,16 @@ def validate(raw: dict, source: Path, allow_command: bool = True) -> list[str]:
                     problems.append(
                         f"{source}: `[context] files` list items must be strings, got {bad!r}"
                     )
+            elif section == "review" and key in ("max_rounds", "every") and value < 0:
+                problems.append(f"{source}: `[review] {key}` must be 0 or more, got {value!r}")
+            elif section == "review" and key == "personas":
+                bad = [item for item in value if not isinstance(item, str)]
+                if bad:
+                    problems.append(f"{source}: `[review] personas` items must be strings, got {bad!r}")
+            elif section == "review" and key == "models":
+                bad = {k: v for k, v in value.items() if not isinstance(v, str)}
+                if bad:
+                    problems.append(f"{source}: `[review.models]` values must be model names, got {bad!r}")
             elif section == "preview" and key == "command" and isinstance(value, list):
                 bad = [item for item in value if not isinstance(item, str)]
                 if bad:
@@ -438,6 +448,19 @@ def validate_required_tools(config: dict) -> None:
         if missing_known:
             details.append("not known to " + harness_name + ": " + ", ".join(missing_known))
         raise SystemExit("lmloop: [agent] required_tools cannot be satisfied; " + "; ".join(details))
+
+
+def override_review(config: dict, rounds: int | None, every: int | None,
+                    personas: str | None) -> None:
+    """Apply `--review-rounds/--review-every/--review-personas`, in place."""
+    review = config["review"]
+    for key, value in (("max_rounds", rounds), ("every", every)):
+        if value is not None:
+            if value < 0:
+                raise SystemExit(f"lmloop: --review-{key.split('_')[-1]} must be 0 or more")
+            review[key] = value
+    if personas is not None:
+        review["personas"] = [p.strip() for p in personas.split(",") if p.strip()]
 
 
 def override_agent(config: dict, harness_name: str = "", tools: str = "") -> None:
@@ -608,4 +631,15 @@ hard_turn_ceiling    = 20     # absolute stop; resume --iterations extends it
 # max_iterations = 20         # legacy alias for both values above
 max_wall_hours       = 10
 no_diff_iterations  = 3
+
+[review]
+# A finished plan is reviewed by model personas, then waits for you to
+# approve it; see docs/review.md.  Each run can override these with
+# --review-rounds, --review-every and --review-personas.
+max_rounds = 2            # reviewer rounds before handing over unresolved; 0 = off
+every      = 5            # drift check every N working iterations; 0 = off
+personas   = []           # empty = chosen from the diff: correctness, security,
+                          # performance, design; or ~/.config/lmloop/personas/<name>.md
+# [review.models]         # a persona's own model; default is the worker's
+# design = "llama-swap/Qwen3.8-27B"
 """

@@ -206,6 +206,7 @@ function syncSpans(container, bits, className = () => "") {
 
 function metaBits(run) {
   const bits = [];
+  if (run.awaiting_approval) bits.push("awaiting approval");
   if (run.iteration) bits.push(`iter ${run.iteration}/${run.max_iterations ?? "?"}`);
   if (run.commits) bits.push(plural(run.commits, "commit"));
   const live = isWorking(run);
@@ -1061,6 +1062,54 @@ async function renderRun(project, runId, { quiet = false } = {}) {
     }, { start: !narrow });
   }
 
+  if (run.reviews?.length || run.awaiting_approval) {
+    section("review", run.awaiting_approval ? "Review — awaiting your approval" : "Review", (inner) => {
+      for (const r of run.reviews || []) {
+        const head = r.event === "approval"
+          ? `You: ${r.action.replace("_", " ")}${r.note ? ` — ${r.note}` : ""}`
+          : r.event === "review:edited"
+            ? `${r.label} ${r.persona}: edited files; verdict discarded`
+            : `${r.label} ${r.persona}: ${r.verdict}`;
+        const cls = r.verdict === "APPROVED" || r.action === "approve" ? "verdict-approved" : "verdict-changes";
+        inner.append(el("p", cls, head));
+        if (r.findings?.length) {
+          const list = el("ul");
+          for (const f of r.findings) list.append(el("li", null, f));
+          inner.append(list);
+        }
+      }
+      if (!run.awaiting_approval) return;
+      if (/review unresolved/.test(run.stop_reason || "")) {
+        inner.append(el("p", "alert", "Reviewers still wanted changes after the last round."));
+      }
+      const note = el("textarea");
+      note.rows = 4;
+      note.placeholder = "Notes: required to request changes or reject. One change per line.";
+      const buttons = el("div", "controls");
+      const decide = (label, action, risk) => {
+        const button = el("button", risk ? "risk" : "quiet", label);
+        button.type = "button";
+        button.addEventListener("click", async () => {
+          if (action === "approve" && !window.confirm(`Fast-forward main to lmloop/${run.run_id}?`)) return;
+          button.disabled = true;
+          try {
+            await api(`/api/runs/${run.project}/${run.route_id || run.run_id}/approval`,
+              { body: { action, note: note.value } });
+            state.detailKey = null;
+            await poll();
+          } catch (error) {
+            button.disabled = false;
+            alert(error.message);
+          }
+        });
+        return button;
+      };
+      buttons.append(decide("Approve & merge", "approve"), decide("Request changes", "request_changes"),
+        decide("Reject", "reject", true));
+      inner.append(note, buttons);
+    }, { start: Boolean(run.awaiting_approval) });
+  }
+
   for (const [key, label, content] of [["handoff", "Handoff", run.handoff], ["notes", "Notes", run.notes]]) {
     if (!content) continue;
     section(key, label, (inner) => inner.append(el("pre", null, content)), { start: false });
@@ -1261,6 +1310,9 @@ $("launch-form").addEventListener("submit", async (event) => {
         model: $("model").value,
         thinking: $("thinking").value,
         max_iterations: Number($("iterations").value),
+        review_rounds: $("review-rounds").value,
+        review_every: $("review-every").value,
+        review_personas: $("review-personas").value.trim(),
       },
     });
     $("objective").value = "";

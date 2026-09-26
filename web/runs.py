@@ -345,6 +345,13 @@ def is_archived(run_dir: Path) -> bool:
 # -- reading ----------------------------------------------------------------
 
 
+def _reviews(events: list[dict]) -> list[dict]:
+    """Every reviewer verdict and operator decision, oldest first."""
+    shown = ("review:verdict", "review:edited", "approval")
+    fields = ("event", "label", "persona", "verdict", "findings", "action", "note", "timestamp")
+    return [{k: e[k] for k in fields if k in e} for e in events if e.get("event") in shown]
+
+
 def _events(run_dir: Path) -> list[dict]:
     """The run's own event log, parsed -- see `runrecord.read_events`."""
     return runrecord.read_events(run_dir)
@@ -549,6 +556,9 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "iteration": status.get("iteration"),
         "max_iterations": status.get("max_iterations"),
         "phase": status.get("phase", ""),
+        "awaiting_approval": bool(status.get("awaiting_approval")) and not status.get("approval"),
+        "approval": status.get("approval", ""),
+        "stop_reason": status.get("stop_reason", ""),
         "last_tool": status.get("last_tool", ""),
         "last_target": status.get("last_target", ""),
         "current_step": _current_step(plan),
@@ -582,6 +592,7 @@ def detail(project: dict, run_dir: Path) -> dict:
         "plan": _read_text(run_dir / "plan.md"),
         "handoff": _read_text(run_dir / "handoff.md"),
         "notes": _read_text(run_dir / "notes.md"),
+        "reviews": _reviews(_events(run_dir)),
         "activity": _live_activity(run_dir) if record.get("state") == "running" else [],
         # `parents[2]` walks <worktree>/.lmloop/runs/<id> back to the worktree.
         # An archived run is not nested that way and has no worktree at all, so

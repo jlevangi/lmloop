@@ -279,4 +279,12 @@ DEFAULTS: dict = {
         "budget_follows_plan": True,
         "retry_allowance": 5,
     },
+    # Staged review before a run asks the operator to approve it; see
+    # docs/review.md.  Overridable globally, per project, and per run.
+    "review": {
+        "max_rounds": 2,     # reviewer rounds before handing over unresolved; 0 = no review
+        "every": 5,          # drift check every N working iterations; 0 = off
+        "personas": [],      # empty = chosen from the diff; names replace that
+        "models": {},        # persona -> model; default is the worker's model
+    },
 }

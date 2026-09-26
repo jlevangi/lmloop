@@ -555,6 +555,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.delete_run(project, run_dir, payload)
         if action == "merge":
             return self.merge_local(project, run_dir, payload)
+        if action == "approval":
+            status, reply = service.approval(project, run_dir, payload or {}, self.config, LMLOOP)
+            return self.json(reply, status)
         if action == "pr":
             return self.open_pr(project, run_dir, payload)
         return self.json({"error": f"unknown action {action}"}, 400)

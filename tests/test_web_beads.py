@@ -83,14 +83,9 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("bd create", text)          # the bundled skill
         self.assertIn("bd show x-1", text)
 
-    def test_issue_closes_only_on_plan_complete(self):
-        with tempfile.TemporaryDirectory() as d:
-            run = self._run(Path(d), issue="x-1")
-            loop.Run._close_issue(run, "max iterations reached (3)")
-            loop.Run._close_issue(run, None)
-            run._bd.assert_not_called()
-            loop.Run._close_issue(run, "plan complete (4/4)")
-        self.assertEqual(run._bd.call_args.args[:2], ("close", "x-1"))
+    def test_the_issue_is_no_longer_closed_by_the_loop(self):
+        # Closing moved to operator approval: see tests/test_review.py.
+        self.assertFalse(hasattr(loop.Run, "_close_issue"))
 
 
 if __name__ == "__main__":

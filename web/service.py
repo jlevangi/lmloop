@@ -19,11 +19,13 @@ that can lose something, in one place, testable directly.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import config as config_module
@@ -147,6 +149,19 @@ def start_run(payload: dict, config: dict, lmloop_path: str) -> tuple[int, dict]
         if value:
             argv += [flag, value]
     argv += ["--max-iterations", str(iterations)]
+    for flag, key in (("--review-rounds", "review_rounds"), ("--review-every", "review_every")):
+        value = payload.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, str)) \
+                or not str(value).isdigit() or int(value) > 100:
+            return 400, {"error": f"{key} must be a whole number from 0 to 100"}
+        argv += [flag, str(int(value))]
+    personas = str(payload.get("review_personas") or "").strip()
+    if personas:
+        if not re.fullmatch(r"[a-z0-9_-]+(\s*,\s*[a-z0-9_-]+)*", personas):
+            return 400, {"error": "review_personas must be comma-separated persona names"}
+        argv += ["--review-personas", personas]
 
     result = subprocess.run(
         argv, cwd=match[0]["path"], capture_output=True, text=True, timeout=60
@@ -471,3 +486,80 @@ def open_pr(project: dict, run_dir: Path, payload: dict) -> tuple[int, dict]:
             return 200, {"url": existing.stdout.strip(), "existing": True}
         return 500, {"error": f"gh pr create failed: {message[-400:]}"}
     return 200, {"url": made.stdout.strip()}
+
+
+def approval(project: dict, run_dir: Path, payload: dict, config: dict,
+             lmloop_path: str) -> tuple[int, dict]:
+    """The operator's decision on a run awaiting approval -- see docs/review.md.
+
+    approve: fast-forward merge only, then close the run's Beads issue.
+    request_changes: the note becomes plan items and the run continues.
+    reject: recorded; the issue is released; branch and worktree are kept.
+    """
+    action = str(payload.get("action", ""))
+    note = str(payload.get("note") or "").strip()[:4000]
+    if action not in ("approve", "request_changes", "reject"):
+        return 400, {"error": "action must be approve, request_changes or reject"}
+    if action != "approve" and not note:
+        return 400, {"error": "say why: a note is required"}
+    if runs_module._holder(run_dir):
+        return 409, {"error": "the run is still going; wait for it to ask for approval"}
+    status_path = run_dir / "status.json"
+    try:
+        status = json.loads(status_path.read_text())
+    except (OSError, ValueError):
+        status = {}
+    if not status.get("awaiting_approval") or status.get("approval"):
+        return 409, {"error": "this run is not awaiting approval"}
+    try:
+        issue = str(json.loads((run_dir / "run-state.json").read_text()).get("issue", ""))
+    except (OSError, ValueError):
+        issue = ""
+    repo = project["path"]
+
+    def bd(*args):
+        try:
+            subprocess.run(["bd", *args], cwd=str(repo), capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def record(extra: dict | None = None):
+        event = {"timestamp": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(),
+                 "event": "approval", "action": action, "note": note, **(extra or {})}
+        with (run_dir / "lmloop.log").open("a") as handle:
+            handle.write(json.dumps(event) + "\n")
+        status["approval"] = action
+        status_path.write_text(json.dumps(status, indent=2) + "\n")
+
+    if action == "approve":
+        start = runrecord.latest_run_start(runs_module._events(run_dir))
+        branch = runrecord.resolved_branch(run_dir, start)
+        base, _ = workspace.pr_preflight(repo, branch)
+        if base is None:
+            return 404, {"error": f"no branch {branch}"}
+        if base != "main":
+            return 409, {"error": "checkout main in the project before approving"}
+        # --ff-only: if the base moved, rebasing is work for the run, not a button.
+        merged = subprocess.run(["git", "merge", "--ff-only", branch], cwd=str(repo),
+                                capture_output=True, text=True, timeout=120)
+        if merged.returncode != 0:
+            return 409, {"error": f"not a fast-forward onto {base}: "
+                                  f"{(merged.stderr or merged.stdout).strip()[-300:]}"}
+        record({"branch": branch, "base": base})
+        if issue:
+            bd("close", issue, "--reason", f"approved: lmloop {run_dir.name} merged into {base}")
+        return 200, {"approved": True, "merged": branch, "base": base}
+
+    if action == "reject":
+        record()
+        if issue:
+            bd("update", issue, "--status", "open", "--assignee", "",
+               "--append-notes", f"lmloop {run_dir.name} rejected: {note}")
+        return 200, {"rejected": True}
+
+    # request_changes
+    items = [line.strip(" -*\t") for line in note.splitlines() if line.strip(" -*\t")]
+    with (run_dir / "plan.md").open("a") as handle:
+        handle.write("\n" + "".join(f"- [ ] {item} (operator)\n" for item in items))
+    record()
+    return control(project, run_dir, "continue", {}, config, lmloop_path)

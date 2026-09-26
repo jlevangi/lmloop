@@ -61,8 +61,23 @@ def scenario():
 
 
 def main():
-    sys.stdin.read()        # the prompt; read so the writer is never blocked
+    prompt = sys.stdin.read()   # read so the writer is never blocked
     plan = scenario()
+
+    # Asked to review: write the verdict it was told to and touch nothing else.
+    # The one place this reads the prompt, because the path is only there.
+    import re
+    asked = re.search(r"Write your verdict to `([^`]+)`", prompt)
+    if asked:
+        Path(asked.group(1)).write_text(f"verdict: {plan.get('verdict', 'APPROVED')}\n")
+        if plan.get("review_edit"):         # a reviewer that cannot keep its hands off
+            Path(plan["write"]).open("a").write("# reviewer was here\n")
+        emit({"type": "agent_start"})
+        emit({"type": "message_end", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": "reviewed"}],
+            "stopReason": "stop", "usage": {"input": 100, "output": 5, "totalTokens": 105}}})
+        emit({"type": "agent_end"})
+        return 0
 
     emit({"type": "agent_start"})
     emit({"type": "turn_start"})
@@ -123,6 +138,9 @@ def main():
                     try:
                         (run_dir / "handoff.md").write_text(
                             plan["handoff"].rstrip() + "\n")
+                        # Optional: mark the plan finished, to reach review.
+                        if plan.get("plan"):
+                            (run_dir / "plan.md").write_text(plan["plan"])
                     except OSError:
                         pass
                     break

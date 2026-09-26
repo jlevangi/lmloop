@@ -517,6 +517,7 @@ class RunDir:
             **previous, "iteration": iteration,
             "phase": "completed" if completed else "stopped",
             "stop_reason": reason, "plan_done": done, "plan_total": total,
+            "awaiting_approval": "awaiting approval" in reason,
             "stopping": False,
         })
 

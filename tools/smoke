@@ -53,7 +53,8 @@ cat > .fake-agent.json <<'EOF'
 {"outcome": "ok",
  "write": "calc.py",
  "append": "\n\ndef subtract(a, b):\n    return a - b\n",
- "handoff": "Added subtract(). The next step is multiply()."}
+ "handoff": "Added subtract(). The next step is multiply().",
+ "plan": "- [x] add subtract()\n"}
 EOF
 
 cat > check.sh <<'EOF'
@@ -109,7 +110,7 @@ git show-ref --verify --quiet "refs/heads/$branch" \
   || say FAIL "missing exact run branch: $branch"
 
 commits="$(git rev-list --count "main..$branch" 2>/dev/null || echo 0)"
-[ "$commits" -eq 2 ] && say ok "exactly 2 commit(s) on it" || say FAIL "expected exactly 2 commits, got $commits"
+[ "$commits" -eq 1 ] && say ok "exactly 1 commit: plan complete, then review" || say FAIL "expected exactly 1 commit, got $commits"
 
 git show "$branch:calc.py" 2>/dev/null | grep -q "def subtract" \
   && say ok "the agent's edit is in the exact run commit" \
@@ -125,6 +126,7 @@ status = json.loads(open(sys.argv[1]).read())
 checks = [
     ("terminal phase recorded", status.get("phase") in ("completed", "stopped")),
     ("stop reason recorded", bool(status.get("stop_reason"))),
+    ("reviewed, then awaiting approval", status.get("awaiting_approval") is True),
     ("schema_version stamped", "schema_version" in status),
 ]
 for name, good in checks:
@@ -135,6 +137,7 @@ EOF
 log="$(dirname "$run_dir")/lmloop.log"
 grep -q '"run:complete"' "$log" && say ok "run:complete written" || say FAIL "no run:complete"
 grep -q '"git:commit"' "$log" && say ok "git:commit written" || say FAIL "no git:commit"
+grep -q '"review:verdict".*"APPROVED"' "$log" && say ok "correctness reviewer approved" || say FAIL "no review verdict"
 
 pid="$(dirname "$run_dir")/loop.pid"
 [ ! -f "$pid" ] && say ok "claim released" || say FAIL "loop.pid left behind"

@@ -35,6 +35,7 @@ import models
 import policy
 import prompts
 import pi_runner
+import review
 import runrecord
 from rundir import RunDir, make_run_id, previous_runs
 
@@ -78,8 +79,9 @@ class Run:
         self.config = config
         self.objective = objective
         # The Beads issue this run works on, if any: claimed at the start,
-        # closed when the plan completes.  See `system_prompt` and `_close_issue`.
+        # closed when the operator approves (web/service.py `approval`).
         self.issue = issue
+        self.review_round = 0
         # Two numbers, not one.  The floor is what the operator asked for and is
         # always honoured; the ceiling is what no plan can argue past.  An
         # explicit `--max-iterations` raises the floor rather than pinning the
@@ -167,7 +169,7 @@ class Run:
         for key in ("model", "thinking", "tools", "required_tools"):
             if key in state and state[key] is not None:
                 agent[key] = state[key]
-        for section in ("gate", "stop", "iteration"):
+        for section in ("gate", "stop", "iteration", "review"):
             saved = state.get(section)
             if isinstance(saved, dict):
                 self.config.setdefault(section, {}).update(saved)
@@ -320,6 +322,7 @@ class Run:
         try:
             state = self.rundir.read_run_state()
             self.issue = self.issue or str(state.get("issue", ""))
+            self.review_round = int(state.get("review_round", 0))
             self.pending_iteration = int(state.get("pending_iteration", 0))
             if self.pending_iteration:
                 # A provider outage writes the prompt before the request fails.  It
@@ -1222,6 +1225,8 @@ class Run:
             "hard_turn_ceiling": self.iteration_ceiling,
             "pending_iteration": self.pending_iteration,
             "issue": self.issue,
+            "review_round": self.review_round,
+            "review": self.config["review"],
             # Policy state that needs to be restored on resume for semantic continuity
             "repo_path": str(self.repo),
             "worktree_path": str(self.worktree),
@@ -1262,6 +1267,22 @@ class Run:
                 # here is enough to make all of them agree.
                 self.max_iterations = self._budget(iteration)
                 reason = self._abort_reason(iteration, started)
+                if reason and reason.startswith("plan complete"):
+                    try:
+                        verdict = self._review_gate()
+                    except PreflightError as error:
+                        if not self._backoff(iteration, str(error)):
+                            reason = f"review could not reach the model: {error}"
+                            break
+                        iteration -= 1
+                        continue
+                    if verdict == "changes":
+                        # Findings are plan items now; the plan is no longer
+                        # complete, and the next pass works them.  A review is
+                        # not an iteration, so the number is not spent.
+                        iteration -= 1
+                        continue
+                    reason += f"; awaiting approval{verdict}"
                 if reason:
                     break
                 try:
@@ -1289,6 +1310,7 @@ class Run:
                 if self.pending_iteration:
                     self.pending_iteration = 0
                     self._save_run_state()
+                self._drift_check(iteration)
                 transport = self._transport_failure()
                 if transport:
                     # The server, not the work.  Same backoff as a failed preflight,
@@ -1349,7 +1371,6 @@ class Run:
         self._safely("terminal status", lambda: self.rundir.write_terminal_status(
             stopped, iteration - 1, progress[0], progress[1]))
         self._safely("run-state save", self._save_run_state)
-        self._safely("beads close", lambda: self._close_issue(reason))
         self._safely("claim release", self.rundir.release)
         self._safely("screen cleanup", self.screen.close)
         self._safely("summary", lambda: self._summarise(reason, started))
@@ -1393,16 +1414,116 @@ class Run:
         except (OSError, subprocess.SubprocessError):
             pass
 
-    def _close_issue(self, reason: str | None) -> None:
-        """Close the run's issue when, and only when, its plan completed.
+    # ── Review (docs/review.md) ─────────────────────────────────────────────
 
-        Any other ending -- a budget, a STOP, a crash -- leaves it claimed and
-        open, which is the truth: somebody still has to finish it.
-        """
-        if self.issue and reason and reason.startswith("plan complete"):
-            self._bd("close", self.issue, "--reason",
-                     f"lmloop run {self.run_id} on {self.branch}: {reason}")
-            self.rundir.event("beads:close", issue=self.issue)
+    def _review_gate(self) -> str:
+        """Review a completed plan.  "changes" to keep working, else a suffix
+        for the stop reason: "" when approved, " (review unresolved)" when the
+        rounds ran out, " (review off)" when disabled."""
+        settings = self.config["review"]
+        if settings["max_rounds"] <= 0:
+            return " (review off)"
+        if self.review_round >= settings["max_rounds"]:
+            return " (review unresolved)"
+        self.review_round += 1
+        self._save_run_state()
+        base = self.rundir.base_commit
+        diff = gitops.git(["diff", f"{base}...HEAD"], self.worktree, check=False)
+        changed = gitops.git(["diff", "--name-only", f"{base}...HEAD"],
+                             self.worktree, check=False).splitlines()
+        chosen = review.select(changed, self.objective, self.rundir.read_plan(),
+                               diff, settings["personas"])
+        for name, why in chosen:
+            verdict, findings = self._review_once(f"r{self.review_round}", name, why, diff)
+            if verdict != "APPROVED":
+                self._add_findings(f"review r{self.review_round}/{name}", findings or [
+                    f"{name} reviewer produced no verdict; re-check the work against the objective"])
+                # Later personas would review code that is about to change.
+                return "changes"
+        return ""
+
+    def _drift_check(self, iteration: int) -> None:
+        """Every `every` working iterations: is the run still aimed right?
+        Never blocks; findings join the plan and do not count as a round."""
+        every = self.config["review"]["every"]
+        if every <= 0 or iteration % every or self.interrupted or self.rundir.stop_requested():
+            return
+        base = self.rundir.base_commit
+        diff = gitops.git(["diff", f"{base}...HEAD"], self.worktree, check=False)
+        try:
+            verdict, findings = self._review_once(f"drift{iteration}", "correctness",
+                                                  "drift check", diff, drift=True)
+        except PreflightError:
+            return  # the next working iteration meets the same server and waits properly
+        if verdict == "CHANGES_REQUESTED" and findings:
+            self._add_findings(f"drift i{iteration}", findings)
+
+    def _review_once(self, label: str, name: str, why: str, diff: str,
+                     drift: bool = False) -> tuple[str, list[str]]:
+        verdict_path = self.rundir.path / "review" / f"{label}-{name}.md"
+        verdict_path.parent.mkdir(exist_ok=True)
+        verdict_path.unlink(missing_ok=True)
+        model = self.config["review"]["models"].get(name) or self.config["agent"]["model"]
+        ok, detail = models.preflight(
+            model, config.reference(self.config["models"]["llama_swap_url"]))
+        if not ok:
+            raise PreflightError(detail)
+        brief = review.brief(name)
+        if drift:
+            brief += ("\n\nThis is a mid-run drift check, not a final review. Only ask "
+                      "for changes if the work is heading away from the objective or "
+                      "the plan is wrong. Unfinished work is expected.")
+        system = self.rundir.path / "review" / f"{label}-{name}.system.md"
+        system.write_text(review.brief("rules") + "\n\n" + brief + "\n")
+        prompt = (
+            f"Review this lmloop run as the `{name}` reviewer ({why}).\n\n"
+            f"## Objective\n\n{self.objective}\n\n"
+            f"## Plan\n\n{self.rundir.read_plan()}\n\n"
+            f"## Gate\n\n{self.gate_result or 'no gate'}\n{self.gate_output[-4000:]}\n\n"
+            f"## Diff against the base\n\n```diff\n{diff[:60000]}\n```\n\n"
+            f"Write your verdict to `{verdict_path}`.\n"
+        )
+        (self.rundir.path / "review" / f"{label}-{name}.prompt.md").write_text(prompt)
+        head = gitops.head_commit(self.worktree)
+        self.rundir.event("review:start", label=label, persona=name, why=why, model=model)
+        self.screen.log(f"  review {label}: {name} ({why})")
+        pi_runner.run(
+            model=model, agent_name=self.harness_name,
+            tools=self.config["agent"]["tools"], thinking=self.config["agent"].get("thinking", ""),
+            prompt=prompt, cwd=self.worktree, session_dir=self.rundir.sessions,
+            session_id=f"review-{label}-{name}",
+            raw_path=self.rundir.path / "review" / f"{label}-{name}.jsonl",
+            timeout_seconds=self.config["iteration"]["timeout_seconds"],
+            stall_seconds=self.config["iteration"]["stall_seconds"],
+            tool_seconds=self.config["iteration"].get("tool_seconds", 0),
+            max_compactions=self.config["iteration"]["max_compactions"],
+            max_repeats=self.config["iteration"].get("max_repeats", 3),
+            env=self.env(), system_prompt=str(system),
+            should_stop=lambda: self.interrupted or self.rundir.stop_now_requested(),
+        )
+        # Read-only is enforced, not requested.  Edits are kept -- as a patch
+        # and a stash, never reset -- and the verdict that came with them is not.
+        if gitops.has_uncommitted(self.worktree) or gitops.head_commit(self.worktree) != head:
+            patch = gitops.git(["diff", head], self.worktree, check=False)
+            (self.rundir.path / "review" / f"{label}-{name}.patch").write_text(patch + "\n")
+            gitops.git(["stash", "push", "-u", "-m", f"lmloop review edits {label}-{name}"],
+                       self.worktree, check=False)
+            self.rundir.event("review:edited", label=label, persona=name)
+            return "", [f"{name} reviewer edited files instead of reviewing; its edits "
+                        f"are in review/{label}-{name}.patch and `git stash list`"]
+        try:
+            text = verdict_path.read_text()
+        except OSError:
+            text = ""
+        verdict, findings = review.parse(text)
+        self.rundir.event("review:verdict", label=label, persona=name,
+                          verdict=verdict or "none", findings=findings[:20])
+        return verdict, findings
+
+    def _add_findings(self, tag: str, findings: list[str]) -> None:
+        lines = "".join(f"- [ ] {f} ({tag})\n" for f in findings)
+        with self.rundir.plan_path.open("a") as handle:
+            handle.write("\n" + lines)
 
     def _safely(self, step: str, action) -> None:
         """Run one finalisation step; never let it take the rest down with it.

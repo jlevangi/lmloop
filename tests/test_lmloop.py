@@ -1395,6 +1395,7 @@ class FinalisationCharacterizationTests(unittest.TestCase):
 
     def test_a_run_that_stops_on_a_finished_plan_reads_as_completed(self):
         run, _ = self.make_run()
+        run.config["review"]["max_rounds"] = 0   # review has its own tests
         with mock.patch.object(loop.signal, "signal"), \
              mock.patch.object(loop.display, "Keys"), \
              mock.patch.object(loop.display, "wait_while_paused"), \

@@ -125,6 +125,23 @@
       </div>
       <p id="model-source" class="note" hidden></p>
 
+      <details id="review-options">
+        <summary>Review (this run)</summary>
+        <div class="grid2">
+          <div>
+            <label for="review-rounds">Review rounds</label>
+            <input type="number" id="review-rounds" min="0" max="100" placeholder="config">
+          </div>
+          <div>
+            <label for="review-every">Drift check every</label>
+            <input type="number" id="review-every" min="0" max="100" placeholder="config">
+          </div>
+        </div>
+        <label for="review-personas">Reviewers</label>
+        <input type="text" id="review-personas" placeholder="automatic, or e.g. correctness,design">
+        <p class="note">Blank uses the global or project setting. 0 rounds turns review off; approval is always yours.</p>
+      </details>
+
       <p id="launch-error" class="alert" hidden></p>
       <button type="submit" class="act block" id="launch-submit">Start run</button>
     </form>

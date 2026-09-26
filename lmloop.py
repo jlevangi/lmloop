@@ -82,6 +82,7 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
         config["agent"]["thinking"] = args.thinking
     if args.gate is not None:
         config["gate"]["command"] = args.gate
+    config_module.override_review(config, args.review_rounds, args.review_every, args.review_personas)
     config_module.override_agent(config, args.agent or "", args.tools or "")
     config_module.require_model(config)
     config_module.validate_required_tools(config)
@@ -98,6 +99,10 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
             argv += [flag, value]
     if args.max_iterations:
         argv += ["--max-iterations", str(args.max_iterations)]
+    for flag, value in (("--review-rounds", args.review_rounds), ("--review-every", args.review_every),
+                        ("--review-personas", args.review_personas)):
+        if value is not None:
+            argv += [flag, str(value)]
 
     with log_path.open("wb") as log:
         subprocess.Popen(
@@ -126,6 +131,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         config["gate"]["command"] = args.gate
     # Agent and allowlist together, and after everything else: which tool names
     # are valid is a question only the selected agent can answer.
+    config_module.override_review(config, args.review_rounds, args.review_every, args.review_personas)
     config_module.override_agent(config, args.agent or "", args.tools or "")
     config_module.require_model(config)
     config_module.validate_required_tools(config)
@@ -603,7 +609,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--thinking", help="thinking level: off, minimal, low, medium, high, xhigh, max")
     run.add_argument("--gate", help="override the commit gate command")
     run.add_argument("--max-iterations", type=int, help="override the iteration cap")
-    run.add_argument("--issue", help="Beads issue id: claimed at start, closed when the plan completes")
+    run.add_argument("--issue", help="Beads issue id: claimed at start, closed when the operator approves")
+    run.add_argument("--review-rounds", type=int, help="reviewer rounds before handing over; 0 = no review")
+    run.add_argument("--review-every", type=int, help="drift check every N iterations; 0 = off")
+    run.add_argument("--review-personas", help="comma list replacing automatic persona choice")
     run.add_argument("--detach", action="store_true", help="start in the background and print the run id")
     # How --detach tells its child which lane it picked, so parent and child
     # agree on the id even when today already used the derived one.

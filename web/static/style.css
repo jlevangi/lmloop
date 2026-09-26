@@ -581,6 +581,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 #new-project-fields, #beads-issue-group { display: grid; }
 #beads-issue-group[hidden], #new-project-fields[hidden] { display: none !important; }
 #system-prompt-panel { margin-top: 24px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#review-options { margin: 12px 0; }
+#review-options summary, #approval summary { cursor: pointer; font-size: .85rem; color: var(--text-faint); }
+.verdict-approved { color: var(--ok, #3c9); }
+.verdict-changes { color: var(--warn, #e93); }
+#approval textarea { width: 100%; margin: 8px 0; }
 #system-prompt-panel summary { cursor: pointer; font-size: .85rem; color: var(--text-faint); }
 #system-prompt-panel textarea { width: 100%; margin: 8px 0; }
 

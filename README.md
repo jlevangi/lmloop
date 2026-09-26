@@ -26,6 +26,7 @@ iteration, and never throwing work away.
 | [docs/models.md](docs/models.md) | measured local-model behaviour and window budgets |
 | [docs/architecture.md](docs/architecture.md) | what each module does |
 | [docs/operations.md](docs/operations.md) | running, steering, reviewing, deploying |
+| [docs/review.md](docs/review.md) | reviewer personas, drift checks, approval |
 
 `AGENTS.md` is the short version for an agent working on this repo.
 
@@ -172,7 +173,11 @@ diagnosable. Inside it:
     sessions/                pi transcripts, replayable with `pi --session`
 ```
 
-Review and merge:
+Review and merge: a run whose plan completes is reviewed by model personas
+(`correctness` always; `security`, `performance`, `design` when the change
+calls for them), then waits for you in the dashboard: approve (fast-forward
+merge, closes the Beads issue), request changes, or reject. See
+[docs/review.md](docs/review.md). By hand:
 
 ```bash
 git log --oneline <base>..lmloop/<run-id>

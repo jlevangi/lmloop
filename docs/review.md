@@ -1,6 +1,27 @@
 # Review and approval
 
-Status: design, tracked on bead `lm-pv8`. Nothing here is built yet.
+Status: built (bead `lm-pv8`). Code: `review.py` (selection, parsing),
+`Run._review_gate` / `_drift_check` / `_review_once` in `loop.py`,
+`service.approval` in `web/service.py`. Tests: `tests/test_review.py`.
+
+## Settings
+
+Three layers, each overriding the last: `~/.config/lmloop/config.toml`,
+the project's `.lmloop.toml`, then the run.
+
+```toml
+[review]
+max_rounds = 2     # 0 = no review (approval is still required)
+every      = 5     # drift check every N working iterations; 0 = off
+personas   = []    # empty = automatic
+[review.models]
+design = "llama-swap/Qwen3.8-27B"
+```
+
+Per run: `lmloop run ... --review-rounds N --review-every N
+--review-personas a,b`, or the "Review (this run)" fields in the dashboard's
+New Run form. A run's settings are saved in `run-state.json` and survive
+`resume`.
 
 A run that finishes its plan is not done. It is reviewed by model personas,
 then waits for the operator. Nothing merges without the operator.
@@ -58,15 +79,7 @@ Selection is deterministic (paths and keywords), so it can be tested and explain
 The dashboard shows why each persona was chosen. It can be overridden per repo
 in `.lmloop.toml`:
 
-```toml
-[review]
-personas = ["correctness", "design"]     # replaces automatic selection
-every = 5                                # drift check interval, 0 = off
-max_rounds = 2
-
-[review.models]
-design = "llama-swap/Qwen3.8-27B"        # default: the worker model
-```
+(`[review] personas` in any layer; see Settings.)
 
 Personas run one after another in a fixed order: correctness, security,
 performance, design. The GPU is single, and cheaper checks should fail first.
@@ -103,8 +116,9 @@ Actions:
 - **Reject** abandons the run. The branch and worktree are kept. The Beads
   issue is unclaimed and left open, with the operator's reason as a note.
 
-Approval uses the existing CSRF-protected session. There is no bypass flag:
-approval is the only path to merge.
+Approval uses the existing CSRF-protected session. There is no bypass flag.
+The older "Merge to main" button still exists for runs from before review
+and for runs you stopped yourself.
 
 ## What changes where
 

@@ -1259,7 +1259,9 @@ class Run:
         try:
             while True:
                 iteration += 1
-                display.wait_while_paused(self.rundir, self.screen, lambda: self.interrupted)
+                display.wait_while_paused(
+                    self.rundir, self.screen,
+                    lambda: self.interrupted or self.rundir.stop_requested())
                 # Recomputed here rather than fixed at the start: the plan is the
                 # agent's, it changes while the run is going, and the budget is
                 # supposed to follow it.  Everything downstream -- the status line,

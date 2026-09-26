@@ -385,11 +385,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
     # directory, same handoff chain, different agent -- and the run's own log
     # would name both.  `--agent` on the resume still wins, because that is
     # someone deciding rather than a file being stale.
+    state = _read_run_state(directories[run_id])
     if not args.agent:
-        state = _read_run_state(directories[run_id])
         for key in ("harness", "tools"):
             if isinstance(state.get(key), str) and state[key]:
                 config["agent"][key] = state[key]
+    # attach() restores the run's model later; a repo with no default model
+    # must not refuse to resume a run that already has one.
+    if not config["agent"].get("model") and isinstance(state.get("model"), str):
+        config["agent"]["model"] = state["model"]
     config_module.override_agent(config, args.agent or "")
     config_module.require_model(config)
     config_module.validate_required_tools(config)

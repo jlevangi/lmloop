@@ -1104,9 +1104,11 @@ async function renderRun(project, runId, { quiet = false } = {}) {
         });
         return button;
       };
-      buttons.append(decide("Approve & merge", "approve"), decide("Request changes", "request_changes"),
-        decide("Reject", "reject", true));
-      inner.append(note, buttons);
+      // Approve needs no note; the two that do sit directly under the box.
+      const approve = el("div", "controls");
+      approve.append(decide("Approve & merge", "approve"));
+      buttons.append(decide("Request changes", "request_changes"), decide("Reject", "reject", true));
+      inner.append(approve, note, buttons);
     }, { start: Boolean(run.awaiting_approval) });
   }
 

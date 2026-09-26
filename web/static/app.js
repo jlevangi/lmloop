@@ -1079,23 +1079,24 @@ async function renderRun(project, runId, { quiet = false } = {}) {
         }
       }
       if (run.approval) {
-        inner.append(el("p", "status-badge", `Status: ${run.approval === "approve" ? "Approved & merged" : run.approval}`));
+        const action = run.approval;
+        const cls = action === "approve" ? "approved" : action === "request_changes" ? "changes" : "rejected";
+        const label = action === "approve" ? "Approved & merged to main" : action === "request_changes" ? "Changes requested" : "Rejected";
+        inner.append(el("span", `status-badge ${cls}`, label));
         return;
       }
       if (!run.awaiting_approval) return;
       if (/review unresolved/.test(run.stop_reason || "")) {
         inner.append(el("p", "alert", "Reviewers still wanted changes after the last round."));
       }
-      const note = el("textarea");
-      note.rows = 4;
-      note.placeholder = "Notes: required to request changes or reject. One change per line.";
-      const buttons = el("div", "controls");
-      const decide = (label, action, risk) => {
-        const button = el("button", risk ? "risk" : "quiet", label);
+
+      const panel = el("div", "review-panel");
+      const decide = (label, action, { risk = false, act = false } = {}) => {
+        const cls = act ? "act" : risk ? "risk" : "quiet";
+        const button = el("button", cls, label);
         button.type = "button";
         button.addEventListener("click", async () => {
           if (action === "approve" && !window.confirm(`Fast-forward main to lmloop/${run.run_id}?`)) return;
-          // Disable all action buttons immediately so no other action can be fired concurrently
           for (const b of inner.querySelectorAll("button")) b.disabled = true;
           try {
             await api(`/api/runs/${run.project}/${run.route_id || run.run_id}/approval`,
@@ -1109,11 +1110,24 @@ async function renderRun(project, runId, { quiet = false } = {}) {
         });
         return button;
       };
-      // Approve needs no note; the two that do sit directly under the box.
-      const approve = el("div", "controls");
-      approve.append(decide("Approve & merge", "approve"));
-      buttons.append(decide("Request changes", "request_changes"), decide("Reject", "reject", true));
-      inner.append(approve, note, buttons);
+
+      const primary = el("div", "review-actions");
+      primary.append(decide("Approve & merge to main", "approve", { act: true }));
+
+      const feedback = el("div", "review-feedback");
+      const noteLabel = el("label", null, "Or request changes / reject");
+      const note = el("textarea");
+      note.rows = 3;
+      note.placeholder = "Required note for changes or rejection (e.g. specific tests or requirements)…";
+      const subActions = el("div", "review-feedback-actions");
+      subActions.append(
+        decide("Request changes", "request_changes"),
+        decide("Reject run", "reject", { risk: true }),
+      );
+      feedback.append(noteLabel, note, subActions);
+
+      panel.append(primary, feedback);
+      inner.append(panel);
     }, { start: Boolean(run.awaiting_approval) });
   }
 

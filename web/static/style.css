@@ -584,9 +584,30 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--m
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 #review-options { margin: 12px 0; }
 #review-options summary, #approval summary { cursor: pointer; font-size: .85rem; color: var(--text-faint); }
-.verdict-approved { color: var(--ok, #3c9); }
-.verdict-changes { color: var(--warn, #e93); }
-#approval textarea { width: 100%; margin: 8px 0; }
+.verdict-approved { color: var(--ok, #3c9); margin: 6px 0; font-size: .84rem; line-height: 1.5; }
+.verdict-changes { color: var(--warn, #e93); margin: 6px 0; font-size: .84rem; line-height: 1.5; }
+
+.review-panel { display: grid; gap: 14px; margin-top: 10px; }
+.review-lead { font-size: .82rem; color: var(--text-dim); line-height: 1.5; margin: 0; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.review-feedback {
+  display: grid; gap: 8px; margin-top: 4px; padding: 12px 14px;
+  background: var(--ink-sink); border: 1px solid var(--line); border-radius: var(--r);
+}
+.review-feedback label { margin: 0; }
+.review-feedback textarea { margin: 0; background: var(--ink-raise); border-color: var(--line-soft); }
+.review-feedback-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
+
+.status-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-top: 8px; padding: 5px 11px; border-radius: var(--r);
+  font-family: var(--mono); font-size: .76rem; letter-spacing: .06em;
+  background: var(--ink-raise); border: 1px solid var(--line); color: var(--text-dim);
+}
+.status-badge.approved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.status-badge.changes { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+.status-badge.rejected { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+
 #system-prompt-panel summary { cursor: pointer; font-size: .85rem; color: var(--text-faint); }
 #system-prompt-panel textarea { width: 100%; margin: 8px 0; }
 

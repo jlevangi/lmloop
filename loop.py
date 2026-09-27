@@ -1435,14 +1435,16 @@ class Run:
                              self.worktree, check=False).splitlines()
         chosen = review.select(changed, self.objective, self.rundir.read_plan(),
                                diff, settings["personas"])
+        # Every persona reviews every round.  Stopping at the first objection
+        # starved design: correctness always found something, rounds ran out.
+        changes = ""
         for name, why in chosen:
             verdict, findings = self._review_once(f"r{self.review_round}", name, why, diff)
             if verdict != "APPROVED":
                 self._add_findings(f"review r{self.review_round}/{name}", findings or [
                     f"{name} reviewer produced no verdict; re-check the work against the objective"])
-                # Later personas would review code that is about to change.
-                return "changes"
-        return ""
+                changes = "changes"
+        return changes
 
     def _drift_check(self, iteration: int) -> None:
         """Every `every` working iterations: is the run still aimed right?

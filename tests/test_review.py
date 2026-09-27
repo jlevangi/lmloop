@@ -142,6 +142,16 @@ class GateTests(unittest.TestCase):
         self.assertIn("produced no verdict", self.run.rundir.read_plan())
         self.assertEqual(self.gate([]), " (review unresolved)")      # max_rounds = 2
 
+    def test_later_personas_still_review_after_changes(self):
+        (self.run.worktree / "a.css").write_text("a{}\n")
+        git(self.run.worktree, "add", "-A")
+        git(self.run.worktree, "commit", "-qm", "css")
+        self.assertEqual(self.gate([("CHANGES_REQUESTED", ["fix x"]),
+                                    ("CHANGES_REQUESTED", ["space buttons"])]), "changes")
+        self.assertEqual([c.args[1] for c in self.run._review_once.call_args_list],
+                         ["correctness", "design"])
+        self.assertIn("space buttons (review r1/design)", self.run.rundir.read_plan())
+
     def test_off(self):
         self.run.config["review"]["max_rounds"] = 0
         self.assertEqual(self.gate([]), " (review off)")

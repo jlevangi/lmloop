@@ -83,8 +83,9 @@ in `.lmloop.toml`:
 
 Personas run one after another in a fixed order: correctness, security,
 performance, design. The GPU is single, and cheaper checks should fail first.
-If correctness requests changes, the later personas are skipped for that round,
-because their findings would be against code that is about to change.
+Every selected persona runs every round, even after an earlier one requests
+changes; all findings join the plan together. Skipping later personas meant
+design never ran, because correctness nearly always finds something.
 
 Operator-written personas: any `~/.config/lmloop/personas/<name>.md` is
 selectable by name in `.lmloop.toml`. No automatic selection for them.

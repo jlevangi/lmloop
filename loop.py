@@ -1331,6 +1331,10 @@ class Run:
                     if not self.interrupted and not self.rundir.stop_requested():
                         iteration -= 1
                         continue
+                    # Stopped while paused: keep pending_iteration and the saved
+                    # session in run-state so `lmloop resume` picks them up.
+                    reason = "stopped while paused; resume continues the saved session"
+                    break
                 if self._fresh_retry_pending:
                     self._fresh_retry_pending = False
                     iteration -= 1

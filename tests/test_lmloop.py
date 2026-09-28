@@ -1408,6 +1408,28 @@ class FinalisationCharacterizationTests(unittest.TestCase):
             self.assertEqual(0, run.start())
         self.assertEqual(self.STEPS, seen)
 
+    def test_stopping_while_paused_preserves_interrupted_iteration_session(self):
+        run, _ = self.make_run()
+        session = str(run.rundir.sessions / "iter-1.jsonl")
+        run.rundir.pause_path.write_text("")
+
+        def interrupt(iteration):
+            run.last_outcome = "interrupted"
+            run.interrupted_session = session
+
+        def stop_while_paused(*_args):
+            run.rundir.stop_now_path.write_text("")
+
+        with self.driving(run, interrupt):
+            with mock.patch.object(
+                loop.display, "wait_while_paused", side_effect=stop_while_paused,
+            ):
+                run.start()
+
+        state = run.rundir.read_run_state()
+        self.assertEqual(1, state["pending_iteration"])
+        self.assertEqual(session, state["interrupted_session"])
+
     def test_a_clean_stop_records_its_reason(self):
         run, _ = self.make_run()
         with self.driving(run, lambda n: None):

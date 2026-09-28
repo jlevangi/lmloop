@@ -31,7 +31,7 @@ class OpencodeHarness(Harness):
     interesting = ('"tool_use"', '"step_finish"')
     activity = (b'"text"', b'"tool_use"', b'"step_')
 
-    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt=""):
+    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt="", resume_session=""):
         # opencode keeps its own sessions and takes no tool allowlist, so
         # session_dir and tools have nowhere to go.  Saying so is better than
         # passing flags it will reject.  It has no system-prompt flag either;

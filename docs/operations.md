@@ -168,6 +168,12 @@ the iteration caused.
         sessions/          pi transcripts, replayable with `pi --session`
 ```
 
+If the agent is interrupted mid-iteration, omp and pi sessions are resumed from
+that transcript on the same iteration; a missing/unreadable transcript falls back
+to the normal fresh prompt. `PAUSE` now interrupts an in-flight agent and waits
+for the operator to remove the sentinel. `STOP-NOW` still ends the run after
+preserving and committing partial work. OpenCode has no implemented resume path.
+
 `status.json` is the file to read for "what is happening now". The event log is
 append-only history; parsing it to the end is what the old dashboard did and why
 it needed a cache.

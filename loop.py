@@ -147,6 +147,8 @@ class Run:
         self._segment_started: float | None = None
         self._inactive_seconds = 0.0
         self.pending_iteration = 0
+        self.interrupted_session = ""
+        self._fresh_retry_pending = False
         self.linked: list[str] = []
         self.defects: list[str] = []
         self.screen = display.Screen()
@@ -324,6 +326,7 @@ class Run:
             self.issue = self.issue or str(state.get("issue", ""))
             self.review_round = int(state.get("review_round", 0))
             self.pending_iteration = int(state.get("pending_iteration", 0))
+            self.interrupted_session = str(state.get("interrupted_session", ""))
             if self.pending_iteration:
                 # A provider outage writes the prompt before the request fails.  It
                 # is evidence of an attempt, not proof the iteration completed.
@@ -808,6 +811,17 @@ class Run:
             thrashed_times=self.thrashed_steps.get(self._retry_step(), 0),
             planning=self.config.get("planning", {}),
         )
+        resume_file = self.interrupted_session
+        resume_supported = bool(resume_file and harness.resume_session_available(self.harness_name, resume_file))
+        if resume_file:
+            if resume_supported:
+                prompt = "The model provider was interrupted; continue exactly where you left off."
+                self.rundir.event("session:resume", iteration=number, path=resume_file)
+                self.screen.log(f"    resuming interrupted {self.harness_name} session")
+            else:
+                self.rundir.event("session:fresh-retry", iteration=number, reason="session unavailable or harness unsupported")
+                self.screen.log("    interrupted session unavailable; starting fresh")
+            self.interrupted_session = ""
         self.rundir.iteration_prompt(number).write_text(prompt)
         self.rundir.event(
             "iteration:start",
@@ -844,15 +858,27 @@ class Run:
             max_repeats=self.config["iteration"].get("max_repeats", 3),
             env=self.env(),
             system_prompt=self.system_prompt(),
+            resume_session=resume_file if resume_supported else "",
             # Only the *hard* stop reaches in here.  A plain STOP means "end the
             # run", and the boundary -- where the gate runs, the handoff is
             # written and the tree is committed -- is where ending it is worth
             # something; killing pi at minute 55 to save five minutes throws
             # away the handoff that made the hour reusable.  STOP-NOW, and a
             # SIGINT, say the iteration itself is the thing to end.
-            should_stop=lambda: self.interrupted or self.rundir.stop_now_requested(),
+            should_stop=lambda: self.interrupted or self.rundir.stop_now_requested() or self.rundir.paused(),
             on_progress=lambda snap: self._show(number, snap),
         )
+
+        if resume_supported and result.outcome in ("agent-error", "provider-unavailable"):
+            # Resume may reject a partial/corrupt transcript. Retry this iteration
+            # once with a fresh session rather than feeding it repeatedly.
+            self.interrupted_session = ""
+            self._fresh_retry_pending = True
+            self.rundir.event("session:fresh-retry", iteration=number, reason="resumed attempt failed")
+        elif result.outcome in ("provider-unavailable", "interrupted") and result.session_file:
+            self.interrupted_session = result.session_file
+            self.rundir.event("session:interrupted", iteration=number, path=result.session_file)
+            self._save_run_state()
 
         self._classify_provider_loss(result)
 
@@ -1224,6 +1250,7 @@ class Run:
             "thrashed_steps": self.thrashed_steps,
             "hard_turn_ceiling": self.iteration_ceiling,
             "pending_iteration": self.pending_iteration,
+            "interrupted_session": self.interrupted_session,
             "issue": self.issue,
             "review_round": self.review_round,
             "review": self.config["review"],
@@ -1293,6 +1320,19 @@ class Run:
                     if not self._backoff(iteration, str(error)):
                         reason = f"preflight failed: {error}"
                         break
+                    iteration -= 1
+                    continue
+                if self.last_outcome == "interrupted" and self.rundir.paused():
+                    self.pending_iteration = iteration
+                    self._save_run_state()
+                    display.wait_while_paused(
+                        self.rundir, self.screen,
+                        lambda: self.interrupted or self.rundir.stop_requested())
+                    if not self.interrupted and not self.rundir.stop_requested():
+                        iteration -= 1
+                        continue
+                if self._fresh_retry_pending:
+                    self._fresh_retry_pending = False
                     iteration -= 1
                     continue
                 if self.last_outcome == "provider-unavailable":

@@ -61,6 +61,7 @@ class IterationResult:
     elapsed_seconds: float = 0.0
     stderr_tail: str = ""
     files_touched: list[str] = field(default_factory=list)
+    session_file: str = ""
 
 
 def _terminate(process: subprocess.Popen) -> None:
@@ -103,6 +104,7 @@ def run(
     max_repeats: int = policy.REPEAT_LIMIT,
     env: dict | None = None,
     system_prompt: str = "",
+    resume_session: str = "",
     should_stop=lambda: False,
     on_progress=None,
 ) -> IterationResult:
@@ -111,6 +113,7 @@ def run(
         model=model, tools=tools, thinking=thinking,
         session_dir=session_dir, session_id=session_id,
         system_prompt=system_prompt,
+        resume_session=resume_session,
     )
     if system_prompt and "--append-system-prompt" not in argv:
         # An agent with no system-prompt flag still gets the instructions, as
@@ -297,6 +300,9 @@ def run(
             detail = f"finished without calling a tool ({state.output_tokens} output tokens)"
         else:
             outcome, detail = "ok", state.stop_reason or "completed"
+
+        candidates = sorted(session_dir.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+        session_file = str(candidates[0]) if candidates else ""
 
         return IterationResult(
             outcome=outcome,

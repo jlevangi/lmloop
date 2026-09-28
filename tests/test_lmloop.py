@@ -747,6 +747,29 @@ class OmpHarnessTests(unittest.TestCase):
                           "--approval-mode", "yolo", "--model", "p/m",
                           "--tools", "read", "--thinking", "low"], argv)
 
+    def test_argv_resumes_a_saved_session_path(self):
+        argv = self.omp.argv(model="p/m", tools="read", thinking="low",
+                             session_dir="/s", session_id="iter-3",
+                             resume_session="/s/session.jsonl")
+        self.assertEqual("--resume=/s/session.jsonl", argv[-1])
+
+    def test_pi_argv_resumes_a_saved_session_path(self):
+        argv = harness.get("pi").argv(model="p/m", tools="read", thinking="",
+                                       session_dir="/s", session_id="iter-3",
+                                       resume_session="/s/session.jsonl")
+        self.assertEqual(["--session", "/s/session.jsonl"], argv[-2:])
+
+    def test_resume_or_fresh_decision_requires_existing_session_and_supported_harness(self):
+        from harness import resume_session_available
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            session = Path(directory) / "session.jsonl"
+            session.touch()
+            self.assertTrue(resume_session_available("omp", session))
+            self.assertTrue(resume_session_available("pi", session))
+            self.assertFalse(resume_session_available("opencode", session))
+            self.assertFalse(resume_session_available("omp", session.with_name("missing")))
+
     def test_argv_states_approval_mode(self):
         """Inherited, `always-ask` would hang every iteration until the stall
         clock killed it -- silently, because nobody is there to be asked."""
@@ -2776,7 +2799,7 @@ class DestructiveGitTests(unittest.TestCase):
         for path in sorted(root.rglob("*.py")):
             relative = path.relative_to(root)
             parts = set(relative.parts)
-            if parts & {".claude", "build", "__pycache__", "tools"}:
+            if parts & {".worktrees", ".claude", "build", "__pycache__", "tools"}:
                 continue
             if relative.name.startswith("test_"):
                 continue

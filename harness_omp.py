@@ -53,9 +53,7 @@ class OmpHarness(PiHarness):
 
     1. **There is no `--session-id`.**  `omp --session-id <uuid>` exits 2 with
        "unknown flag"; sessions are keyed off `--session-dir`, `--continue` and
-       `--resume`.  The loop's per-iteration id therefore has nowhere to go, and
-       that is fine -- every iteration is a fresh session by design, and the
-       handoff file is what carries state between them.
+       `--resume`.  Interrupted sessions can be selected by their saved path.
 
     2. **Print mode is opt-in.**  `--mode json` alone does turn interactivity
        off, but only as a side effect of the mode being set at all; `-p` is the
@@ -169,7 +167,7 @@ class OmpHarness(PiHarness):
                 windows[selector] = (context, output)
         return windows
 
-    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt=""):
+    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt="", resume_session=""):
         # `session_id` is accepted and dropped; see 1. above.
         argv = [
             self.binary,
@@ -186,6 +184,8 @@ class OmpHarness(PiHarness):
             argv += ["--thinking", thinking]
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
+        if resume_session:
+            argv += [f"--resume={resume_session}"]
         return argv
 
     @staticmethod

@@ -38,6 +38,12 @@ __all__ = [
 _HARNESSES = {h.name: h for h in (PiHarness(), OmpHarness(), OpencodeHarness())}
 
 
+def resume_session_available(name: str, session_file) -> bool:
+    """Whether this harness can resume an existing transcript."""
+    from pathlib import Path
+    return (name or "pi").strip().lower() in ("omp", "pi") and Path(session_file).is_file()
+
+
 def get(name: str) -> Harness:
     try:
         return _HARNESSES[(name or "pi").strip().lower()]

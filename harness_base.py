@@ -87,7 +87,7 @@ class Harness:
     # explicit `[env] pass` entry -- a prefix here is not an opt-in for one.
     env_passthrough: tuple[str, ...] = ()
 
-    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt="") -> list[str]:
+    def argv(self, *, model, tools, thinking, session_dir, session_id, system_prompt="", resume_session="") -> list[str]:
         raise NotImplementedError
 
     def classify(self, event: dict) -> dict | None:

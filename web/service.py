@@ -182,6 +182,12 @@ def archive_run(project: dict, run_dir: Path) -> tuple[int, dict]:
             "error": f"this run has a live loop (pid {holder}); stop it first",
         }
 
+    # The preview's ownership record lives in the run directory that is about
+    # to leave the worktree; stop it now or nothing could find it again.
+    preview = _preview(run_dir, Path(project["path"]))
+    if not preview._disabled():
+        preview.stop()
+
     # Correct regardless of `[worktree] root`: `.lmloop/runs/<id>` is a
     # fixed relative layout under wherever the worktree actually is, so
     # this needs no `runrecord.resolved_worktree` fallback the way branch

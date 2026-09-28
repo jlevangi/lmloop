@@ -556,7 +556,7 @@ def summarise(project: dict, run_dir: Path) -> dict:
         "iteration": status.get("iteration"),
         "max_iterations": status.get("max_iterations"),
         "phase": status.get("phase", ""),
-        "awaiting_approval": bool(status.get("awaiting_approval")) and not status.get("approval"),
+        "awaiting_approval": not archived and bool(status.get("awaiting_approval")) and not status.get("approval"),
         "approval": status.get("approval", ""),
         "stop_reason": status.get("stop_reason", ""),
         "last_tool": status.get("last_tool", ""),

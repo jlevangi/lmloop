@@ -23,6 +23,8 @@ class PreviewConfigTests(unittest.TestCase):
         self.assertTrue(self.problems({"port": 0}))
         self.assertTrue(self.problems({"port": 65536}))
         self.assertTrue(self.problems({"port": True}))
+        self.assertTrue(self.problems({"port": "any"}))
+        self.assertEqual([], self.problems({"port": "auto"}))
         self.assertTrue(self.problems({"startup_timeout_seconds": 0}))
         self.assertTrue(self.problems({"startup_timeout_seconds": 3601}))
         self.assertTrue(self.problems({"path": "app"}))

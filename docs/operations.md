@@ -122,14 +122,14 @@ A project may opt into the dashboard preview with an explicit `[preview]` sectio
 ```toml
 [preview]
 command = ["python3", "-m", "http.server", "{port}"]
-port = 4173
+port = "auto"
 path = "/"
 ready_path = "/"
 url = "http://{browser-host}:{port}{path}"
 startup_timeout_seconds = 30
 ```
 
-`port` is 1–65535, paths begin with `/`, and startup timeout is 1–3600 seconds. URL placeholders are limited to `{browser-host}`, `{port}`, and `{path}`. The dashboard's **Create project** operation defaults to the `static-web` template, writing `index.html` and this standard-library preview configuration; pass another template only when the API documents it.
+`port` is `"auto"` (the default: a free port is picked on each start, the previous one reused when still free, and recorded in the run directory so Stop and the Previews page can always find the process) or a fixed 1–65535, paths begin with `/`, and startup timeout is 1–3600 seconds. URL placeholders are limited to `{browser-host}`, `{port}`, and `{path}`. The dashboard's **Create project** operation defaults to the `static-web` template, writing `index.html` and this standard-library preview configuration; pass another template only when the API documents it.
 
 ## The gate
 

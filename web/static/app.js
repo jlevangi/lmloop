@@ -881,6 +881,90 @@ function previewPanel(run) {
   return panel;
 }
 
+/* ── Previews page ─────────────────────────────────────────────────────
+ * Every preview that holds a port, is trying to, or is blocked by one.  Stop
+ * here is the same per-run action as on the run page, so it can only ever
+ * signal a process that run owns (or its own orphan -- see preview.py). */
+function livePreviews() {
+  return state.runs.filter((run) => {
+    const preview = previewPayload(run);
+    const current = previewState(preview);
+    return !run.archived && preview.enabled
+      && (current === "starting" || current === "ready" || current === "failed" || preview.holder);
+  });
+}
+
+function previewRow(run) {
+  const preview = previewPayload(run);
+  const row = el("div", "preview-row preview-panel");
+  const head = el("div", "preview-status");
+  const title = el("a", "preview-title", run.title || run.run_id);
+  title.href = `#${run.project}/${run.run_id}`;
+  head.append(
+    el("strong", `preview-state ${previewState(preview)}`, previewState(preview)),
+    el("span", "preview-label", preview.port ? `:${preview.port}` : "auto port"),
+    el("span", "preview-label", run.project),
+    title,
+  );
+  row.append(head);
+  const holder = preview.holder;
+  if (holder) {
+    const who = holder.pid
+      ? `Port ${preview.port} held by PID ${holder.pid}: ${holder.command}${holder.cwd ? ` (in ${holder.cwd})` : ""}`
+      : `Port ${preview.port} is held by a process this dashboard cannot inspect.`;
+    row.append(el("p", holder.ours ? "note" : "alert", holder.ours
+      ? `${who}. This is this run's own orphaned preview; Stop will end it.`
+      : `${who}. Stop the owning run's preview, or end that process yourself.`));
+  }
+  // Reuse the run page's controls verbatim; an orphan also gets Stop.
+  const panel = previewPanel(run);
+  const controls = panel.querySelector(".preview-controls");
+  if (holder?.ours && controls && !Array.from(controls.children).some((b) => b.textContent === "Stop")) {
+    const stop = previewControl("Stop", "stop", run, { risk: true });
+    stop.disabled = Boolean(state.config?.read_only);
+    controls.prepend(stop);
+  }
+  if (controls) row.append(controls);
+  const error = panel.querySelector(".preview-error");
+  if (error) row.append(error);
+  return row;
+}
+
+// Only what Stop on each row would itself end: running previews and this
+// run's own orphans.  Another worktree's process is never in the set.
+function stoppablePreviews() {
+  return livePreviews().filter((run) => {
+    const preview = previewPayload(run);
+    const current = previewState(preview);
+    return current === "starting" || current === "ready" || preview.holder?.ours;
+  });
+}
+
+async function stopAllPreviews() {
+  const runs = stoppablePreviews();
+  if (!runs.length || !window.confirm(`Stop ${plural(runs.length, "preview server")}?`)) return;
+  const button = $("previews-stop-all");
+  button.disabled = true;
+  button.textContent = "stopping…";
+  const results = await Promise.allSettled(runs.map((run) =>
+    api(`/api/runs/${run.project}/${run.route_id || run.run_id}/preview`, { body: { action: "stop" } })));
+  button.disabled = false;
+  button.textContent = "Stop all";
+  const failed = results.filter((result) => result.status === "rejected");
+  if (failed.length) alert(`${plural(failed.length, "preview")} failed to stop: ${failed[0].reason.message}`);
+  await poll();
+}
+
+function renderPreviews() {
+  const runs = livePreviews();
+  const stopAll = $("previews-stop-all");
+  stopAll.hidden = stoppablePreviews().length === 0;
+  stopAll.disabled = Boolean(state.config?.read_only) || stopAll.textContent !== "Stop all";
+  $("previews-total").textContent = String(runs.length);
+  $("previews-empty").hidden = runs.length > 0;
+  $("previews").replaceChildren(...runs.map(previewRow));
+}
+
 /* The run page is a fixed head plus a replaceable body. `#view-run` itself is
  * never cleared while a run is on screen, because clearing it would take the
  * head with it. */
@@ -1527,6 +1611,7 @@ function go(hash) {
 function parseHash() {
   const raw = decodeURIComponent(location.hash.slice(1));
   if (raw === "new") return { name: "new" };
+  if (raw === "previews") return { name: "previews" };
   const [project, runId] = raw.split("/");
   if (project && runId) return { name: "run", project, run_id: runId };
   return { name: "list" };
@@ -1572,6 +1657,8 @@ async function route({ quiet = false } = {}) {
   $("view-list").hidden = next.name !== "list";
   $("view-run").hidden = next.name !== "run";
   $("view-new").hidden = next.name !== "new";
+  $("view-previews").hidden = next.name !== "previews";
+  $("previews-nav").hidden = next.name !== "list";
   // One or the other, never both: they share a grid cell, so leaving the moon
   // up painted it straight over the chevron.  The back button takes the mark's
   // place rather than pushing it aside, which is what keeps the title still.
@@ -1588,6 +1675,9 @@ async function route({ quiet = false } = {}) {
   if (next.name === "list") {
     $("bar-title").textContent = "lmloop";
     renderList();
+  } else if (next.name === "previews") {
+    $("bar-title").textContent = "Previews";
+    renderPreviews();
   } else if (next.name === "run") {
     await renderRun(next.project, next.run_id, { quiet: quiet && !changed });
   } else if (changed) {
@@ -1598,6 +1688,8 @@ async function route({ quiet = false } = {}) {
 window.addEventListener("hashchange", () => route());
 $("back").addEventListener("click", () => (history.length > 1 ? history.back() : go("#")));
 $("new-run").addEventListener("click", () => go("#new"));
+$("previews-nav").addEventListener("click", () => go("#previews"));
+$("previews-stop-all").addEventListener("click", stopAllPreviews);
 
 /* ── Poll ──────────────────────────────────────────────────────────────── */
 
@@ -1607,6 +1699,7 @@ async function poll() {
     state.runs = runs;
     state.fetchedAt = Date.now();
     renderFilters();
+    $("previews-count").textContent = String(livePreviews().length);
     // Before the route: the strip is on every page, so it must not depend on
     // which one is showing.
     renderRunbar();

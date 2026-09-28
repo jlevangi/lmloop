@@ -231,9 +231,9 @@ DEFAULTS: dict = {
     "preview": {
         # Empty means no preview process.  When enabled, the command is an argv
         # list; it is never interpreted by a shell and may use {port} as an
-        # argument placeholder.
+        # argument placeholder.  "auto" picks a free port on every start.
         "command": [],
-        "port": 4173,
+        "port": "auto",
         "path": "/",
         "ready_path": "/",
         "url": "http://{browser-host}:{port}{path}",

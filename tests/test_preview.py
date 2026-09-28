@@ -146,6 +146,61 @@ class PreviewLifecycleTests(unittest.TestCase):
         self.assertEqual("disabled", archived.status()["state"])
         self.assertEqual("disabled", archived.stop()["state"])
 
+    def serve(self, cwd):
+        server = subprocess.Popen([sys.executable, "-c", SERVER, str(self.port)], cwd=cwd,
+                                  start_new_session=True)
+        self.addCleanup(lambda: (server.poll() is None and server.kill(), server.wait(timeout=2)))
+        self.wait_for(lambda: Preview._port_busy(self.port))
+        return server
+
+    def test_lost_ownership_record_is_reclaimed_by_stop(self):
+        # The recurring failure: this worktree's preview is still up, but its
+        # preview.pid is gone, so Start said the port is busy and Stop did nothing.
+        server = self.serve(self.worktree)
+        state = self.preview().status()
+        self.assertEqual(server.pid, state["holder"]["pid"])
+        self.assertTrue(state["holder"]["ours"])
+        self.assertEqual("stopped", self.preview().stop()["state"])
+        self.wait_for(lambda: server.poll() is not None)
+
+    def test_start_replaces_its_own_orphan_instead_of_failing(self):
+        server = self.serve(self.worktree)
+        self.preview().start()
+        self.wait_for(lambda: server.poll() is not None)
+        self.wait_for(lambda: self.preview().status()["state"] == "ready")
+
+    def test_auto_ports_let_two_worktrees_preview_at_once(self):
+        other_tree = self.root / "second"
+        other_run = other_tree / ".lmloop" / "runs" / "run-2"
+        other_run.mkdir(parents=True)
+        config = {"command": [sys.executable, "-u", "-c", SERVER, "{port}"], "port": "auto",
+                  "path": "/", "ready_path": "/", "url": "", "startup_timeout_seconds": 3}
+        first, second = Preview(self.run_dir, {"preview": config}), Preview(other_run, {"preview": config})
+        self.addCleanup(first.stop)
+        self.addCleanup(second.stop)
+        first.start(); second.start()
+        self.wait_for(lambda: first.status()["state"] == "ready" and second.status()["state"] == "ready")
+        a, b = first.status()["port"], second.status()["port"]
+        self.assertNotEqual(a, b)
+        self.assertIn(f":{a}/", first.status()["url"])
+        # Restart keeps the URL when the port is still free; the port is
+        # remembered after stop, so an orphan on it would still be found.
+        first.restart()
+        self.wait_for(lambda: first.status()["state"] == "ready")
+        self.assertEqual(a, first.status()["port"])
+        first.stop()
+        self.assertEqual(a, first.status()["port"])
+
+    def test_another_worktrees_server_is_named_but_never_signalled(self):
+        other = self.root / "other"
+        other.mkdir()
+        server = self.serve(other)
+        state = self.preview().start()
+        self.assertEqual(server.pid, state["holder"]["pid"])
+        self.assertFalse(state["holder"]["ours"])
+        self.preview().stop()
+        self.assertIsNone(server.poll())
+
 
 if __name__ == "__main__":
     unittest.main()

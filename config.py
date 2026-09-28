@@ -311,6 +311,8 @@ def validate(raw: dict, source: Path, allow_command: bool = True) -> list[str]:
             expected = DEFAULTS[section][key]
             if section == "agent" and key == "required_tools":
                 valid = isinstance(value, str) or isinstance(value, list)
+            elif section == "preview" and key == "port":
+                valid = True  # "auto" or an int; the preview branch below says which
             else:
                 valid = _accepts(expected, value)
             if not valid:
@@ -352,9 +354,10 @@ def validate(raw: dict, source: Path, allow_command: bool = True) -> list[str]:
                         f"{source}: `[preview] command` list items must be strings, got {bad!r}"
                     )
             elif section == "preview" and key == "port":
-                if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+                if value != "auto" and (not isinstance(value, int) or isinstance(value, bool)
+                                        or not 1 <= value <= 65535):
                     problems.append(
-                        f"{source}: `[preview] port` expects a whole number from 1 to 65535, got {value!r}"
+                        f"{source}: `[preview] port` expects \"auto\" or a whole number from 1 to 65535, got {value!r}"
                     )
             elif section == "preview" and key in ("path", "ready_path"):
                 if not isinstance(value, str) or not value.startswith("/"):
@@ -597,8 +600,9 @@ blocks_commit = false     # record the result; commit either way
 [preview]
 # Empty disables the preview. Commands are TOML argv lists, never shell strings.
 # The preview runner substitutes {port} in each argument before execve.
+# "auto" picks a free port per start, so several worktrees can preview at once.
 command = []
-port = 4173
+port = "auto"
 path = "/"
 ready_path = "/"
 url = "http://{browser-host}:{port}{path}"

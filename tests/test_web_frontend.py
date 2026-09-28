@@ -498,6 +498,15 @@ class PreviewControlTests(unittest.TestCase):
         for action in ("start", "stop", "restart"):
             self.assertIn(f'"{action}"', body)
 
+    def test_stop_all_confirms_and_never_targets_another_worktrees_process(self):
+        body = re.search(r"function stoppablePreviews\(\) \{(.*?)\n\}", APP, re.S).group(1)
+        self.assertIn("preview.holder?.ours", body)
+        self.assertNotIn("preview.holder)", body)
+        stop = re.search(r"async function stopAllPreviews\(\) \{(.*?)\n\}", APP, re.S).group(1)
+        self.assertIn("window.confirm", stop)
+        self.assertIn('action: "stop"', stop)
+        self.assertIn('id="previews-stop-all"', HTML)
+
     def test_mutations_are_disabled_in_read_only_but_link_is_not(self):
         body = re.search(r"function previewPanel\(run\) \{(.*?)\n\}", APP, re.S).group(1)
         self.assertIn("button.disabled = readOnly", body)

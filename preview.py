@@ -69,6 +69,43 @@ def _proc_argv(pid: int) -> list[str] | None:
     return [item.decode(errors="replace") for item in data.rstrip(b"\0").split(b"\0")]
 
 
+def _port_holder(port: int) -> dict | None:
+    """The local process listening on `port`, found through procfs.
+
+    Only processes this user may inspect are visible, which is also the set
+    the dashboard could ever signal.
+    """
+    inodes = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text(encoding="ascii").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            # local_address is HEXIP:HEXPORT; state 0A is LISTEN.
+            if len(fields) > 9 and fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == port:
+                inodes.add(f"socket:[{fields[9]}]")
+    if not inodes:
+        return None
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fds = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(fd) in inodes:
+                    pid = int(entry.name)
+                    return {"pid": pid, "argv": _proc_argv(pid) or [],
+                            "cwd": os.readlink(entry / "cwd")}
+            except OSError:
+                continue
+    return None
+
+
 from urllib.parse import urlparse
 
 
@@ -160,7 +197,8 @@ class Preview:
             "enabled": not self._disabled(),
             "state": state.get("state", "stopped"),
             "pid": meta.get("pid"),
-            "port": self.config.get("port"),
+            "port": self._port(),
+            "auto_port": self.config.get("port") == "auto",
             "path": self.config.get("path", "/"),
             "url": self._url(),
             "url_template": self._url_template(),
@@ -168,8 +206,37 @@ class Preview:
             "error": state.get("error", ""),
             "log": self.tail(),
             "log_tail": self.tail(),
+            "holder": None,
         }
+        # A busy port that is not ours is the one thing an operator needs to
+        # see to unblock Start: who has it, and whether Stop here can clear it.
+        port = self._port()
+        if result["enabled"] and result["state"] not in ("starting", "ready") \
+                and port and self._port_busy(port):
+            holder = _port_holder(port) or {}
+            result["holder"] = {
+                "pid": holder.get("pid"),
+                "command": " ".join(holder.get("argv") or [])[:200],
+                "cwd": holder.get("cwd", ""),
+                "ours": bool(holder) and self._orphan(holder),
+            }
         return result
+
+    def _orphan(self, holder: dict) -> bool:
+        """This worktree's own preview whose ownership record was lost.
+
+        Adoption requires the process to run in this exact worktree and to lead
+        its own process group, as every preview this module launches does. A
+        process that fails either test is never signalled.
+        """
+        if self.worktree is None:
+            return False
+        try:
+            pid = int(holder["pid"])
+            return (Path(holder["cwd"]).resolve() == self.worktree.resolve()
+                    and os.getpgid(pid) == pid)
+        except (KeyError, TypeError, ValueError, OSError):
+            return False
 
     def _url(self) -> str:
         # Keep a configured absolute URL verbatim; templates are resolved by the
@@ -185,7 +252,42 @@ class Preview:
         path = str(self.config.get("path") or "/")
         if not path.startswith("/"):
             path = "/" + path
-        return f"http://{{host}}:{self.config.get('port')}{path}"
+        return f"http://{{host}}:{self._port()}{path}"
+
+    def _port(self) -> int | None:
+        """The port this preview uses: configured, or the one its start chose.
+
+        An `auto` port lives in the ownership record while the process runs and
+        in the state file afterwards, so an orphan on it can still be found.
+        """
+        port = self.config.get("port")
+        if port == "auto":
+            port = self._read_meta().get("port") or self._read_state().get("port")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            return None
+        return port
+
+    # ponytail: the kernel's pick comes from the ephemeral range, and a
+    # bind-then-release leaves a tiny race before the preview binds it; a
+    # failed start just retries on another port.  Add a configured range if
+    # a firewall ever needs a fixed window.
+    def _choose_port(self) -> int:
+        """Keep the last auto port when it is free, so the URL survives a restart."""
+        last = self._read_state().get("port")
+        candidates = [last] if isinstance(last, int) and not isinstance(last, bool) and 1 <= last <= 65535 else []
+        for port in candidates + [0]:
+            with socket.socket() as sock:
+                # As dev servers bind: TIME_WAIT left by readiness probes must
+                # not make the last port look taken and move the URL.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind(("0.0.0.0", port))
+                except OSError:
+                    continue
+                if port and self._port_busy(port):
+                    continue
+                return sock.getsockname()[1]
+        raise ValueError("no free port for the preview")
 
     def tail(self, limit: int = LOG_TAIL_BYTES) -> str:
         try:
@@ -196,13 +298,12 @@ class Preview:
         except OSError:
             return ""
 
-    def _expanded_argv(self) -> list[str]:
+    def _expanded_argv(self, port) -> list[str]:
         command = self.config.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(x, str) and x for x in command):
             raise ValueError("preview.command must be a non-empty list of strings")
-        port = self.config.get("port")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-            raise ValueError("preview.port must be an integer from 1 to 65535")
+            raise ValueError('preview.port must be "auto" or an integer from 1 to 65535')
         if self.worktree is None:
             raise ValueError("preview run directory is not a live worktree")
         # Replace only the two documented tokens; command arguments may contain
@@ -219,7 +320,7 @@ class Preview:
             return False
 
     def _probe_http(self) -> bool:
-        port = self.config.get("port")
+        port = self._port()
         if not port:
             return False
         path = str(self.config.get("ready_path") or "/")
@@ -293,16 +394,16 @@ class Preview:
         existing = self.status()
         if existing["state"] in ("starting", "ready"):
             return existing
+        # A preview of this very worktree that lost its record is still ours:
+        # end it before starting another, so a start never leaves one behind.
+        self._adopt_orphan()
         try:
-            argv = self._expanded_argv()
+            port = self._choose_port() if self.config.get("port") == "auto" else self.config.get("port")
+            argv = self._expanded_argv(port)
         except ValueError as error:
             return self._set_state("failed", error=str(error))
-        port = self.config.get("port")
-        if port and self._port_busy(int(port)):
-            meta = self._read_meta()
-            if self._identity(meta):
-                return self._set_state("starting", started_at=_now(), error="")
-            return self._set_state("failed", error=f"port {port} is already in use")
+        if self._port_busy(port):
+            return self._set_state("failed", port=port, error=f"port {port} is already in use")
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._bound_log()
         try:
@@ -327,13 +428,13 @@ class Preview:
             child.wait(timeout=0.2)
             return self._set_state("failed", error="preview process exited before identity was recorded")
         meta = {
-            "pid": child.pid, "pgid": child.pid, "argv": argv,
+            "pid": child.pid, "pgid": child.pid, "argv": argv, "port": port,
             "worktree": str(self.worktree),
             "proc_start_time": proc_start_time,
         }
         _write_json(self.pid_path, meta)
         _CHILDREN[child.pid] = child
-        return self._set_state("starting", started_at=_now(), error="")
+        return self._set_state("starting", started_at=_now(), port=port, error="")
 
     def _terminate(self, meta: dict) -> None:
         try:
@@ -376,8 +477,29 @@ class Preview:
         meta = self._read_meta()
         if self._identity(meta):
             self._terminate(meta)
+        else:
+            self._adopt_orphan()
         self.pid_path.unlink(missing_ok=True)
         return self._set_state("stopped", error="")
+
+    def _adopt_orphan(self) -> None:
+        port = self._port()
+        if not port or not self._port_busy(port):
+            return
+        holder = _port_holder(port)
+        if not holder or not self._orphan(holder):
+            return
+        pid = holder["pid"]
+        start = _proc_start_time(pid)
+        # Re-verified through _identity by _terminate, so a PID that is reused
+        # between here and the signal is still left alone.
+        self._terminate({"pid": pid, "pgid": pid, "argv": holder["argv"],
+                         "worktree": str(self.worktree), "proc_start_time": start})
+        # A killed process's listener can outlive it by a moment; wait for the
+        # port so a start right after this does not report it busy.
+        deadline = time.monotonic() + TERM_TIMEOUT_SECONDS
+        while time.monotonic() < deadline and self._port_busy(port):
+            time.sleep(0.03)
 
     def restart(self) -> dict:
         with _lock_for(self.state_path), _file_lock(self.run_dir / "preview.lock"):

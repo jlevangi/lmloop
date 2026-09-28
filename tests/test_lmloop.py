@@ -770,6 +770,26 @@ class OmpHarnessTests(unittest.TestCase):
             self.assertFalse(resume_session_available("opencode", session))
             self.assertFalse(resume_session_available("omp", session.with_name("missing")))
 
+    def test_pruned_sessions_stay_resumable(self):
+        import gzip, json, prune
+        from harness import resume_session_available
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as directory:
+            run = Path(directory)
+            (run / "sessions").mkdir()
+            keep = run / "sessions" / "keep.jsonl"
+            other = run / "sessions" / "other.jsonl"
+            for path in (keep, other):
+                path.write_text("x" * (prune.MIN_BYTES + 1))
+            (run / "run-state.json").write_text(json.dumps({"interrupted_session": str(keep)}))
+            self.assertEqual(prune.compressible(run), [other])
+            # A session pruned before this rule existed is restored from its .gz.
+            with gzip.open(other.with_name("other.jsonl.gz"), "wb") as sink:
+                sink.write(b"{}\n")
+            other.unlink()
+            self.assertTrue(resume_session_available("omp", other))
+            self.assertEqual(other.read_text(), "{}\n")
+
     def test_argv_states_approval_mode(self):
         """Inherited, `always-ask` would hang every iteration until the stall
         clock killed it -- silently, because nobody is there to be asked."""

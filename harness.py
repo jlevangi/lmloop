@@ -39,9 +39,20 @@ _HARNESSES = {h.name: h for h in (PiHarness(), OmpHarness(), OpencodeHarness())}
 
 
 def resume_session_available(name: str, session_file) -> bool:
-    """Whether this harness can resume an existing transcript."""
+    """Whether this harness can resume an existing transcript.
+
+    A pruned run may have gzipped it; restore it in place (the .gz stays).
+    """
+    import gzip, shutil
     from pathlib import Path
-    return (name or "pi").strip().lower() in ("omp", "pi") and Path(session_file).is_file()
+    path = Path(session_file) if session_file else None
+    if path and not path.is_file() and path.with_name(path.name + ".gz").is_file():
+        try:
+            with gzip.open(path.with_name(path.name + ".gz"), "rb") as src, path.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+        except OSError:
+            return False
+    return bool(path) and (name or "pi").strip().lower() in ("omp", "pi") and path.is_file()
 
 
 def get(name: str) -> Harness:

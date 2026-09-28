@@ -55,10 +55,20 @@ def _is_live(run_dir: Path) -> bool:
 
 
 def compressible(run_dir: Path) -> list[Path]:
-    """The big append-only streams, and only those."""
+    """The big append-only streams, and only those.
+
+    The session a paused/interrupted iteration will resume from stays plain:
+    omp/pi must be able to reopen it.
+    """
+    try:
+        keep = json.loads((run_dir / "run-state.json").read_text()).get("interrupted_session") or ""
+    except (OSError, ValueError):
+        keep = ""
     found = []
     for pattern in ("iteration-*.jsonl", "sessions/*.jsonl"):
         for path in sorted(run_dir.glob(pattern)):
+            if keep and path.resolve() == Path(keep).resolve():
+                continue
             if path.is_file() and path.stat().st_size >= MIN_BYTES:
                 found.append(path)
     return found

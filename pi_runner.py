@@ -317,4 +317,5 @@ def run(
             elapsed_seconds=elapsed,
             stderr_tail=state.stderr[-1000:],
             files_touched=list(state.files),
+            session_file=session_file,
         )

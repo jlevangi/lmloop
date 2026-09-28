@@ -44,6 +44,45 @@ class CodingAgentLifecycleTests(unittest.TestCase):
 
         terminate.assert_called_once()
 
+    def test_an_interrupted_iteration_reports_its_session_file(self):
+        # loop.py resumes from result.session_file; a mocked IterationResult hid
+        # that the runner computed the path and never returned it.
+        class Agent:
+            def argv(self, **kwargs):
+                return ["fake-agent"]
+
+        class Process:
+            stdin = mock.Mock()
+            stdout = object()
+            stderr = object()
+            returncode = -15
+
+            def poll(self):
+                return None
+
+            def wait(self, **kwargs):
+                return -15
+
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory) / "s.jsonl"
+            session.write_text("{}\n")
+            with mock.patch.object(pi_runner.harness, "get", return_value=Agent()), \
+                 mock.patch.object(pi_runner.subprocess, "Popen", return_value=Process()), \
+                 mock.patch.object(pi_runner, "_read_stdout"), \
+                 mock.patch.object(pi_runner, "_read_stderr"), \
+                 mock.patch.object(pi_runner.time, "sleep"), \
+                 mock.patch.object(pi_runner, "_terminate"):
+                result = pi_runner.run(
+                    model="model", tools="", thinking="", prompt="prompt",
+                    cwd=Path(directory), session_dir=Path(directory),
+                    session_id="session", raw_path=Path(directory) / "raw.jsonl",
+                    timeout_seconds=600, stall_seconds=600,
+                    should_stop=lambda: True,
+                )
+
+        self.assertEqual(result.outcome, "interrupted")
+        self.assertEqual(result.session_file, str(session))
+
 
 class GateLifecycleTests(unittest.TestCase):
     def test_gate_timeout_terminates_the_descendant_process_group(self):

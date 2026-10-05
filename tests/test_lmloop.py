@@ -406,6 +406,24 @@ class AbortReasonAndBudgetCharacterizationTests(unittest.TestCase):
         )
         self.assertEqual(8, run._budget(7))
 
+    def test_budget_follows_plan_expands_when_ceiling_equals_floor(self):
+        """When hard_turn_ceiling was not configured higher than initial_turns
+        (e.g. legacy max_iterations or defaults), the plan-aware budget dynamically
+        expands rather than being strangled at the initial floor."""
+        cfg = config._merge(config.DEFAULTS, {
+            "stop": {
+                "budget_follows_plan": True, "initial_turns": 10,
+                "hard_turn_ceiling": 10, "retry_allowance": 5,
+            },
+        })
+        run = self.make_run(cfg)
+        run.rundir.plan_path.write_text(
+            "\n".join(f"- [ ] step {i}" for i in range(1, 16))
+        )
+        # iteration 2, 0 done, 15 remaining: spent(1) + remaining(15) + retry(5) = 21
+        self.assertEqual(21, run._budget(2))
+        self.assertEqual(21, run.iteration_ceiling)
+
 
 class BackoffCharacterizationTests(unittest.TestCase):
     """Pins `Run._backoff`'s delay schedule and give-up threshold before

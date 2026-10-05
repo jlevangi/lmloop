@@ -290,7 +290,7 @@ class Run:
             self.rundir.release()
             raise
 
-    def attach(self, extra_iterations: int) -> int:
+    def attach(self, extra_iterations: int | None = None) -> int:
         """Re-enter an existing run instead of starting a new one.
 
         A run that dies -- a reboot, a closed ssh session, an OOM -- leaves its
@@ -332,8 +332,21 @@ class Run:
                 # is evidence of an attempt, not proof the iteration completed.
                 done = min(done, self.pending_iteration - 1)
             prior_ceiling = int(state.get("hard_turn_ceiling", done))
-            self.iteration_ceiling = max(done, prior_ceiling) + extra_iterations
-            self.iteration_floor = min(self.iteration_ceiling, done + extra_iterations)
+            if extra_iterations is None:
+                plan_done, plan_total = self.rundir.plan_progress()
+                allowance = self.config["stop"].get("retry_allowance", 5)
+                remaining = max(plan_total - plan_done, 0)
+                extra = (remaining + allowance) if (plan_total and remaining) else max(5, allowance)
+                if self.config["stop"].get("budget_follows_plan", True):
+                    # Give headroom so dynamic budget recomputation can follow
+                    # unexpected plan growth during the resumed segment.
+                    self.iteration_ceiling = max(done, prior_ceiling) + extra + allowance
+                else:
+                    self.iteration_ceiling = max(done, prior_ceiling) + extra
+            else:
+                extra = extra_iterations
+                self.iteration_ceiling = max(done, prior_ceiling) + extra
+            self.iteration_floor = min(self.iteration_ceiling, done + extra)
             self.max_iterations = self.iteration_floor
             # Carried across resumes so a bare `resume` cannot launder the one guard
             # that never lies -- but capped one below the limit, because a run that
@@ -375,7 +388,7 @@ class Run:
     # -- stop conditions --------------------------------------------------
 
     def _budget(self, iteration: int) -> int:
-        """How many iterations this run may use, recomputed from the plan.
+        """The active iteration budget, recomputed each iteration from the plan.
 
         A fixed count is the wrong shape for a plan whose length is not known
         when the run starts.  This run planned twelve steps, grew to thirteen,
@@ -395,10 +408,19 @@ class Run:
         if not self.config["stop"].get("budget_follows_plan", False):
             return self.iteration_floor
         done, total = self.rundir.plan_progress()
+        ceiling = self.iteration_ceiling
+        if ceiling <= self.iteration_floor and total:
+            # When ceiling was not configured above floor (legacy max_iterations
+            # or default config), let the budget dynamically follow the plan
+            # rather than pinning it to the starting floor.
+            spent, remaining = iteration - 1, max(total - done, 0)
+            wanted = spent + remaining + self.config["stop"].get("retry_allowance", 5)
+            ceiling = max(ceiling, wanted)
+            self.iteration_ceiling = max(self.iteration_ceiling, ceiling)
         return policy.budget(
             iteration, done, total,
             iteration_floor=self.iteration_floor,
-            iteration_ceiling=self.iteration_ceiling,
+            iteration_ceiling=ceiling,
             retry_allowance=self.config["stop"].get("retry_allowance", 5),
         )
 

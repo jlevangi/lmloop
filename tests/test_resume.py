@@ -164,6 +164,28 @@ class AttachTests(unittest.TestCase):
         self.assertEqual(8, run.iteration_floor)
         self.assertLessEqual(run.iteration_floor, run.iteration_ceiling)
 
+    def test_resume_without_extra_iterations_allocates_from_remaining_plan(self):
+        run = self.make_run(iterations_done=10)
+        run.rundir.plan_path.write_text(
+            "- [x] step 1\n- [x] step 2\n- [ ] step 3\n- [ ] step 4\n- [ ] step 5\n"
+        )
+        run.config["stop"]["retry_allowance"] = 4
+        with mock.patch.object(gitops, "exclude"):
+            done = run.attach(None)
+        self.assertEqual(10, done)
+        self.assertEqual(17, run.iteration_floor)
+        self.assertEqual(17, run.max_iterations)
+        self.assertEqual(21, run.iteration_ceiling)
+
+    def test_resume_without_plan_uses_safe_default(self):
+        run = self.make_run(iterations_done=10)
+        run.config["stop"]["retry_allowance"] = 5
+        with mock.patch.object(gitops, "exclude"):
+            done = run.attach(None)
+        self.assertEqual(10, done)
+        self.assertEqual(15, run.iteration_floor)
+        self.assertEqual(15, run.max_iterations)
+
     # -- the no-diff streak, which is the guard that never lies ------------
 
     def test_the_streak_survives_a_resume(self):

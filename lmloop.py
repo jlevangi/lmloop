@@ -626,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
 
     resume = sub.add_parser("resume", help="continue a run that stopped, in its existing worktree")
     resume.add_argument("run_id", nargs="?", help="which run; defaults to the most recent")
-    resume.add_argument("--iterations", type=int, default=3, help="how many more iterations to run")
+    resume.add_argument("--iterations", type=int, default=None, help="how many more iterations to run (default: auto-allocated from plan)")
     resume.add_argument("--agent", help="which agent does the typing: pi, omp, or opencode")
     resume.add_argument("--model", help="override the configured model")
     resume.add_argument("--thinking", help="thinking level: off, minimal, low, medium, high, xhigh, max")

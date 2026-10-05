@@ -747,7 +747,13 @@ function control(label, action, run, { risk = false, body = {}, confirm: ask = n
     const was = button.textContent;
     button.textContent = "working…";
     try {
-      const result = await api(`/api/runs/${run.project}/${run.route_id || run.run_id}/${action}`, { body });
+      const payload = typeof body === "function" ? body() : { ...body };
+      if (action === "continue" && !payload.iterations) {
+        const inp = button.parentElement?.querySelector(".resume-iterations");
+        const val = parseInt(inp?.value, 10);
+        if (val > 0 && val <= 200) payload.iterations = val;
+      }
+      const result = await api(`/api/runs/${run.project}/${run.route_id || run.run_id}/${action}`, { body: payload });
       if (done) done(result);
       state.detailKey = null;
       // A run that was archived or deleted is no longer at this URL.
@@ -1084,7 +1090,19 @@ async function renderRun(project, runId, { quiet = false } = {}) {
       if (!run.stopping) controls.append(control("Stop after this iteration", "stop", run, { risk: true }));
       controls.append(control("Stop now", "stop-now", run, { risk: true }));
     } else {
+      const remaining = (run.plan_total && run.plan_total > run.plan_done)
+        ? (run.plan_total - run.plan_done)
+        : 0;
+      const defaultIters = remaining > 0 ? remaining + 5 : 10;
+      const resumeInput = el("input", "resume-iterations");
+      resumeInput.type = "number";
+      resumeInput.min = "1";
+      resumeInput.max = "200";
+      resumeInput.placeholder = String(defaultIters);
+      resumeInput.title = `Additional iterations (default: ${defaultIters}${remaining > 0 ? `, finishes ${remaining} remaining steps` : ""})`;
+
       controls.append(control("Resume run", "continue", run));
+      controls.append(resumeInput);
       if (run.commits) {
         controls.append(control("Merge to main", "merge", run, {
           confirm: `Merge branch lmloop/${run.run_id} into the main branch locally?`,

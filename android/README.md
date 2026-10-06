@@ -37,7 +37,7 @@ it's configured.
 
 ## Building locally
 
-Requires **JDK 17** and **Android SDK 36** (API level 36 / Baklava). The
+Requires **JDK 21** (Java/Kotlin bytecode remains targeted at Java 17) and **Android SDK 36** (API level 36 / Baklava). The
 `android/gradle/libs.versions.toml` pins `compileSdk`, `minSdk`, and
 `targetSdk` — nothing in the project names a different level.
 

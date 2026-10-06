@@ -466,6 +466,23 @@ def override_review(config: dict, rounds: int | None, every: int | None,
         review["personas"] = [p.strip() for p in personas.split(",") if p.strip()]
 
 
+def override_decision(config: dict, enabled: bool | None = None, endpoint: str | None = None,
+                      model: str | None = None) -> None:
+    """Apply decision model overrides in place."""
+    decision = config.setdefault("decision", {
+        "enabled": False,
+        "endpoint": "http://127.0.0.1:9080/upstream/Clef-Flash/v1/systemone",
+        "model": "clef-flash",
+        "every": 1,
+    })
+    if enabled is not None:
+        decision["enabled"] = bool(enabled)
+    if endpoint:
+        decision["endpoint"] = endpoint
+    if model:
+        decision["model"] = model
+
+
 def override_agent(config: dict, harness_name: str = "", tools: str = "") -> None:
     """Apply `--agent` / `--tools` from the command line, in place.
 
@@ -646,4 +663,12 @@ personas   = []           # empty = chosen from the diff: correctness, security,
                           # performance, design; or ~/.config/lmloop/personas/<name>.md
 # [review.models]         # a persona's own model; default is the worker's
 # design = "llama-swap/Qwen3.8-27B"
+
+[decision]
+# Decision model trajectory steering via SystemOne schema (e.g. Clef-Flash).
+# Optional and toggleable; disabled by default.
+enabled  = false
+endpoint = "http://127.0.0.1:9080/upstream/Clef-Flash/v1/systemone"
+model    = "clef-flash"
+every    = 1
 """

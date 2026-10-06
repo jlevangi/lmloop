@@ -34,6 +34,7 @@ py-modules = [
     "gitops", "checks", "models", "browser", "harness", "harness_base",
     "harness_pi", "harness_omp", "harness_opencode", "config", "config_defaults", "env",
     "display", "doctor", "eta", "notify", "prune", "webpush", "preview",
+    "decision_model",
 ]
 
 [tool.setuptools.packages.find]

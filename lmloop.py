@@ -82,6 +82,12 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
         config["agent"]["thinking"] = args.thinking
     if args.gate is not None:
         config["gate"]["command"] = args.gate
+    if getattr(args, "decision", False):
+        config_module.override_decision(config, enabled=True, endpoint=getattr(args, "decision_endpoint", None), model=getattr(args, "decision_model", None))
+    elif getattr(args, "no_decision", False):
+        config_module.override_decision(config, enabled=False)
+    elif getattr(args, "decision_endpoint", None) or getattr(args, "decision_model", None):
+        config_module.override_decision(config, enabled=True, endpoint=args.decision_endpoint, model=args.decision_model)
     config_module.override_review(config, args.review_rounds, args.review_every, args.review_personas)
     config_module.override_agent(config, args.agent or "", args.tools or "")
     config_module.require_model(config)
@@ -103,6 +109,14 @@ def _detach(objective: str, args: argparse.Namespace) -> int:
                         ("--review-personas", args.review_personas)):
         if value is not None:
             argv += [flag, str(value)]
+    if getattr(args, "decision", False):
+        argv += ["--decision"]
+    if getattr(args, "no_decision", False):
+        argv += ["--no-decision"]
+    if getattr(args, "decision_endpoint", None):
+        argv += ["--decision-endpoint", args.decision_endpoint]
+    if getattr(args, "decision_model", None):
+        argv += ["--decision-model", args.decision_model]
 
     with log_path.open("wb") as log:
         subprocess.Popen(
@@ -129,6 +143,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         config["agent"]["thinking"] = args.thinking
     if args.gate is not None:
         config["gate"]["command"] = args.gate
+    if getattr(args, "decision", False):
+        config_module.override_decision(config, enabled=True, endpoint=getattr(args, "decision_endpoint", None), model=getattr(args, "decision_model", None))
+    elif getattr(args, "no_decision", False):
+        config_module.override_decision(config, enabled=False)
+    elif getattr(args, "decision_endpoint", None) or getattr(args, "decision_model", None):
+        config_module.override_decision(config, enabled=True, endpoint=args.decision_endpoint, model=args.decision_model)
     # Agent and allowlist together, and after everything else: which tool names
     # are valid is a question only the selected agent can answer.
     config_module.override_review(config, args.review_rounds, args.review_every, args.review_personas)
@@ -617,6 +637,10 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--review-rounds", type=int, help="reviewer rounds before handing over; 0 = no review")
     run.add_argument("--review-every", type=int, help="drift check every N iterations; 0 = off")
     run.add_argument("--review-personas", help="comma list replacing automatic persona choice")
+    run.add_argument("--decision", action="store_true", help="enable decision model trajectory steering (e.g. Clef-Flash)")
+    run.add_argument("--no-decision", action="store_true", help="disable decision model trajectory steering")
+    run.add_argument("--decision-endpoint", help="override the decision model API endpoint URL")
+    run.add_argument("--decision-model", help="override the decision model name (e.g. clef-flash)")
     run.add_argument("--detach", action="store_true", help="start in the background and print the run id")
     # How --detach tells its child which lane it picked, so parent and child
     # agree on the id even when today already used the derived one.

@@ -287,4 +287,12 @@ DEFAULTS: dict = {
         "personas": [],      # empty = chosen from the diff; names replace that
         "models": {},        # persona -> model; default is the worker's model
     },
+    # Decision model steering via SystemOne schema (e.g. Clef-Flash).
+    # Optional and toggleable; disabled by default.
+    "decision": {
+        "enabled": False,
+        "endpoint": "http://127.0.0.1:9080/upstream/Clef-Flash/v1/systemone",
+        "model": "clef-flash",
+        "every": 1,
+    },
 }

@@ -36,6 +36,7 @@ import policy
 import prompts
 import pi_runner
 import review
+import decision_model
 import runrecord
 from rundir import RunDir, make_run_id, previous_runs
 
@@ -1379,6 +1380,7 @@ class Run:
                     self.pending_iteration = 0
                     self._save_run_state()
                 self._drift_check(iteration)
+                self._decision_check(iteration)
                 transport = self._transport_failure()
                 if transport:
                     # The server, not the work.  Same backoff as a failed preflight,
@@ -1527,6 +1529,29 @@ class Run:
             return  # the next working iteration meets the same server and waits properly
         if verdict == "CHANGES_REQUESTED" and findings:
             self._add_findings(f"drift i{iteration}", findings)
+
+    def _decision_check(self, iteration: int) -> None:
+        """Query decision model (SystemOne) to evaluate trajectory health and inject steering."""
+        dec = self.config.get("decision", {})
+        if not dec or not dec.get("enabled"):
+            return
+        every = dec.get("every", 1)
+        if every <= 0 or iteration % every or self.interrupted or self.rundir.stop_requested():
+            return
+        endpoint = dec.get("endpoint", "")
+        if not endpoint:
+            return
+        state = {
+            "iteration": iteration,
+            "objective": self.objective[:300],
+        }
+        res = decision_model.evaluate_trajectory(endpoint, state, model=dec.get("model", "clef-flash"))
+        if res:
+            msg = decision_model.steer_prompt(res, state)
+            if msg:
+                self.screen.log(f"  steer ({res.trajectory}): {res.recommended_action} (urgency {res.urgency})")
+                self.rundir.event("decision:steer", trajectory=res.trajectory, action=res.recommended_action, urgency=res.urgency)
+                self._add_findings("decision-model", [msg])
 
     def _review_once(self, label: str, name: str, why: str, diff: str,
                      drift: bool = False) -> tuple[str, list[str]]:

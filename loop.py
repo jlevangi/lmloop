@@ -1564,6 +1564,30 @@ class Run:
         verdict_path = self.rundir.path / "review" / f"{label}-{name}.md"
         verdict_path.parent.mkdir(exist_ok=True)
         verdict_path.unlink(missing_ok=True)
+
+        if name == "decision":
+            dec = self.config.get("decision", {})
+            endpoint = dec.get("endpoint", "")
+            if endpoint:
+                state = {
+                    "objective": self.objective[:300],
+                    "status": f"review {label} against base commit",
+                    "gate_status": self.gate_result or "no gate",
+                }
+                timeout = float(dec.get("timeout_seconds", 180.0))
+                model = dec.get("model", "clef-flash")
+                self.rundir.event("review:start", label=label, persona="decision", why=why, model=model)
+                self.screen.log(f"  review {label}: decision model ({model})")
+                res = decision_model.evaluate_review(endpoint, state, model=model, timeout=timeout)
+                if res:
+                    verdict = res.verdict
+                    findings = [f"Decision model ({model}) evaluated code quality as `{res.code_quality}` (confidence: {res.confidence:.2f})"]
+                    verdict_text = f"verdict: {verdict}\n- {findings[0]}\n"
+                    verdict_path.write_text(verdict_text)
+                    self.rundir.event("review:verdict", label=label, persona="decision",
+                                      verdict=verdict, findings=findings[:20])
+                    return verdict, findings
+
         model = self.config["review"]["models"].get(name) or self.config["agent"]["model"]
         ok, detail = models.preflight(
             model, config.reference(self.config["models"]["llama_swap_url"]))
@@ -1617,6 +1641,24 @@ class Run:
         except OSError:
             text = ""
         verdict, findings = review.parse(text)
+        if not verdict and self.config.get("decision", {}).get("enabled"):
+            dec = self.config["decision"]
+            endpoint = dec.get("endpoint", "")
+            if endpoint:
+                state = {
+                    "objective": self.objective[:300],
+                    "status": f"adjudicate review {label}/{name} without explicit verdict",
+                    "gate_status": self.gate_result or "no gate",
+                }
+                res = decision_model.evaluate_review(
+                    endpoint, state, model=dec.get("model", "clef-flash"),
+                    timeout=float(dec.get("timeout_seconds", 180.0)),
+                )
+                if res:
+                    verdict = res.verdict
+                    findings = findings or [f"Decision model adjudicated verdict as {verdict} (quality: {res.code_quality}, confidence: {res.confidence:.2f})"]
+                    self.screen.log(f"  review {label}: decision model adjudicated {name} as {verdict}")
+
         self.rundir.event("review:verdict", label=label, persona=name,
                           verdict=verdict or "none", findings=findings[:20])
         return verdict, findings

@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -575,6 +576,75 @@ def cmd_prune(args: argparse.Namespace) -> int:
     return 0
 
 
+def _state_log(run_id: str) -> Path:
+    """One run's durable summary log, by exact id or unique prefix.
+
+    Run ids are 60-odd characters and are read off a phone or a terminal that
+    wrapped them; a unique prefix is enough, an ambiguous one is an error
+    rather than a guess about which run got closed.
+    """
+    exact = STATE_DIR / f"{run_id}.log"
+    if exact.is_file():
+        return exact
+    matches = sorted(STATE_DIR.glob(f"{run_id}*.log"))
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise SystemExit(f"lmloop: no run log named {run_id}")
+    names = ", ".join(path.stem for path in matches)
+    raise SystemExit(f"lmloop: {run_id} is ambiguous ({names})")
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    """Record how a run ended, in the log that outlives its worktree.
+
+    A run's plan, reviews and event stream are written inside its worktree and
+    die with it when the branch is merged and the tree removed.  The summary
+    log in `STATE_DIR` is the one artifact that survives that, so this is
+    where "what happened in the end" belongs: one line, appended, never
+    rewritten.  Nothing about the run itself is touched.
+    """
+    log = _state_log(args.run_id)
+    outcome = " ".join(args.outcome)
+    stamp = date.today().isoformat()
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(f"  closed {stamp}: {outcome}\n")
+    display.out(f"recorded {log.stem}")
+    display.out(f"  {stamp}: {outcome}")
+    display.out(f"  log: {log}")
+    return 0
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    """Every run log on this machine, newest first, with its recorded outcome.
+
+    `lmloop list` finds runs through their worktrees, so a run whose branch
+    was merged and tree removed vanishes from it -- which reads as "the run is
+    gone" when all that happened is that it landed.  These logs are not in a
+    worktree; they stay until `lmloop close` has been run or the run never
+    finished, and the outcome line is what `lmloop close` appends.
+
+    Deliberately not filtered to the current repository: the logs are already
+    a flat global store and carrying the repo name in every line would be a
+    second index to keep in sync.
+    """
+    logs = sorted(STATE_DIR.glob("*.log"), reverse=True)
+    if not logs:
+        display.out("no run logs")
+        return 0
+    for log in logs:
+        try:
+            text = log.read_text(errors="replace")
+        except OSError:
+            continue
+        closed = [line.strip() for line in text.splitlines()
+                  if line.startswith("  closed ")]
+        outcome = closed[-1] if closed else "no outcome recorded"
+        display.out(log.stem)
+        display.out(f"    {outcome}")
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     """Serve the dashboard.
 
@@ -674,6 +744,17 @@ def main(argv: list[str] | None = None) -> int:
                        help="only streams untouched for this many days")
     prune.add_argument("--dry-run", action="store_true", help="report what would be compressed")
     prune.set_defaults(func=cmd_prune)
+
+    close = sub.add_parser(
+        "close", help="record how a finished run ended, in its durable log")
+    close.add_argument("run_id", help="run id or unique prefix")
+    close.add_argument("outcome", nargs="+",
+                       help="one line: merged <sha> into main, or abandoned")
+    close.set_defaults(func=cmd_close)
+
+    history = sub.add_parser(
+        "history", help="runs whose logs outlived their worktree, with outcomes")
+    history.set_defaults(func=cmd_history)
 
     web = sub.add_parser("web", help="serve the dashboard: start, watch, pause and stop runs")
     web.add_argument("--host", help="bind address (default 127.0.0.1; anything else needs OIDC)")

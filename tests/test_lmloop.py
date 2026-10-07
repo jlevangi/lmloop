@@ -7,6 +7,7 @@ import time
 import unittest
 import unittest.mock
 from pathlib import Path
+from datetime import date
 from types import SimpleNamespace
 
 import os
@@ -3033,6 +3034,84 @@ class NotifyReferenceTests(unittest.TestCase):
             problem, seen = self.send({"url": "env:NOT_SET", "topic": "t"})
         self.assertEqual("no url configured", problem)
         self.assertNotIn("url", seen)
+
+
+class CloseLogTests(unittest.TestCase):
+    """`lmloop close` / `lmloop history`: the outcome line that outlives the worktree.
+
+    Everything else about a run is written inside its worktree, and the
+    operator removes worktrees on merge -- so the durable summary log in
+    `STATE_DIR` is the only place a run's result can still be read from
+    afterwards.  These assert exactly that: appended, not rewritten; readable
+    back; and never written to the wrong run.
+    """
+
+    RUN_ID = "2026-10-06-resolve-slots-fvf-eliminate-pwa-0e3d11"
+
+    def state_dir(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return Path(tmp.name)
+
+    def test_close_appends_one_line_and_history_reads_it_back(self):
+        state = self.state_dir()
+        log = state / f"{self.RUN_ID}.log"
+        log.write_text(f"lmloop {self.RUN_ID}\n  repo    slots-pwa\n")
+        with unittest.mock.patch.object(lmloop, "STATE_DIR", state):
+            self.assertEqual(lmloop.main([
+                "close", self.RUN_ID,
+                "merged", "e4546cf", "into", "main"]), 0)
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(lmloop.main(["history"]), 0)
+        text = log.read_text()
+        stamped = f"  closed {date.today().isoformat()}: merged e4546cf into main"
+        self.assertIn(stamped, text)
+        # Appended: the log's own header is still there.
+        self.assertTrue(text.startswith(f"lmloop {self.RUN_ID}"))
+        self.assertEqual(len(text.splitlines()), 3)
+        shown = buffer.getvalue()
+        self.assertIn(self.RUN_ID, shown)
+        self.assertIn("merged e4546cf into main", shown)
+
+    def test_a_unique_prefix_is_enough(self):
+        state = self.state_dir()
+        (state / f"{self.RUN_ID}.log").write_text("lmloop\n")
+        with unittest.mock.patch.object(lmloop, "STATE_DIR", state):
+            self.assertEqual(lmloop.main(["close", self.RUN_ID[:30],
+                                          "merged", "e4546cf"]), 0)
+        self.assertIn("merged e4546cf", (state / f"{self.RUN_ID}.log").read_text())
+
+    def test_an_ambiguous_prefix_is_an_error_not_a_guess(self):
+        state = self.state_dir()
+        (state / "2026-10-06-a.log").write_text("lmloop\n")
+        (state / "2026-10-06-b.log").write_text("lmloop\n")
+        with unittest.mock.patch.object(lmloop, "STATE_DIR", state):
+            with self.assertRaises(SystemExit):
+                lmloop.main(["close", "2026-10-06", "merged", "abc"])
+
+    def test_closing_a_run_that_has_no_log_fails(self):
+        state = self.state_dir()
+        with unittest.mock.patch.object(lmloop, "STATE_DIR", state):
+            with self.assertRaises(SystemExit):
+                lmloop.main(["close", "never-ran", "merged", "abc"])
+
+    def test_history_of_an_empty_store_says_so(self):
+        state = self.state_dir()
+        buffer = io.StringIO()
+        with unittest.mock.patch.object(lmloop, "STATE_DIR", state):
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(lmloop.main(["history"]), 0)
+        self.assertIn("no run logs", buffer.getvalue())
+
+    def test_history_reports_a_run_that_was_never_closed(self):
+        state = self.state_dir()
+        (state / f"{self.RUN_ID}.log").write_text("lmloop\n  gate ok\n")
+        buffer = io.StringIO()
+        with unittest.mock.patch.object(lmloop, "STATE_DIR", state):
+            with contextlib.redirect_stdout(buffer):
+                self.assertEqual(lmloop.main(["history"]), 0)
+        self.assertIn("no outcome recorded", buffer.getvalue())
 
 
 if __name__ == "__main__":

@@ -1545,13 +1545,19 @@ class Run:
             "iteration": iteration,
             "objective": self.objective[:300],
         }
-        res = decision_model.evaluate_trajectory(endpoint, state, model=dec.get("model", "clef-flash"))
+        timeout = float(dec.get("timeout_seconds", 180.0))
+        res = decision_model.evaluate_trajectory(endpoint, state, model=dec.get("model", "clef-flash"), timeout=timeout)
         if res:
+            self.rundir.event("decision:eval", iteration=iteration, trajectory=res.trajectory,
+                              action=res.recommended_action, urgency=res.urgency, confidence=res.confidence)
+            self.screen.log(f"  decision check (i{iteration}): {res.trajectory} -> {res.recommended_action}")
             msg = decision_model.steer_prompt(res, state)
             if msg:
                 self.screen.log(f"  steer ({res.trajectory}): {res.recommended_action} (urgency {res.urgency})")
                 self.rundir.event("decision:steer", trajectory=res.trajectory, action=res.recommended_action, urgency=res.urgency)
                 self._add_findings("decision-model", [msg])
+        else:
+            self.rundir.event("decision:eval:failed", iteration=iteration, endpoint=endpoint)
 
     def _review_once(self, label: str, name: str, why: str, diff: str,
                      drift: bool = False) -> tuple[str, list[str]]:

@@ -39,6 +39,25 @@ SYSTEMONE_SCHEMA_QUESTIONS = {
     },
 }
 
+REVIEW_SCHEMA_QUESTIONS = {
+    "review_verdict": {
+        "type": "choice",
+        "instructions": "Review this implementation. Does it satisfy all requirements and invariants?",
+        "criteria": {
+            "approved": "The changes meet the objective, all tests and gates pass, and invariants are preserved.",
+            "changes_requested": "The changes have defects, fail requirements, break tests, or introduce regressions.",
+        },
+    },
+    "code_quality": {
+        "type": "choice",
+        "instructions": "Assess overall code and architectural quality.",
+        "criteria": {
+            "clean": "Code is well-structured, modular, and follows project conventions.",
+            "smelly": "Code contains anti-patterns, brittle hacks, or improper modularization.",
+        },
+    },
+}
+
 
 @dataclass(frozen=True)
 class DecisionResult:
@@ -46,6 +65,15 @@ class DecisionResult:
     recommended_action: str
     urgency: float
     confidence: float
+    raw_answers: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    verdict: str
+    code_quality: str
+    confidence: float
+    probabilities: dict[str, float]
     raw_answers: dict[str, Any]
 
 
@@ -84,15 +112,48 @@ def parse_systemone_response(data: dict[str, Any]) -> DecisionResult:
     )
 
 
+def build_review_request(
+    state: dict[str, Any],
+    model: str = "clef-flash",
+) -> dict[str, Any]:
+    """Format review context into a SystemOne review request body."""
+    return {
+        "model": model,
+        "state": state,
+        "questions": REVIEW_SCHEMA_QUESTIONS,
+    }
+
+
+def parse_review_response(data: dict[str, Any]) -> ReviewResult:
+    """Parse a SystemOne response payload into a ReviewResult."""
+    answers = data.get("answers", {})
+
+    verd_ans = answers.get("review_verdict", {})
+    verdict = verd_ans.get("choice", "approved").upper()
+    conf = verd_ans.get("confidence", 1.0)
+    probs = verd_ans.get("probabilities", {})
+
+    qual_ans = answers.get("code_quality", {})
+    quality = qual_ans.get("choice", "clean")
+
+    return ReviewResult(
+        verdict=verdict,
+        code_quality=quality,
+        confidence=conf,
+        probabilities=probs,
+        raw_answers=answers,
+    )
+
+
 def evaluate_trajectory(
     endpoint_url: str,
     state: dict[str, Any],
     model: str = "clef-flash",
-    timeout: float = 2.0,
+    timeout: float = 180.0,
 ) -> DecisionResult | None:
     """Query the decision model endpoint, returning None on network or format errors.
 
-    ponytail: synchronous urllib call with short timeout; upgrade to async or background thread
+    ponytail: synchronous urllib call with CPU-safe timeout; upgrade to async or background thread
     if evaluation frequency exceeds once per tool call.
     """
     payload = json.dumps(build_systemone_request(state, model=model)).encode("utf-8")
@@ -108,6 +169,30 @@ def evaluate_trajectory(
                 return None
             body = json.loads(resp.read().decode("utf-8"))
             return parse_systemone_response(body)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError):
+        return None
+
+
+def evaluate_review(
+    endpoint_url: str,
+    state: dict[str, Any],
+    model: str = "clef-flash",
+    timeout: float = 180.0,
+) -> ReviewResult | None:
+    """Query the decision model for a formal review verdict."""
+    payload = json.dumps(build_review_request(state, model=model)).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            body = json.loads(resp.read().decode("utf-8"))
+            return parse_review_response(body)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError):
         return None
 
